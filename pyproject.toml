@@ -1,0 +1,37 @@
+[project]
+name = "transloka-workspace"
+version = "0.0.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "transloka-api",
+  "transloka-core",
+  "transloka-document-ir",
+  "transloka-documents",
+  "transloka-glossary",
+  "transloka-quality",
+  "transloka-reconstruction",
+  "transloka-translation",
+  "transloka-worker",
+]
+classifiers = ["Private :: Do Not Upload"]
+
+[tool.uv]
+package = false
+
+[tool.uv.sources]
+transloka-api = { workspace = true }
+transloka-core = { workspace = true }
+transloka-document-ir = { workspace = true }
+transloka-documents = { workspace = true }
+transloka-glossary = { workspace = true }
+transloka-quality = { workspace = true }
+transloka-reconstruction = { workspace = true }
+transloka-translation = { workspace = true }
+transloka-worker = { workspace = true }
+
+[tool.uv.workspace]
+members = [
+  "python/*",
+  "services/api",
+  "services/worker",
+]

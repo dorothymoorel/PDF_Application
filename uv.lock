@@ -1,0 +1,91 @@
+version = 1
+revision = 3
+requires-python = "==3.12.*"
+
+[manifest]
+members = [
+    "transloka-api",
+    "transloka-core",
+    "transloka-document-ir",
+    "transloka-documents",
+    "transloka-glossary",
+    "transloka-quality",
+    "transloka-reconstruction",
+    "transloka-translation",
+    "transloka-worker",
+    "transloka-workspace",
+]
+
+[[package]]
+name = "transloka-api"
+version = "0.0.0"
+source = { editable = "services/api" }
+
+[[package]]
+name = "transloka-core"
+version = "0.0.0"
+source = { editable = "python/transloka-core" }
+
+[[package]]
+name = "transloka-document-ir"
+version = "0.0.0"
+source = { editable = "python/transloka-document-ir" }
+
+[[package]]
+name = "transloka-documents"
+version = "0.0.0"
+source = { editable = "python/transloka-documents" }
+
+[[package]]
+name = "transloka-glossary"
+version = "0.0.0"
+source = { editable = "python/transloka-glossary" }
+
+[[package]]
+name = "transloka-quality"
+version = "0.0.0"
+source = { editable = "python/transloka-quality" }
+
+[[package]]
+name = "transloka-reconstruction"
+version = "0.0.0"
+source = { editable = "python/transloka-reconstruction" }
+
+[[package]]
+name = "transloka-translation"
+version = "0.0.0"
+source = { editable = "python/transloka-translation" }
+
+[[package]]
+name = "transloka-worker"
+version = "0.0.0"
+source = { editable = "services/worker" }
+
+[[package]]
+name = "transloka-workspace"
+version = "0.0.0"
+source = { virtual = "." }
+dependencies = [
+    { name = "transloka-api" },
+    { name = "transloka-core" },
+    { name = "transloka-document-ir" },
+    { name = "transloka-documents" },
+    { name = "transloka-glossary" },
+    { name = "transloka-quality" },
+    { name = "transloka-reconstruction" },
+    { name = "transloka-translation" },
+    { name = "transloka-worker" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "transloka-api", editable = "services/api" },
+    { name = "transloka-core", editable = "python/transloka-core" },
+    { name = "transloka-document-ir", editable = "python/transloka-document-ir" },
+    { name = "transloka-documents", editable = "python/transloka-documents" },
+    { name = "transloka-glossary", editable = "python/transloka-glossary" },
+    { name = "transloka-quality", editable = "python/transloka-quality" },
+    { name = "transloka-reconstruction", editable = "python/transloka-reconstruction" },
+    { name = "transloka-translation", editable = "python/transloka-translation" },
+    { name = "transloka-worker", editable = "services/worker" },
+]
