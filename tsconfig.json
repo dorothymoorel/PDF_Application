@@ -1,0 +1,4 @@
+{
+  "extends": "./packages/shared-config/tsconfig.base.json",
+  "files": []
+}
