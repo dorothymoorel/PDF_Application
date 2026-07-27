@@ -20,6 +20,7 @@ from transloka_api.middleware import (
     CORS_ALLOWED_HEADERS,
     CORS_ALLOWED_METHODS,
     CORS_EXPOSE_HEADERS,
+    ClientHeaderMiddleware,
     OriginValidationMiddleware,
     RequestIdMiddleware,
 )
@@ -66,6 +67,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:
             return await unexpected_exception_handler(request, exc)
 
+    application.add_middleware(ClientHeaderMiddleware)
     application.add_middleware(
         CORSMiddleware,
         allow_origins=list(effective_settings.web_origins),

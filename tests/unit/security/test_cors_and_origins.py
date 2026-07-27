@@ -175,7 +175,8 @@ def test_approved_preflight_uses_explicit_policy() -> None:
     assert {"accept", "content-type", "x-request-id"} <= headers
     assert "*" not in response.headers["Access-Control-Allow-Methods"]
     assert "*" not in response.headers["Access-Control-Allow-Headers"]
-    assert "x-transloka-client" not in headers
+    assert "x-transloka-client" in headers
+    assert "x-transloka-client-version" in headers
     assert "Access-Control-Allow-Credentials" not in response.headers
     assert response.headers[REQUEST_ID_HEADER] == "preflight-approved"
 

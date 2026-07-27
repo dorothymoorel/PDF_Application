@@ -5,9 +5,16 @@ from starlette.requests import Request
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from transloka_api.exception_handlers import TransLokaError, transloka_exception_handler
+from transloka_api.middleware.client_headers import CLIENT_HEADER, CLIENT_VERSION_HEADER
 
 CORS_ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
-CORS_ALLOWED_HEADERS = ("Accept", "Content-Type", "X-Request-ID")
+CORS_ALLOWED_HEADERS = (
+    "Accept",
+    "Content-Type",
+    "X-Request-ID",
+    CLIENT_HEADER,
+    CLIENT_VERSION_HEADER,
+)
 CORS_EXPOSE_HEADERS = ("X-Request-ID",)
 
 
