@@ -1,10 +1,19 @@
 from typing import Literal
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
+from starlette.exceptions import HTTPException
 
 from transloka_api import __version__
 from transloka_api.config import Settings
+from transloka_api.exception_handlers import (
+    TransLokaError,
+    http_exception_handler,
+    request_validation_exception_handler,
+    transloka_exception_handler,
+)
+from transloka_api.middleware import RequestIdMiddleware
 
 
 class HealthResponse(BaseModel):
@@ -38,6 +47,10 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     effective_settings = settings or Settings()
     application = FastAPI(title="TransLoka", version=__version__, debug=False)
     application.state.settings = effective_settings
+    application.add_middleware(RequestIdMiddleware)
+    application.add_exception_handler(TransLokaError, transloka_exception_handler)
+    application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
+    application.add_exception_handler(HTTPException, http_exception_handler)
 
     @application.get(
         "/health",
