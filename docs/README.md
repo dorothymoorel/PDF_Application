@@ -49,11 +49,12 @@ When requirements conflict, use this authority order:
 
 Document roles:
 
-- The canonical `PRD.md` is intended to define product requirements and
-  intent. It is currently missing; [`PRDpdf.md`](./PRDpdf.md) is the only
-  product requirements artifact present.
-- [`ARCHITECTURE.md`](./ARCHITECTURE.md) defines system structure and
-  boundaries, subject to higher-authority Local-First decisions.
+- [`PRD.md`](./PRD.md) Version 0.2 defines the active product requirements and
+  intent for the Local-First Personal MVP.
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) Version 0.2 defines the active
+  Local-First system structure and boundaries.
+- [`GLOSSARY_ENGINE.md`](./GLOSSARY_ENGINE.md) Version 0.2 defines terminology
+  control, matching, protection, and revision behavior.
 - [`MASTER_CODEX_PROMPT.md`](./MASTER_CODEX_PROMPT.md) defines Codex execution
   governance.
 - [`CODEX_TASKS.md`](./CODEX_TASKS.md) defines atomic implementation tasks and
@@ -78,8 +79,7 @@ Read these documents before every implementation task:
 
 Read the following when relevant to the task:
 
-- Product intent: [`PRDpdf.md`](./PRDpdf.md). The expected canonical
-  `PRD.md` is not currently present.
+- Product intent: [`PRD.md`](./PRD.md)
 - System boundaries: [`ARCHITECTURE.md`](./ARCHITECTURE.md)
 - Persistence: [`DATABASE_SCHEMA.md`](./DATABASE_SCHEMA.md)
 - HTTP interface: [`API_CONTRACT.md`](./API_CONTRACT.md)
@@ -89,8 +89,7 @@ Read the following when relevant to the task:
 - Model selection: [`LOCAL_MODEL_BENCHMARK.md`](./LOCAL_MODEL_BENCHMARK.md)
 - PDF reconstruction:
   [`RECONSTRUCTION_ENGINE.md`](./RECONSTRUCTION_ENGINE.md)
-- Glossary behavior: `GLOSSARY_ENGINE.md` is referenced by governing documents
-  but is not currently present.
+- Glossary behavior: [`GLOSSARY_ENGINE.md`](./GLOSSARY_ENGINE.md)
 
 The following grouped tables form the catalog of every current Markdown
 document under `docs/`.
@@ -100,23 +99,14 @@ document under `docs/`.
 | Document | Version | Status | Purpose | When to Read | Authority or Role |
 | --- | --- | --- | --- | --- | --- |
 | [`MVP_SCOPE.md`](./MVP_SCOPE.md) | 0.1 | Draft | Defines the Personal MVP boundary, supported behavior, deferred features, and prohibitions | Before every task and every scope decision | Authority 1; highest implementation scope control |
-| [`PRDpdf.md`](./PRDpdf.md) | 0.1 | Draft | Describes original product requirements and product intent | For product behavior and user intent | Product requirements artifact; filename differs from the expected canonical `PRD.md` |
-
-The canonical `PRD.md` does not exist. Its absence and the `PRDpdf.md`
-filename mismatch require a separate documentation-governance decision.
+| [`PRD.md`](./PRD.md) | 0.2 | Draft | Defines active Local-First Personal MVP product requirements, goals, behavior, and non-goals | For product behavior and user intent | Canonical product requirements; supersedes Version 0.1 |
 
 ## Architecture and Technical Decisions
 
 | Document | Version | Status | Purpose | When to Read | Authority or Role |
 | --- | --- | --- | --- | --- | --- |
 | [`TECH_STACK_DECISIONS.md`](./TECH_STACK_DECISIONS.md) | 0.2 | Draft | Defines the active Local-First Personal MVP stack and deployment decisions | Before every technical or dependency decision | Authority 2; active stack decision for the Personal MVP; supersedes its Version 0.1 |
-| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 0.1 | Draft | Defines the original service structure, components, and system boundaries | For cross-component structure and boundaries | Architecture reference; cloud, PostgreSQL, Redis, and object-storage directions are overridden by higher-authority Local-First documents |
-
-`ARCHITECTURE.md` still declares a cloud-based initial deployment model. For
-the Personal MVP, [`MVP_SCOPE.md`](./MVP_SCOPE.md),
-[`TECH_STACK_DECISIONS.md`](./TECH_STACK_DECISIONS.md), and
-[`SECURITY.md`](./SECURITY.md) control: local-first, single-user,
-localhost-only, and no required paid service.
+| [`ARCHITECTURE.md`](./ARCHITECTURE.md) | 0.2 | Draft | Defines the active Local-First modular-monolith structure, local worker, components, and system boundaries | For cross-component structure and boundaries | Active architecture for the Personal MVP; supersedes Version 0.1 |
 
 ## Domain and Processing Specifications
 
@@ -124,11 +114,9 @@ localhost-only, and no required paid service.
 | --- | --- | --- | --- | --- | --- |
 | [`DOCUMENT_IR.md`](./DOCUMENT_IR.md) | 0.1 | Draft | Defines the intermediate representation for documents, pages, blocks, and segments | For extraction, OCR, translation, QA, and reconstruction work | Component-specific specification |
 | [`TRANSLATION_PIPELINE.md`](./TRANSLATION_PIPELINE.md) | 0.1 | Draft | Defines terminology protection, segmentation, translation, validation, and retry behavior | For translation-provider and translation-workflow tasks | Component-specific specification |
+| [`GLOSSARY_ENGINE.md`](./GLOSSARY_ENGINE.md) | 0.2 | Draft | Defines deterministic terminology matching, protection, snapshots, conflicts, and revision behavior | For glossary, protected-content, translation, and review tasks | Active component-specific specification |
 | [`LOCAL_MODEL_BENCHMARK.md`](./LOCAL_MODEL_BENCHMARK.md) | 0.1 | Draft | Defines local model evaluation, hardware profiling, and selection evidence | For Ollama model selection and benchmarking | Component-specific specification |
 | [`RECONSTRUCTION_ENGINE.md`](./RECONSTRUCTION_ENGINE.md) | 0.1 | Draft | Defines PDF layout preservation, reflow, reconstruction, and export validation | For reconstruction and export tasks | Component-specific specification |
-
-`GLOSSARY_ENGINE.md` is planned and referenced, but it is not a current file
-and therefore is not an active specification.
 
 ## Data, API, Security, and Testing
 
@@ -171,14 +159,13 @@ Supported supersession evidence:
 
 - [`TECH_STACK_DECISIONS.md`](./TECH_STACK_DECISIONS.md) Version 0.2 explicitly
   supersedes Version 0.1 and is the active stack decision for the Personal MVP.
-
-No current metadata supports the following claims:
-
-- `PRD.md` Version 0.2 supersedes Version 0.1. The canonical `PRD.md` is
-  missing, and [`PRDpdf.md`](./PRDpdf.md) is Version 0.1.
-- `ARCHITECTURE.md` Version 0.2 supersedes Version 0.1.
-  [`ARCHITECTURE.md`](./ARCHITECTURE.md) is Version 0.1 and contains no
-  supersession metadata.
+- [`PRD.md`](./PRD.md) Version 0.2 explicitly supersedes Version 0.1 and is the
+  active product requirements document.
+- [`ARCHITECTURE.md`](./ARCHITECTURE.md) Version 0.2 explicitly supersedes
+  Version 0.1 and is the active architecture document.
+- [`GLOSSARY_ENGINE.md`](./GLOSSARY_ENGINE.md) Version 0.2 is the active
+  glossary specification. Its metadata supersedes Version 0.1 if an earlier
+  copy exists.
 
 Only one active copy of each governing document should exist. Obsolete copies
 must not remain under ambiguous names such as `(1)`, `(2)`, `final-final`, or
