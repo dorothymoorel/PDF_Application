@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
+from transloka_core.storage import LocalDataDirectories, resolve_local_data_directories
 
 _LOCALHOST_BIND_ERROR = (
     "STARTUP_BLOCKED_NON_LOCAL_BIND: API host must be localhost or a loopback IP."
@@ -97,6 +98,10 @@ class Settings(BaseSettings):
         default=DEFAULT_WEB_ORIGINS,
         validation_alias="TRANSLOKA_WEB_ORIGINS",
     )
+
+    @property
+    def data_directories(self) -> LocalDataDirectories:
+        return resolve_local_data_directories()
 
     @field_validator("host", mode="before")
     @classmethod
