@@ -1,5 +1,25 @@
 {
   "name": "@transloka/api-client",
   "version": "0.0.0",
-  "private": true
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "types": "./src/index.ts",
+      "default": "./src/index.ts"
+    }
+  },
+  "scripts": {
+    "generate": "node ./scripts/generate.mjs",
+    "check-generated": "node ./scripts/generate.mjs --check",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "build": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "openapi-typescript": "7.13.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.10"
+  }
 }
