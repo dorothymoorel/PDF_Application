@@ -1,4 +1,4 @@
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
@@ -24,6 +24,18 @@ from transloka_api.middleware import (
     OriginValidationMiddleware,
     RequestIdMiddleware,
 )
+from transloka_api.schemas import ErrorResponse
+
+_HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    403: {
+        "description": "The request origin is not allowed.",
+        "model": ErrorResponse,
+    },
+    500: {
+        "description": "An unexpected server error was normalized.",
+        "model": ErrorResponse,
+    },
+}
 
 
 class HealthResponse(BaseModel):
@@ -89,6 +101,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/health",
         operation_id="get_health",
         response_model=HealthResponse,
+        responses=_HEALTH_ERROR_RESPONSES,
         summary="Get API health",
         tags=["System"],
     )
@@ -99,6 +112,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         "/api/v1/system/health",
         operation_id="get_system_health",
         response_model=SystemHealthResponse,
+        responses=_HEALTH_ERROR_RESPONSES,
         summary="Get placeholder system health",
         tags=["System"],
     )

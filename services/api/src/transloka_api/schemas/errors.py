@@ -1,10 +1,12 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+
+type ErrorDetails = dict[str, object]
 
 
 class ErrorBody(BaseModel):
     code: str
     message: str
-    details: dict[str, object] = Field(default_factory=dict)
+    details: ErrorDetails
     request_id: str
 
 

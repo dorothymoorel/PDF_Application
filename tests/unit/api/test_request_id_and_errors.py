@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 from transloka_api.app import create_app
 from transloka_api.exception_handlers import NotFoundError
 from transloka_api.middleware import REQUEST_ID_HEADER, get_request_id
+from transloka_api.schemas import ErrorResponse
 
 GENERATED_REQUEST_ID = re.compile(r"req_[0-9a-f]{32}")
 
@@ -98,6 +99,7 @@ def test_controlled_error_uses_standard_envelope() -> None:
 
     assert response.status_code == 404
     assert response.headers[REQUEST_ID_HEADER] == "controlled-id"
+    assert ErrorResponse.model_validate(response.json()).error.request_id == "controlled-id"
     assert response.json() == {
         "error": {
             "code": "RESOURCE_NOT_FOUND",
@@ -117,6 +119,7 @@ def test_validation_error_is_structured_and_does_not_echo_input() -> None:
 
     assert response.status_code == 422
     assert response.headers[REQUEST_ID_HEADER] == "validation-id"
+    assert ErrorResponse.model_validate(response.json()).error.code == "VALIDATION_ERROR"
     assert response.json() == {
         "error": {
             "code": "VALIDATION_ERROR",
@@ -159,6 +162,7 @@ def test_unexpected_error_is_sanitized(caplog: pytest.LogCaptureFixture) -> None
 
     assert response.status_code == 500
     assert response.headers[REQUEST_ID_HEADER] == "internal-id"
+    assert ErrorResponse.model_validate(response.json()).error.request_id == "internal-id"
     assert response.json() == {
         "error": {
             "code": "INTERNAL_ERROR",

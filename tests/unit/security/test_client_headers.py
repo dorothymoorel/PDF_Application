@@ -12,6 +12,7 @@ from transloka_api.middleware import (
     REQUEST_ID_HEADER,
     validate_client_headers,
 )
+from transloka_api.schemas import ErrorResponse
 
 VALID_CLIENT_HEADERS = {
     CLIENT_HEADER: CLIENT_HEADER_VALUE,
@@ -66,6 +67,10 @@ def test_mutation_without_client_headers_is_rejected(method: str) -> None:
 
     assert response.status_code == 403
     assert response.headers[REQUEST_ID_HEADER] == f"missing-{method.lower()}"
+    assert (
+        ErrorResponse.model_validate(response.json()).error.request_id
+        == f"missing-{method.lower()}"
+    )
     assert response.json() == {
         "error": {
             "code": "CLIENT_HEADER_REQUIRED",

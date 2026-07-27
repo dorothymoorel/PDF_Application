@@ -48,6 +48,23 @@ export interface components {
              */
             status: "UNAVAILABLE";
         };
+        /** ErrorBody */
+        ErrorBody: {
+            /** Code */
+            code: string;
+            details: components["schemas"]["ErrorDetails"];
+            /** Message */
+            message: string;
+            /** Request Id */
+            request_id: string;
+        };
+        ErrorDetails: {
+            [key: string]: unknown;
+        };
+        /** ErrorResponse */
+        ErrorResponse: {
+            error: components["schemas"]["ErrorBody"];
+        };
         /** HealthResponse */
         HealthResponse: {
             /**
@@ -117,6 +134,24 @@ export interface operations {
                     "application/json": components["schemas"]["SystemHealthResponse"];
                 };
             };
+            /** @description The request origin is not allowed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_health: {
@@ -135,6 +170,24 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+            /** @description The request origin is not allowed. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
         };

@@ -1,3 +1,6 @@
+from transloka_api.schemas import ErrorDetails
+
+
 class TransLokaError(Exception):
     def __init__(
         self,
@@ -5,7 +8,7 @@ class TransLokaError(Exception):
         code: str,
         message: str,
         status_code: int,
-        details: dict[str, object] | None = None,
+        details: ErrorDetails | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code

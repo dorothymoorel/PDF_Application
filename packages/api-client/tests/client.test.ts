@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 
+import type { components } from "../src/index.js";
 import {
   CLIENT_HEADER,
   CLIENT_HEADER_VALUE,
@@ -29,6 +30,17 @@ const healthyResponse = {
   service: "transloka-api",
   version: "0.1.0",
 } as const;
+
+const normalizedError = {
+  error: {
+    code: "VALIDATION_ERROR",
+    message: "The request contains invalid values.",
+    details: {
+      fields: [{ message: "Invalid value.", path: "body.quantity", type: "greater_than" }],
+    },
+    request_id: "error-request",
+  },
+} satisfies components["schemas"]["ErrorResponse"];
 
 describe("API base URL", () => {
   it.each([
@@ -84,6 +96,10 @@ describe("request headers", () => {
 });
 
 describe("health client", () => {
+  it("exports the generated normalized backend error type", () => {
+    expect(normalizedError.error.request_id).toBe("error-request");
+  });
+
   it("returns a typed successful health response and response request ID", async () => {
     const fetchImplementation = vi.fn((input: string | URL, init?: RequestInit) => {
       void input;
@@ -120,8 +136,9 @@ describe("health client", () => {
             error: {
               code: "OPERATION_NOT_ALLOWED",
               message: "The request could not be completed.",
-              details: {},
+              details: normalizedError.error.details,
               request_id: "error-request",
+              private_debug: "must not escape",
             },
             private_debug: "must not escape",
           },
@@ -139,13 +156,41 @@ describe("health client", () => {
         kind: "api",
         code: "OPERATION_NOT_ALLOWED",
         message: "The request could not be completed.",
-        details: {},
+        details: normalizedError.error.details,
         requestId: "error-request",
       },
       status: 405,
       requestId: "header-request",
     });
     expect(JSON.stringify(result)).not.toContain("must not escape");
+  });
+
+  it.each([
+    ["missing code", { message: "Safe.", details: {}, request_id: "error-request" }],
+    ["missing message", { code: "INVALID", details: {}, request_id: "error-request" }],
+    ["missing request ID", { code: "INVALID", message: "Safe.", details: {} }],
+    [
+      "invalid request ID type",
+      { code: "INVALID", message: "Safe.", details: {}, request_id: 123 },
+    ],
+    [
+      "nullable details outside the contract",
+      { code: "INVALID", message: "Safe.", details: null, request_id: "error-request" },
+    ],
+    [
+      "non-object details",
+      { code: "INVALID", message: "Safe.", details: [], request_id: "error-request" },
+    ],
+  ])("rejects malformed normalized errors: %s", async (_name, error) => {
+    const client = createTransLokaClient({
+      fetch: () => Promise.resolve(jsonResponse({ error }, { status: 400 })),
+    });
+
+    await expect(client.getHealth()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+      status: 400,
+    });
   });
 
   it("reports malformed success and error responses as invalid", async () => {

@@ -7,7 +7,11 @@ from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException
 
 from transloka_api.exception_handlers.exceptions import TransLokaError
-from transloka_api.schemas import ErrorBody, ErrorResponse
+from transloka_api.schemas import (
+    ErrorBody,
+    ErrorDetails,
+    ErrorResponse,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -23,7 +27,7 @@ def _error_response(
     status_code: int,
     code: str,
     message: str,
-    details: dict[str, object] | None = None,
+    details: ErrorDetails | None = None,
     headers: Mapping[str, str] | None = None,
 ) -> JSONResponse:
     payload = ErrorResponse(
@@ -56,18 +60,17 @@ async def transloka_exception_handler(request: Request, exc: Exception) -> JSONR
 async def request_validation_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     if not isinstance(exc, RequestValidationError):
         raise exc
-    fields: list[dict[str, object]] = []
+    fields: list[object] = []
     for error in exc.errors():
         location = error.get("loc", ())
         path = ".".join(str(part) for part in location)
         error_type = error.get("type", "validation_error")
-        fields.append(
-            {
-                "path": path,
-                "message": "Invalid value.",
-                "type": str(error_type),
-            }
-        )
+        field: ErrorDetails = {
+            "path": path,
+            "message": "Invalid value.",
+            "type": str(error_type),
+        }
+        fields.append(field)
 
     return _error_response(
         request,

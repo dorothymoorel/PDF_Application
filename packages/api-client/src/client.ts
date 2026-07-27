@@ -1,4 +1,4 @@
-import type { paths } from "./generated/schema.js";
+import type { components, paths } from "./generated/schema.js";
 import {
   ACCEPT_HEADER,
   CLIENT_HEADER,
@@ -12,14 +12,14 @@ import {
 
 type HealthResponse =
   paths["/health"]["get"]["responses"][200]["content"]["application/json"];
+type GeneratedErrorBody = components["schemas"]["ErrorBody"];
+type GeneratedErrorDetails = components["schemas"]["ErrorDetails"];
+type GeneratedErrorResponse = components["schemas"]["ErrorResponse"];
 type FetchImplementation = (input: string | URL, init?: RequestInit) => Promise<Response>;
 type MutationMethod = "DELETE" | "PATCH" | "POST" | "PUT";
 
-export type ApiError = {
-  code: string;
-  message: string;
-  details: Record<string, unknown>;
-  requestId: string;
+export type ApiError = Omit<GeneratedErrorBody, "request_id"> & {
+  requestId: GeneratedErrorBody["request_id"];
 };
 
 export type ApiClientError =
@@ -120,24 +120,48 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function parseApiError(value: unknown): ApiError | null {
+function isErrorDetailValue(value: unknown): boolean {
+  if (
+    value === null ||
+    typeof value === "string" ||
+    typeof value === "boolean" ||
+    (typeof value === "number" && Number.isFinite(value))
+  ) {
+    return true;
+  }
+  if (Array.isArray(value)) {
+    return value.every(isErrorDetailValue);
+  }
+  return isRecord(value) && Object.values(value).every(isErrorDetailValue);
+}
+
+function isErrorDetails(value: unknown): value is GeneratedErrorDetails {
+  return isRecord(value) && Object.values(value).every(isErrorDetailValue);
+}
+
+function isErrorResponse(value: unknown): value is GeneratedErrorResponse {
   if (!isRecord(value) || !isRecord(value.error)) {
+    return false;
+  }
+
+  const error = value.error;
+  return (
+    typeof error.code === "string" &&
+    ERROR_CODE_PATTERN.test(error.code) &&
+    typeof error.message === "string" &&
+    SAFE_MESSAGE_PATTERN.test(error.message) &&
+    isErrorDetails(error.details) &&
+    typeof error.request_id === "string" &&
+    REQUEST_ID_PATTERN.test(error.request_id)
+  );
+}
+
+function parseApiError(value: unknown): ApiError | null {
+  if (!isErrorResponse(value)) {
     return null;
   }
 
   const error = value.error;
-  if (
-    typeof error.code !== "string" ||
-    !ERROR_CODE_PATTERN.test(error.code) ||
-    typeof error.message !== "string" ||
-    !SAFE_MESSAGE_PATTERN.test(error.message) ||
-    !isRecord(error.details) ||
-    typeof error.request_id !== "string" ||
-    !REQUEST_ID_PATTERN.test(error.request_id)
-  ) {
-    return null;
-  }
-
   return {
     code: error.code,
     message: error.message,
