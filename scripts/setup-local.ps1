@@ -2,22 +2,7 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
-
-function Get-RequiredApplication {
-    param(
-        [Parameter(Mandatory = $true)]
-        [string]$Name,
-        [Parameter(Mandatory = $true)]
-        [string]$Correction
-    )
-
-    $command = Get-Command -Name $Name -CommandType Application -ErrorAction SilentlyContinue |
-        Select-Object -First 1
-    if ($null -eq $command) {
-        throw "[TransLoka] Required tool '$Name' was not found. $Correction"
-    }
-    return $command.Source
-}
+. (Join-Path $PSScriptRoot "resolve-executable.ps1")
 
 function Assert-RepositoryFile {
     param(
@@ -33,9 +18,9 @@ function Assert-RepositoryFile {
 
 Write-Host "[TransLoka] Checking development prerequisites..."
 
-$nodePath = Get-RequiredApplication "node.exe" "Install Node.js 24 and reopen PowerShell."
-$pnpmPath = Get-RequiredApplication "pnpm.cmd" "Install pnpm 11 and reopen PowerShell."
-$uvPath = Get-RequiredApplication "uv.exe" "Install uv and reopen PowerShell."
+$nodePath = Resolve-TransLokaExecutable "node.exe" "Install Node.js 24 and reopen PowerShell."
+$pnpmPath = Resolve-TransLokaExecutable "pnpm.cmd" "Install pnpm 11 and reopen PowerShell."
+$uvPath = Resolve-TransLokaExecutable "uv.exe" "Install uv and reopen PowerShell."
 
 $nodeVersion = (& $nodePath --version 2>&1 | Out-String).Trim()
 if ($LASTEXITCODE -ne 0 -or $nodeVersion -notmatch "^v24(\.|$)") {

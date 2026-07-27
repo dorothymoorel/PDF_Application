@@ -13,6 +13,8 @@ EXPECTED_SCRIPTS = (
     "start.ps1",
     "stop.ps1",
 )
+RESOLVER_SCRIPT = SCRIPTS_DIRECTORY / "resolve-executable.ps1"
+ALL_SCRIPTS = (*EXPECTED_SCRIPTS, RESOLVER_SCRIPT.name)
 
 
 def _powershell() -> str:
@@ -26,9 +28,18 @@ def _quote_for_powershell(path: Path) -> str:
     return str(path).replace("'", "''")
 
 
+def _run_powershell(command: str) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        [_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
 def test_expected_scripts_exist_and_parse() -> None:
     errors: list[str] = []
-    for script_name in EXPECTED_SCRIPTS:
+    for script_name in ALL_SCRIPTS:
         script = SCRIPTS_DIRECTORY / script_name
         assert script.is_file()
         command = (
@@ -37,12 +48,7 @@ def test_expected_scripts_exist_and_parse() -> None:
             f"'{_quote_for_powershell(script)}', [ref]$tokens, [ref]$errors) | Out-Null; "
             "if ($errors.Count -gt 0) { $errors | Out-String | Write-Error; exit 1 }"
         )
-        result = subprocess.run(
-            [_powershell(), "-NoProfile", "-NonInteractive", "-Command", command],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
+        result = _run_powershell(command)
         if result.returncode != 0:
             errors.append(f"{script_name}: {result.stderr}")
     assert errors == []
@@ -60,8 +66,7 @@ def test_scripts_use_safe_baseline_and_repository_relative_paths() -> None:
 
 def test_scripts_exclude_unsafe_commands_and_bindings() -> None:
     combined = "\n".join(
-        (SCRIPTS_DIRECTORY / script_name).read_text(encoding="utf-8")
-        for script_name in EXPECTED_SCRIPTS
+        (SCRIPTS_DIRECTORY / script_name).read_text(encoding="utf-8") for script_name in ALL_SCRIPTS
     )
     forbidden = (
         "Invoke-Expression",
@@ -101,6 +106,54 @@ def test_start_script_uses_supported_local_entrypoints() -> None:
     assert '"-m", "transloka_worker"' in contents
     assert '"--no-sync"' in contents
     assert "Stop-Process -Id" in contents
+    assert 'Resolve-TransLokaExecutable "pnpm.cmd"' in contents
+    assert 'Resolve-TransLokaExecutable "uv.exe"' in contents
+    assert ").Source" not in contents
+
+
+@pytest.mark.parametrize(
+    ("sources", "expected"),
+    (
+        (r"C:\Program Files\pnpm\pnpm.cmd", r"C:\Program Files\pnpm\pnpm.cmd"),
+        (
+            "C:\\first\\pnpm.cmd', 'C:\\second\\pnpm.cmd",
+            r"C:\first\pnpm.cmd",
+        ),
+    ),
+)
+def test_executable_resolver_returns_first_match_as_string(sources: str, expected: str) -> None:
+    command = (
+        "function Get-Command { "
+        "param($Name, $CommandType, [switch]$All, $ErrorAction); "
+        f"@('{sources}') | ForEach-Object {{ [PSCustomObject]@{{ Source = $_ }} }} "
+        "}; "
+        f". '{_quote_for_powershell(RESOLVER_SCRIPT)}'; "
+        "$result = Resolve-TransLokaExecutable 'pnpm.cmd' 'Install pnpm.'; "
+        "[Console]::WriteLine($result.GetType().FullName); "
+        "[Console]::WriteLine($result)"
+    )
+    result = _run_powershell(command)
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.splitlines() == ["System.String", expected]
+
+
+def test_executable_resolver_reports_missing_tool() -> None:
+    command = (
+        "function Get-Command { @() }; "
+        f". '{_quote_for_powershell(RESOLVER_SCRIPT)}'; "
+        "try { "
+        "Resolve-TransLokaExecutable 'pnpm.cmd' 'Install pnpm and reopen PowerShell.'; "
+        "exit 2 "
+        "} catch { "
+        "[Console]::WriteLine($_.Exception.Message); exit 0 "
+        "}"
+    )
+    result = _run_powershell(command)
+
+    assert result.returncode == 0, result.stderr
+    assert "Required tool 'pnpm.cmd' was not found." in result.stdout
+    assert "Install pnpm and reopen PowerShell." in result.stdout
 
 
 def test_check_only_works_outside_repository(tmp_path: Path) -> None:

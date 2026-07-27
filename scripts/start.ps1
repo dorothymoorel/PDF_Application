@@ -7,6 +7,7 @@ $ErrorActionPreference = "Stop"
 
 $repositoryRoot = (Resolve-Path -LiteralPath (Join-Path $PSScriptRoot "..")).Path
 $setupScript = Join-Path $PSScriptRoot "setup-local.ps1"
+. (Join-Path $PSScriptRoot "resolve-executable.ps1")
 
 function Get-RepositoryFingerprint {
     param(
@@ -105,8 +106,8 @@ if (Test-Path -LiteralPath $stateFile -PathType Leaf) {
 }
 Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
 
-$pnpmPath = (Get-Command -Name "pnpm.cmd" -CommandType Application).Source
-$uvPath = (Get-Command -Name "uv.exe" -CommandType Application).Source
+$pnpmPath = Resolve-TransLokaExecutable "pnpm.cmd" "Install pnpm 11 and reopen PowerShell."
+$uvPath = Resolve-TransLokaExecutable "uv.exe" "Install uv and reopen PowerShell."
 $started = New-Object "System.Collections.Generic.List[object]"
 $exitCode = 0
 
