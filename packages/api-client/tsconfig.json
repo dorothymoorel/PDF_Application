@@ -5,8 +5,8 @@
       "DOM",
       "ES2022"
     ],
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext"
+    "module": "ESNext",
+    "moduleResolution": "Bundler"
   },
   "include": [
     "src/**/*.ts",

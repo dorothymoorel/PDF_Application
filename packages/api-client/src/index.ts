@@ -5,9 +5,11 @@ export {
   type ApiClientError,
   type ApiError,
   type ApiResult,
+  type CreateProjectInput,
+  type ProjectResource,
   type RequestOptions,
   type TransLokaClientOptions,
-} from "./client.js";
+} from "./client";
 export {
   ACCEPT_HEADER,
   CLIENT_HEADER,
@@ -17,5 +19,5 @@ export {
   DEFAULT_API_BASE_URL,
   DEFAULT_REQUEST_TIMEOUT_MS,
   REQUEST_ID_HEADER,
-} from "./constants.js";
-export type { components, operations, paths } from "./generated/schema.js";
+} from "./constants";
+export type { components, operations, paths } from "./generated/schema";
