@@ -17,7 +17,9 @@ from transloka_core.storage import resolve_local_data_directories
 REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 MIGRATION_DIRECTORY = REPOSITORY_ROOT / "infrastructure" / "migrations"
-HEAD_REVISION = "0001_baseline"
+BASELINE_REVISION = "0001_baseline"
+HEAD_REVISION = "0002_application_settings"
+APPLICATION_TABLES = {"alembic_version", "app_metadata", "app_settings"}
 
 
 def _configuration() -> Config:
@@ -70,6 +72,7 @@ def test_configuration_and_revision_layout_are_deterministic() -> None:
     assert "F:\\" not in configuration_text
     assert scripts.get_current_head() == HEAD_REVISION
     assert scripts.get_revision(HEAD_REVISION) is not None
+    assert scripts.get_revision(HEAD_REVISION).down_revision == BASELINE_REVISION
 
 
 def test_loading_revision_scripts_creates_no_database_storage(
@@ -93,6 +96,8 @@ def test_offline_upgrade_generates_sql_without_creating_database(
 
     sql = output.getvalue()
     assert "CREATE TABLE alembic_version" in sql
+    assert "CREATE TABLE app_metadata" in sql
+    assert "CREATE TABLE app_settings" in sql
     assert HEAD_REVISION in sql
     assert str(root) not in sql
     assert not root.exists()
@@ -113,7 +118,7 @@ def test_online_upgrade_uses_canonical_temporary_database(
     assert database_path.is_file()
     assert database_path.is_relative_to(tmp_path)
     assert _current_revision(root) == HEAD_REVISION
-    assert _table_names(root) == {"alembic_version"}
+    assert _table_names(root) == APPLICATION_TABLES
 
 
 def test_current_history_and_repeated_upgrade_are_stable(
@@ -132,7 +137,7 @@ def test_current_history_and_repeated_upgrade_are_stable(
     assert HEAD_REVISION in current_output.getvalue()
     assert "(head)" in current_output.getvalue()
     assert HEAD_REVISION in history_output.getvalue()
-    assert _table_names(root) == {"alembic_version"}
+    assert _table_names(root) == APPLICATION_TABLES
 
 
 def test_baseline_downgrade_is_reversible(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
