@@ -1,3 +1,5 @@
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import FastAPI, Request, Response
@@ -6,6 +8,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.cors import CORSMiddleware
+from transloka_core.database import create_session_factory, create_sqlite_engine
 
 from transloka_api import __version__
 from transloka_api.config import Settings
@@ -24,6 +27,7 @@ from transloka_api.middleware import (
     OriginValidationMiddleware,
     RequestIdMiddleware,
 )
+from transloka_api.routers.projects import router as projects_router
 from transloka_api.schemas import ErrorResponse
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -67,7 +71,22 @@ class SystemHealthResponse(BaseModel):
 
 def create_app(settings: Settings | None = None) -> FastAPI:
     effective_settings = settings or Settings()
-    application = FastAPI(title="TransLoka", version=__version__, debug=False)
+
+    @asynccontextmanager
+    async def lifespan(application: FastAPI) -> AsyncIterator[None]:
+        engine = create_sqlite_engine(effective_settings.data_directories)
+        application.state.session_factory = create_session_factory(engine)
+        try:
+            yield
+        finally:
+            engine.dispose()
+
+    application = FastAPI(
+        title="TransLoka",
+        version=__version__,
+        debug=False,
+        lifespan=lifespan,
+    )
     application.state.settings = effective_settings
 
     @application.middleware("http")
@@ -96,6 +115,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(TransLokaError, transloka_exception_handler)
     application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(HTTPException, http_exception_handler)
+    application.include_router(projects_router)
 
     @application.get(
         "/health",
