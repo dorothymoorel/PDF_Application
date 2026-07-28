@@ -40,6 +40,10 @@ def create_sqlite_engine(directories: LocalDataDirectories) -> Engine:
     return engine
 
 
+def create_sqlite_url(directories: LocalDataDirectories) -> URL:
+    return URL.create("sqlite+pysqlite", database=str(_database_path(directories)))
+
+
 def create_session_factory(engine: Engine) -> sessionmaker[Session]:
     return sessionmaker(
         bind=engine,

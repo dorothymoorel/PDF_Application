@@ -3,6 +3,7 @@ name = "transloka-core"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
+    "alembic>=1.13,<2.0",
     "sqlalchemy>=2.0,<3.0",
 ]
 classifiers = ["Private :: Do Not Upload"]

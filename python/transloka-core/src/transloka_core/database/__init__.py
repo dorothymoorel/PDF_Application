@@ -3,6 +3,7 @@ from transloka_core.database.sqlite import (
     DatabaseConfigurationError,
     create_session_factory,
     create_sqlite_engine,
+    create_sqlite_url,
     transaction_scope,
 )
 
@@ -11,5 +12,6 @@ __all__ = [
     "DatabaseConfigurationError",
     "create_session_factory",
     "create_sqlite_engine",
+    "create_sqlite_url",
     "transaction_scope",
 ]
