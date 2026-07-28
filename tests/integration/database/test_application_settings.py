@@ -35,7 +35,6 @@ from transloka_core.storage import resolve_local_data_directories
 REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 BASELINE_REVISION = "0001_baseline"
-HEAD_REVISION = "0002_application_settings"
 
 
 @pytest.fixture
@@ -61,6 +60,7 @@ def test_migration_creates_exact_strict_application_schema(
         "alembic_version",
         "app_metadata",
         "app_settings",
+        "projects",
     }
     assert [
         (column["name"], str(column["type"]), column["nullable"])
@@ -118,6 +118,7 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "alembic_version",
             "app_metadata",
             "app_settings",
+            "projects",
         }
     finally:
         engine.dispose()

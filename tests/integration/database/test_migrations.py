@@ -18,8 +18,9 @@ REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 MIGRATION_DIRECTORY = REPOSITORY_ROOT / "infrastructure" / "migrations"
 BASELINE_REVISION = "0001_baseline"
-HEAD_REVISION = "0002_application_settings"
-APPLICATION_TABLES = {"alembic_version", "app_metadata", "app_settings"}
+PARENT_REVISION = "0002_application_settings"
+HEAD_REVISION = "0003_projects"
+APPLICATION_TABLES = {"alembic_version", "app_metadata", "app_settings", "projects"}
 
 
 def _configuration() -> Config:
@@ -72,7 +73,7 @@ def test_configuration_and_revision_layout_are_deterministic() -> None:
     assert "F:\\" not in configuration_text
     assert scripts.get_current_head() == HEAD_REVISION
     assert scripts.get_revision(HEAD_REVISION) is not None
-    assert scripts.get_revision(HEAD_REVISION).down_revision == BASELINE_REVISION
+    assert scripts.get_revision(HEAD_REVISION).down_revision == PARENT_REVISION
 
 
 def test_loading_revision_scripts_creates_no_database_storage(
@@ -98,6 +99,7 @@ def test_offline_upgrade_generates_sql_without_creating_database(
     assert "CREATE TABLE alembic_version" in sql
     assert "CREATE TABLE app_metadata" in sql
     assert "CREATE TABLE app_settings" in sql
+    assert "CREATE TABLE projects" in sql
     assert HEAD_REVISION in sql
     assert str(root) not in sql
     assert not root.exists()
