@@ -1271,9 +1271,11 @@ M2-T06.
 **Allowed Files:**
 
 ```text
-apps/web/src/app/**
-apps/web/src/features/projects/**
+apps/web/app/**
+apps/web/features/projects/**
+apps/web/package.json
 packages/api-client/**
+pnpm-lock.yaml
 ```
 
 **Implementation Requirements:**
