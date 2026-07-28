@@ -1228,6 +1228,7 @@ M2-T05, M1-T10.
 ```text
 services/api/src/transloka_api/routers/projects.py
 services/api/src/transloka_api/schemas/projects.py
+services/api/src/transloka_api/app.py
 packages/api-client/**
 tests/integration/api/test_projects.py
 ```
@@ -1240,6 +1241,7 @@ tests/integration/api/test_projects.py
 * patch;
 * archive;
 * unarchive;
+* router registration;
 * normalized errors.
 
 **Tests Required:**
