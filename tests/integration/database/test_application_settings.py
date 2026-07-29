@@ -61,6 +61,7 @@ def test_migration_creates_exact_strict_application_schema(
         "app_metadata",
         "app_settings",
         "projects",
+        "stored_files",
     }
     assert [
         (column["name"], str(column["type"]), column["nullable"])
@@ -119,6 +120,7 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "app_metadata",
             "app_settings",
             "projects",
+            "stored_files",
         }
     finally:
         engine.dispose()
