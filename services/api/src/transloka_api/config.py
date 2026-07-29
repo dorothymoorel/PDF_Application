@@ -2,7 +2,7 @@ from ipaddress import ip_address
 from typing import Annotated
 from urllib.parse import urlsplit
 
-from pydantic import Field, field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 from transloka_core.storage import LocalDataDirectories, resolve_local_data_directories
 
@@ -14,6 +14,7 @@ DEFAULT_WEB_ORIGINS = (
     "http://127.0.0.1:3000",
     "http://localhost:3000",
 )
+DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 def validate_api_host(value: str) -> str:
@@ -94,6 +95,11 @@ class Settings(BaseSettings):
 
     host: str = "127.0.0.1"
     port: int = Field(default=8000, ge=1, le=65535)
+    max_upload_bytes: int = Field(
+        default=DEFAULT_MAX_UPLOAD_BYTES,
+        gt=0,
+        validation_alias=AliasChoices("MAX_UPLOAD_BYTES", "max_upload_bytes"),
+    )
     web_origins: Annotated[tuple[str, ...], NoDecode] = Field(
         default=DEFAULT_WEB_ORIGINS,
         validation_alias="TRANSLOKA_WEB_ORIGINS",

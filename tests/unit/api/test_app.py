@@ -1,7 +1,8 @@
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from transloka_api.app import create_app
-from transloka_api.config import Settings
+from transloka_api.config import DEFAULT_MAX_UPLOAD_BYTES, Settings
 
 
 def test_app_creation() -> None:
@@ -22,6 +23,28 @@ def test_default_bind_is_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
 
     assert settings.host == "127.0.0.1"
     assert settings.port == 8000
+
+
+def test_upload_limit_has_safe_default_and_environment_override(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MAX_UPLOAD_BYTES", raising=False)
+    assert Settings().max_upload_bytes == DEFAULT_MAX_UPLOAD_BYTES
+
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", "1048576")
+    assert Settings().max_upload_bytes == 1024 * 1024
+    assert Settings(max_upload_bytes=2048).max_upload_bytes == 2048
+
+
+@pytest.mark.parametrize("value", ("0", "-1", "not-a-number"))
+def test_invalid_upload_limit_fails_closed(
+    monkeypatch: pytest.MonkeyPatch,
+    value: str,
+) -> None:
+    monkeypatch.setenv("MAX_UPLOAD_BYTES", value)
+
+    with pytest.raises(ValidationError):
+        Settings()
 
 
 def test_health_responses() -> None:
