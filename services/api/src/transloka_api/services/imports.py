@@ -1,11 +1,21 @@
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import BinaryIO, cast
+from uuid import NAMESPACE_URL, uuid5
 
+from transloka_core.database.models.files import FileRole, FileStatus
+from transloka_core.repositories.files import (
+    StoredFileNotFoundError,
+    StoredFileRecord,
+    StoredFilesRepository,
+)
 from transloka_core.storage.local import (
     LocalFileStorage,
     LocalFileStorageError,
+    StoredFileExistsError,
     TemporaryStoredFile,
 )
+from transloka_documents.validation import PdfValidationResult
 
 _MAX_FILENAME_LENGTH = 255
 _MAX_IDEMPOTENCY_KEY_LENGTH = 200
@@ -30,6 +40,14 @@ class UploadInterruptedError(RuntimeError):
 
 
 class UploadStorageError(RuntimeError):
+    pass
+
+
+class ValidatedUploadMismatchError(ValueError):
+    pass
+
+
+class OriginalImportConflictError(ValueError):
     pass
 
 
@@ -90,6 +108,73 @@ class ImportService:
             raise EmptyUploadError("The uploaded file is empty.")
         return staged
 
+    def store_original(
+        self,
+        staged: StagedUpload,
+        validation: PdfValidationResult,
+        repository: StoredFilesRepository,
+    ) -> StoredFileRecord:
+        if (
+            validation.checksum_sha256 != staged.temporary.checksum_sha256
+            or validation.size_bytes != staged.temporary.size_bytes
+        ):
+            self.discard(staged)
+            raise ValidatedUploadMismatchError(
+                "The validated PDF does not match the staged upload."
+            )
+
+        file_id = _original_file_id(staged)
+        storage_key = f"projects/{staged.project_id}/original/{file_id}.pdf"
+        try:
+            existing = repository.get(file_id)
+        except StoredFileNotFoundError:
+            pass
+        else:
+            self.discard(staged)
+            if not _is_matching_original(existing, staged, validation, storage_key):
+                raise OriginalImportConflictError(
+                    "The idempotency key belongs to a different original import."
+                )
+            try:
+                stored_checksum = self._storage.checksum(storage_key)
+            except LocalFileStorageError as exc:
+                raise UploadStorageError("The stored original could not be verified.") from exc
+            if stored_checksum != validation.checksum_sha256:
+                raise OriginalImportConflictError(
+                    "The stored original no longer matches its database record."
+                )
+            return existing
+
+        try:
+            artifact = self._storage.commit(
+                staged.temporary,
+                storage_key,
+                immutable=True,
+            )
+        except StoredFileExistsError as exc:
+            raise OriginalImportConflictError(
+                "The original storage destination already exists."
+            ) from exc
+        except LocalFileStorageError as exc:
+            raise UploadStorageError("The validated PDF could not be stored.") from exc
+
+        return repository.create(
+            file_id=file_id,
+            project_id=staged.project_id,
+            document_id=None,
+            file_role=FileRole.ORIGINAL,
+            storage_key=artifact.storage_key,
+            original_filename=staged.original_filename,
+            safe_filename=f"{file_id}.pdf",
+            mime_type="application/pdf",
+            size_bytes=artifact.size_bytes,
+            checksum_sha256=artifact.checksum_sha256,
+            is_immutable=True,
+            status=FileStatus.VALIDATED,
+            metadata=None,
+            created_at=_utc_now(),
+        )
+
     @staticmethod
     def discard(staged: StagedUpload) -> None:
         try:
@@ -144,3 +229,33 @@ def _validate_idempotency_key(key: str) -> None:
         or not key.isprintable()
     ):
         raise InvalidUploadMetadataError("The idempotency key is invalid.")
+
+
+def _original_file_id(staged: StagedUpload) -> str:
+    import_key = f"transloka:original:{staged.project_id}:{staged.idempotency_key}"
+    return f"fil_{uuid5(NAMESPACE_URL, import_key)}"
+
+
+def _is_matching_original(
+    existing: StoredFileRecord,
+    staged: StagedUpload,
+    validation: PdfValidationResult,
+    storage_key: str,
+) -> bool:
+    return (
+        existing.project_id == staged.project_id
+        and existing.document_id is None
+        and existing.file_role is FileRole.ORIGINAL
+        and existing.storage_key == storage_key
+        and existing.original_filename == staged.original_filename
+        and existing.safe_filename == f"{existing.id}.pdf"
+        and existing.mime_type == "application/pdf"
+        and existing.size_bytes == validation.size_bytes
+        and existing.checksum_sha256 == validation.checksum_sha256
+        and existing.is_immutable
+        and existing.status is FileStatus.VALIDATED
+    )
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
