@@ -60,6 +60,7 @@ def test_migration_creates_exact_strict_application_schema(
         "alembic_version",
         "app_metadata",
         "app_settings",
+        "documents",
         "projects",
         "stored_files",
     }
@@ -119,6 +120,7 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "alembic_version",
             "app_metadata",
             "app_settings",
+            "documents",
             "projects",
             "stored_files",
         }

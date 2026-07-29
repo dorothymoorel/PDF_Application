@@ -123,7 +123,10 @@ def test_stored_file_migration_has_exact_columns_constraints_indexes_and_no_blob
     assert {
         (foreign_key["constrained_columns"][0], foreign_key["referred_table"])
         for foreign_key in database.get_foreign_keys("stored_files")
-    } == {("project_id", "projects")}
+    } == {
+        ("project_id", "projects"),
+        ("document_id", "documents"),
+    }
     assert all(
         "BLOB" not in str(column["type"]).upper() for column in database.get_columns("stored_files")
     )
