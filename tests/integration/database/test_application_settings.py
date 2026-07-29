@@ -58,9 +58,12 @@ def test_migration_creates_exact_strict_application_schema(
 
     assert set(database.get_table_names()) == {
         "alembic_version",
+        "application_jobs",
         "app_metadata",
         "app_settings",
         "documents",
+        "job_attempts",
+        "job_dependencies",
         "projects",
         "stored_files",
     }
@@ -118,9 +121,12 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
     try:
         assert set(inspect(engine).get_table_names()) == {
             "alembic_version",
+            "application_jobs",
             "app_metadata",
             "app_settings",
             "documents",
+            "job_attempts",
+            "job_dependencies",
             "projects",
             "stored_files",
         }
