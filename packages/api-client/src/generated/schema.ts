@@ -54,6 +54,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/documents/import": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Import Document */
+        post: operations["import_document"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/unarchive": {
         parameters: {
             query?: never;
@@ -109,6 +126,16 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** Body_import_document */
+        Body_import_document: {
+            /** File */
+            file: string;
+            /**
+             * Set As Active
+             * @default true
+             */
+            set_as_active: boolean;
+        };
         /** CollectionMeta */
         CollectionMeta: {
             pagination: components["schemas"]["OffsetPagination"];
@@ -245,6 +272,30 @@ export interface components {
         ResponseMeta: {
             /** Request Id */
             request_id: string;
+        };
+        /** StagedUploadData */
+        StagedUploadData: {
+            /** Original Filename */
+            original_filename: string;
+            /** Project Id */
+            project_id: string;
+            /** Set As Active */
+            set_as_active: boolean;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Status
+             * @default STAGED
+             * @constant
+             */
+            status: "STAGED";
+            /** Upload Id */
+            upload_id: string;
+        };
+        /** StagedUploadResponse */
+        StagedUploadResponse: {
+            data: components["schemas"]["StagedUploadData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** SystemComponents */
         SystemComponents: {
@@ -616,6 +667,97 @@ export interface operations {
                 };
             };
             /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    import_document: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_import_document"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StagedUploadResponse"];
+                };
+            };
+            /** @description The upload stream was interrupted. */
+            400: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The uploaded file is too large. */
+            413: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request is not multipart. */
+            415: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The upload metadata or content is invalid. */
             422: {
                 headers: {
                     [name: string]: unknown;

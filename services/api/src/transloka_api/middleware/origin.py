@@ -11,6 +11,7 @@ CORS_ALLOWED_METHODS = ("GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS")
 CORS_ALLOWED_HEADERS = (
     "Accept",
     "Content-Type",
+    "Idempotency-Key",
     "X-Request-ID",
     CLIENT_HEADER,
     CLIENT_VERSION_HEADER,

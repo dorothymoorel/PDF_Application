@@ -27,6 +27,7 @@ from transloka_api.middleware import (
     OriginValidationMiddleware,
     RequestIdMiddleware,
 )
+from transloka_api.routers.documents import router as documents_router
 from transloka_api.routers.projects import router as projects_router
 from transloka_api.schemas import ErrorResponse
 
@@ -115,6 +116,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(TransLokaError, transloka_exception_handler)
     application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(HTTPException, http_exception_handler)
+    application.include_router(documents_router)
     application.include_router(projects_router)
 
     @application.get(

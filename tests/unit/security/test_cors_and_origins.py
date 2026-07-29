@@ -156,7 +156,7 @@ def test_approved_preflight_uses_explicit_policy() -> None:
         headers={
             "Origin": "http://127.0.0.1:3000",
             "Access-Control-Request-Method": "POST",
-            "Access-Control-Request-Headers": "Content-Type, X-Request-ID",
+            "Access-Control-Request-Headers": "Content-Type, Idempotency-Key, X-Request-ID",
             REQUEST_ID_HEADER: "preflight-approved",
         },
     )
@@ -172,7 +172,7 @@ def test_approved_preflight_uses_explicit_policy() -> None:
     assert response.status_code == 200
     assert response.headers["Access-Control-Allow-Origin"] == "http://127.0.0.1:3000"
     assert methods == {"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
-    assert {"accept", "content-type", "x-request-id"} <= headers
+    assert {"accept", "content-type", "idempotency-key", "x-request-id"} <= headers
     assert "*" not in response.headers["Access-Control-Allow-Methods"]
     assert "*" not in response.headers["Access-Control-Allow-Headers"]
     assert "x-transloka-client" in headers
