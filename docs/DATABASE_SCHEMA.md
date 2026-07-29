@@ -1822,6 +1822,24 @@ Database utama tetap menyimpan business job.
 | `cancelled_at` | TEXT nullable |
 | `heartbeat_at` | TEXT nullable |
 
+`document_id` mereferensikan `documents.id`, sehingga migration ini dijalankan setelah model dan migration document dari M3-T06 tersedia.
+
+Job type:
+
+```text
+IMPORT_DOCUMENT
+ANALYZE_DOCUMENT
+OCR_DOCUMENT
+DETECT_TERMS
+TRANSLATE_DOCUMENT
+RECONSTRUCT_DOCUMENT
+EXPORT_DOCUMENT
+BENCHMARK_MODEL
+BACKUP_DATABASE
+RESTORE_DATABASE
+MAINTENANCE
+```
+
 Status:
 
 ```text
@@ -1876,6 +1894,18 @@ ON application_jobs(status, heartbeat_at);
 | `error_code` | TEXT nullable |
 | `error_message` | TEXT nullable |
 | `details_json` | TEXT nullable |
+
+Status:
+
+```text
+RUNNING
+COMPLETED
+COMPLETED_WITH_WARNINGS
+PARTIALLY_COMPLETED
+FAILED
+CANCELLED
+STALE
+```
 
 Unique:
 

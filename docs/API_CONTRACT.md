@@ -650,6 +650,22 @@ Semua proses panjang mengembalikan job.
 }
 ```
 
+Supported `job_type` values:
+
+```text
+IMPORT_DOCUMENT
+ANALYZE_DOCUMENT
+OCR_DOCUMENT
+DETECT_TERMS
+TRANSLATE_DOCUMENT
+RECONSTRUCT_DOCUMENT
+EXPORT_DOCUMENT
+BENCHMARK_MODEL
+BACKUP_DATABASE
+RESTORE_DATABASE
+MAINTENANCE
+```
+
 ---
 
 # 20. Job Polling
@@ -745,6 +761,18 @@ Body:
 
 ```http
 GET /api/v1/jobs/{job_id}/attempts
+```
+
+Supported attempt status values:
+
+```text
+RUNNING
+COMPLETED
+COMPLETED_WITH_WARNINGS
+PARTIALLY_COMPLETED
+FAILED
+CANCELLED
+STALE
 ```
 
 ---
