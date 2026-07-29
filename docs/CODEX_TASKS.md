@@ -1893,7 +1893,7 @@ tests/integration/worker/**
 Menyimpan business job dan attempts.
 
 **Dependencies:**
-M2-T03.
+M2-T03, M3-T06.
 
 **Allowed Files:**
 
@@ -1913,6 +1913,34 @@ tests/integration/database/**
 * heartbeat;
 * error;
 * idempotency.
+
+`job_type` menggunakan closed allowlist:
+
+```text
+IMPORT_DOCUMENT
+ANALYZE_DOCUMENT
+OCR_DOCUMENT
+DETECT_TERMS
+TRANSLATE_DOCUMENT
+RECONSTRUCT_DOCUMENT
+EXPORT_DOCUMENT
+BENCHMARK_MODEL
+BACKUP_DATABASE
+RESTORE_DATABASE
+MAINTENANCE
+```
+
+Status attempt menggunakan closed allowlist:
+
+```text
+RUNNING
+COMPLETED
+COMPLETED_WITH_WARNINGS
+PARTIALLY_COMPLETED
+FAILED
+CANCELLED
+STALE
+```
 
 **Tests Required:**
 

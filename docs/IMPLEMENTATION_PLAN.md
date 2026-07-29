@@ -917,7 +917,7 @@ Membangun task execution lokal yang persist, dapat dipantau, dibatalkan, dan dip
 
 ## 13.2 Dependencies
 
-Milestone 2. Dapat diselesaikan sebelum atau sesudah Milestone 3.
+Milestone 2. M4-T01 dapat diselesaikan sebelum atau sesudah Milestone 3, tetapi M4-T02 bergantung pada M3-T06 karena `application_jobs.document_id` mereferensikan document.
 
 ## 13.3 Scope
 
@@ -950,6 +950,7 @@ database/tasks.db
 * stage;
 * error;
 * timestamps.
+* closed allowlist untuk job type dan attempt status mengikuti [DATABASE_SCHEMA.md](DATABASE_SCHEMA.md) dan [API_CONTRACT.md](API_CONTRACT.md).
 
 ### M4-T03 — Implement Task Dispatch Service
 
