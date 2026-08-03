@@ -2,7 +2,9 @@
 name = "transloka-worker"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "huey>=3.3.2,<4",
+]
 classifiers = ["Private :: Do Not Upload"]
 
 [build-system]

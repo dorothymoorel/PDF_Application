@@ -260,6 +260,15 @@ wheels = [
 ]
 
 [[package]]
+name = "huey"
+version = "3.3.2"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/ea/b5/bae403797e8bd33014ba4ec57ec4af80d9866414922966243e8c0b4d629b/huey-3.3.2.tar.gz", hash = "sha256:f8fd7610baec0fdf9359b0e033a02566ccbba9c865139086ba644e03c426e4af", size = 613763, upload-time = "2026-08-01T01:18:33.534Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/7d/3c/69bd929aa5b7e8a56bd8adfd739d2f55a415fd1080d6a803f9270d296a68/huey-3.3.2-py3-none-any.whl", hash = "sha256:73e2d4f11b19be0e8d698ba952438588af8cd51d9be19240800b57127cbc82d7", size = 123785, upload-time = "2026-08-01T01:18:32.281Z" },
+]
+
+[[package]]
 name = "idna"
 version = "3.18"
 source = { registry = "https://pypi.org/simple" }
@@ -724,6 +733,12 @@ source = { editable = "python/transloka-translation" }
 name = "transloka-worker"
 version = "0.0.0"
 source = { editable = "services/worker" }
+dependencies = [
+    { name = "huey" },
+]
+
+[package.metadata]
+requires-dist = [{ name = "huey", specifier = ">=3.3.2,<4" }]
 
 [[package]]
 name = "transloka-workspace"
