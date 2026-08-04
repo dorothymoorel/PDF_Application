@@ -6,6 +6,9 @@ from dataclasses import dataclass
 from enum import StrEnum
 from threading import Event, Lock
 from types import FrameType
+from typing import Protocol, cast
+
+from transloka_worker.queue import QueueConfiguration, create_consumer
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +27,33 @@ class HeartbeatState:
     status: WorkerStatus
     sequence: int
     recorded_at: float | None
+
+
+class Consumer(Protocol):
+    def run(self) -> None: ...
+
+    def stop(self, graceful: bool = False) -> None: ...
+
+
+class WorkerProcess(Protocol):
+    def run(self) -> None: ...
+
+    def stop(self) -> None: ...
+
+
+class QueueWorker:
+    def __init__(self, consumer: Consumer) -> None:
+        self._consumer = consumer
+
+    def run(self) -> None:
+        self._consumer.run()
+
+    def stop(self) -> None:
+        self._consumer.stop(graceful=True)
+
+
+def create_queue_worker(configuration: QueueConfiguration | None = None) -> QueueWorker:
+    return QueueWorker(cast(Consumer, create_consumer(configuration)))
 
 
 class Worker:
@@ -75,9 +105,9 @@ class Worker:
             self._heartbeat_recorded_at = time.monotonic()
 
 
-def main(worker: Worker | None = None) -> int:
+def main(worker: WorkerProcess | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
-    active_worker = worker or Worker()
+    active_worker = worker or create_queue_worker()
 
     def request_stop(_signal_number: int, _frame: FrameType | None) -> None:
         active_worker.stop()
