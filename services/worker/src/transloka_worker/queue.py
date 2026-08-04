@@ -1,3 +1,4 @@
+from collections.abc import Callable
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
@@ -13,6 +14,25 @@ from transloka_core.storage import (
 DEFAULT_WORKER_COUNT = 1
 QUEUE_DATABASE_FILENAME = "tasks.db"
 QUEUE_NAME = "transloka"
+
+
+class HueyJobQueue:
+    def __init__(
+        self,
+        task: Callable[[str], object],
+        name: str = QUEUE_NAME,
+    ) -> None:
+        if not name or name != name.strip() or not name.isprintable():
+            raise ValueError("Queue name is invalid.")
+        self._task = task
+        self._name = name
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def enqueue(self, job_id: str) -> None:
+        self._task(job_id)
 
 
 @dataclass(frozen=True, slots=True)
