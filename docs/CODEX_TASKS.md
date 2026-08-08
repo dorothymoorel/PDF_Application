@@ -2032,7 +2032,7 @@ tests/integration/worker/**
 ## M4-T05 — Implement Job API
 
 **Objective:**
-Menyediakan get, list, attempts, cancel, dan retry.
+Menyediakan get, list, dan attempts.
 
 **Dependencies:**
 M4-T02, M4-T04.
@@ -2040,6 +2040,7 @@ M4-T02, M4-T04.
 **Allowed Files:**
 
 ```text
+services/api/src/transloka_api/app.py
 services/api/src/transloka_api/routers/jobs.py
 services/api/src/transloka_api/schemas/jobs.py
 packages/api-client/**
@@ -2053,8 +2054,7 @@ tests/integration/api/**
 * filters;
 * missing;
 * response schema;
-* cancel;
-* retry.
+* attempts.
 
 **Acceptance Criteria:**
 
@@ -2076,6 +2076,10 @@ M4-T04, M4-T05.
 ```text
 python/transloka-core/src/transloka_core/jobs/cancellation.py
 services/worker/**
+services/api/src/transloka_api/routers/jobs.py
+services/api/src/transloka_api/schemas/jobs.py
+packages/api-client/**
+tests/integration/api/**
 tests/recovery/**
 ```
 
@@ -2113,6 +2117,10 @@ M4-T03, M4-T06.
 
 ```text
 python/transloka-core/src/transloka_core/jobs/retry.py
+services/api/src/transloka_api/routers/jobs.py
+services/api/src/transloka_api/schemas/jobs.py
+packages/api-client/**
+tests/integration/api/**
 tests/integration/worker/**
 ```
 
@@ -2185,7 +2193,7 @@ tests/recovery/**
 Menampilkan job progress, stage, cancel, dan retry.
 
 **Dependencies:**
-M4-T05.
+M4-T08.
 
 **Allowed Files:**
 
