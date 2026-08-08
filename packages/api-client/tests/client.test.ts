@@ -7,6 +7,7 @@ import type {
   JobAttemptResource,
   JobResource,
   ProjectResource,
+  RetryJobInput,
 } from "../src/index";
 import {
   CLIENT_HEADER,
@@ -16,6 +17,7 @@ import {
   createRequestHeaders,
   createTransLokaClient,
   DEFAULT_API_BASE_URL,
+  IDEMPOTENCY_KEY_HEADER,
   REQUEST_ID_HEADER,
   validateBaseUrl,
 } from "../src/index";
@@ -69,6 +71,10 @@ const createProjectInput = {
 const cancelJobInput = {
   reason: "Cancelled by user.",
 } satisfies CancelJobInput;
+
+const retryJobInput = {
+  retry_failed_items_only: true,
+} satisfies RetryJobInput;
 
 const job = {
   id: "job_00000000-0000-4000-8000-000000000001",
@@ -497,6 +503,40 @@ describe("job client", () => {
     expect(call[1]?.body).toBe(JSON.stringify(cancelJobInput));
     expect(headers.get(CLIENT_HEADER)).toBe(CLIENT_HEADER_VALUE);
     expect(headers.get(CLIENT_VERSION_HEADER)).toBe(CLIENT_VERSION_HEADER_VALUE);
+  });
+
+  it("retries jobs with an idempotency key and generated request body", async () => {
+    const payload = {
+      data: { ...job, status: "RETRYING", retry_count: 1 },
+      meta: { request_id: "job-retry" },
+    } satisfies components["schemas"]["JobDataResponse"];
+    const fetchImplementation = vi.fn(
+      (input: string | URL, init?: RequestInit) => {
+        void input;
+        void init;
+        return Promise.resolve(jsonResponse(payload));
+      },
+    );
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+
+    await expect(
+      client.retryJob(job.id, "retry-job-1", retryJobInput),
+    ).resolves.toMatchObject({ ok: true });
+
+    const call = fetchImplementation.mock.calls[0];
+    if (call === undefined) {
+      throw new Error("Expected the retry client to call fetch.");
+    }
+    const headers = new Headers(call[1]?.headers);
+    expect(call[0]).toBe(`http://127.0.0.1:8000/api/v1/jobs/${job.id}/retry`);
+    expect(call[1]?.method).toBe("POST");
+    expect(call[1]?.body).toBe(JSON.stringify(retryJobInput));
+    expect(headers.get(IDEMPOTENCY_KEY_HEADER)).toBe("retry-job-1");
+    expect(headers.get(CLIENT_HEADER)).toBe(CLIENT_HEADER_VALUE);
+    expect(headers.get(CLIENT_VERSION_HEADER)).toBe(CLIENT_VERSION_HEADER_VALUE);
+    expect(() => client.retryJob(job.id, " invalid ", retryJobInput)).toThrow(
+      TypeError,
+    );
   });
 
   it("rejects malformed job data and invalid identifiers before requests", async () => {

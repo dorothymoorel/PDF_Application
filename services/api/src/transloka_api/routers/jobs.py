@@ -3,7 +3,7 @@ import binascii
 from collections.abc import Iterator
 from typing import Annotated, Any, Never, cast
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Header, Query, Request, Response, status
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.config import Settings
@@ -21,6 +21,7 @@ from transloka_api.schemas.jobs import (
     JobErrorResponse,
     JobListResponse,
     JobResponse,
+    RetryJobRequest,
 )
 from transloka_api.schemas.projects import ResponseMeta
 from transloka_core.database.models.jobs import (
@@ -35,6 +36,14 @@ from transloka_core.jobs.cancellation import (
     JobCancellationService,
     JobCannotBeCancelledError,
 )
+from transloka_core.jobs.retry import (
+    InvalidJobRetryError,
+    JobNotRetryableError,
+    JobRetryLimitError,
+    JobRetryService,
+    RetryIdempotencyConflictError,
+    RetryJobNotFoundError,
+)
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -45,10 +54,17 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     422: {"description": "The request contains invalid values.", "model": ErrorResponse},
     500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
 }
-_MUTATION_ERROR_RESPONSES = {
+_CANCEL_ERROR_RESPONSES = {
     **_ERROR_RESPONSES,
     409: {
         "description": "The job state does not allow cancellation.",
+        "model": ErrorResponse,
+    },
+}
+_RETRY_ERROR_RESPONSES = {
+    **_ERROR_RESPONSES,
+    409: {
+        "description": "The job state, retry limit, or idempotency key prevents retry.",
         "model": ErrorResponse,
     },
 }
@@ -168,7 +184,7 @@ def get_job(job_id: str, session: JobSession, response: Response) -> JobDataResp
     "/{job_id}/cancel",
     operation_id="cancel_job",
     response_model=JobDataResponse,
-    responses=_MUTATION_ERROR_RESPONSES,
+    responses=_CANCEL_ERROR_RESPONSES,
 )
 def cancel_job(
     job_id: str,
@@ -187,6 +203,60 @@ def cancel_job(
         _raise_job_not_found()
     except JobCannotBeCancelledError:
         _raise_job_state_invalid()
+
+    return JobDataResponse(
+        data=_job_response(_get_job(session, job_id)),
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
+@router.post(
+    "/{job_id}/retry",
+    operation_id="retry_job",
+    response_model=JobDataResponse,
+    responses=_RETRY_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def retry_job(
+    job_id: str,
+    payload: RetryJobRequest,
+    request: Request,
+    session: JobSession,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=1, max_length=200),
+    ],
+) -> JobDataResponse:
+    try:
+        JobRetryService(_session_factory(request)).request(
+            job_id,
+            idempotency_key=idempotency_key,
+            retry_failed_items_only=payload.retry_failed_items_only,
+            reason="USER_REQUESTED",
+        )
+    except RetryJobNotFoundError:
+        _raise_job_not_found()
+    except JobRetryLimitError:
+        _raise_retry_error(
+            "JOB_RETRY_LIMIT_REACHED",
+            "The job retry limit has been reached.",
+        )
+    except JobNotRetryableError:
+        _raise_retry_error(
+            "JOB_STATE_INVALID",
+            "The job state does not allow retry.",
+        )
+    except RetryIdempotencyConflictError:
+        _raise_retry_error(
+            "IDEMPOTENCY_CONFLICT",
+            "The idempotency key belongs to a different retry request.",
+        )
+    except InvalidJobRetryError as exc:
+        raise TransLokaError(
+            code="VALIDATION_ERROR",
+            message="The request contains invalid values.",
+            status_code=422,
+        ) from exc
 
     return JobDataResponse(
         data=_job_response(_get_job(session, job_id)),
@@ -321,5 +391,13 @@ def _raise_job_state_invalid() -> Never:
     raise TransLokaError(
         code="JOB_STATE_INVALID",
         message="The job state does not allow cancellation.",
+        status_code=409,
+    )
+
+
+def _raise_retry_error(code: str, message: str) -> Never:
+    raise TransLokaError(
+        code=code,
+        message=message,
         status_code=409,
     )

@@ -313,13 +313,92 @@ def test_completed_job_cannot_be_cancelled(
     assert response.json()["error"]["code"] == "JOB_STATE_INVALID"
 
 
-def test_job_openapi_contract_includes_cancel_without_future_retry() -> None:
+def test_retry_failed_job_is_idempotent_and_exposes_complete_attempt_history(
+    job_api: tuple[TestClient, sessionmaker[Session], str],
+) -> None:
+    client, factory, project_id = job_api
+    job_id = _dispatch(factory, project_id, "retry-failed")
+    with transaction_scope(factory) as session:
+        row = session.get(ApplicationJob, job_id)
+        assert row is not None
+        row.status = JobStatus.FAILED.value
+        row.progress = 0.5
+        row.result_json = '{"artifact_id":"valid-prior-result"}'
+        row.error_code = "MODEL_TIMEOUT"
+        row.error_message = "The local model timed out."
+        row.started_at = "2026-08-08T01:00:00.000Z"
+        row.completed_at = "2026-08-08T01:01:00.000Z"
+    headers = {**CLIENT_HEADERS, "Idempotency-Key": "retry-job-1"}
+
+    first = client.post(
+        f"/api/v1/jobs/{job_id}/retry",
+        headers=headers,
+        json={"retry_failed_items_only": True},
+    )
+    repeated = client.post(
+        f"/api/v1/jobs/{job_id}/retry",
+        headers=headers,
+        json={"retry_failed_items_only": True},
+    )
+    attempts = client.get(f"/api/v1/jobs/{job_id}/attempts")
+
+    assert first.status_code == 202
+    assert first.json()["data"]["status"] == "RETRYING"
+    assert first.json()["data"]["retry_count"] == 1
+    assert first.json()["data"]["error"] == {
+        "code": "MODEL_TIMEOUT",
+        "message": "The local model timed out.",
+    }
+    assert repeated.status_code == 202
+    assert repeated.json()["data"] == first.json()["data"]
+    assert attempts.status_code == 200
+    assert [attempt["status"] for attempt in attempts.json()["data"]] == [
+        "FAILED",
+        "RUNNING",
+    ]
+    assert attempts.json()["data"][0]["error"]["code"] == "MODEL_TIMEOUT"
+
+
+@pytest.mark.parametrize(
+    ("status_value", "retry_count", "expected_code"),
+    [
+        (JobStatus.COMPLETED, 0, "JOB_STATE_INVALID"),
+        (JobStatus.FAILED, 3, "JOB_RETRY_LIMIT_REACHED"),
+    ],
+)
+def test_retry_rejects_completed_job_and_exhausted_limit(
+    status_value: JobStatus,
+    retry_count: int,
+    expected_code: str,
+    job_api: tuple[TestClient, sessionmaker[Session], str],
+) -> None:
+    client, factory, project_id = job_api
+    job_id = _dispatch(factory, project_id, f"retry-rejected-{status_value.value}")
+    with transaction_scope(factory) as session:
+        row = session.get(ApplicationJob, job_id)
+        assert row is not None
+        row.status = status_value.value
+        row.retry_count = retry_count
+        row.completed_at = "2026-08-08T01:01:00.000Z"
+
+    response = client.post(
+        f"/api/v1/jobs/{job_id}/retry",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "retry-rejected"},
+        json={"retry_failed_items_only": True},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == expected_code
+
+
+def test_job_openapi_contract_includes_cancel_and_retry() -> None:
     schema = create_app().openapi()
     operations = {
         ("/api/v1/jobs", "get"): "list_jobs",
         ("/api/v1/jobs/{job_id}", "get"): "get_job",
         ("/api/v1/jobs/{job_id}/attempts", "get"): "get_job_attempts",
         ("/api/v1/jobs/{job_id}/cancel", "post"): "cancel_job",
+        ("/api/v1/jobs/{job_id}/retry", "post"): "retry_job",
     }
 
     for (path, method), operation_id in operations.items():
@@ -335,4 +414,12 @@ def test_job_openapi_contract_includes_cancel_without_future_retry() -> None:
         cancel["responses"]["409"]["content"]["application/json"]["schema"]["$ref"]
         == "#/components/schemas/ErrorResponse"
     )
-    assert "/api/v1/jobs/{job_id}/retry" not in schema["paths"]
+    retry = schema["paths"]["/api/v1/jobs/{job_id}/retry"]["post"]
+    assert (
+        retry["responses"]["202"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/JobDataResponse"
+    )
+    assert (
+        retry["responses"]["409"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/ErrorResponse"
+    )

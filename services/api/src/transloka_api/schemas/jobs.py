@@ -17,6 +17,12 @@ class CancelJobRequest(BaseModel):
         return value
 
 
+class RetryJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    retry_failed_items_only: bool
+
+
 class JobErrorResponse(BaseModel):
     code: str
     message: str

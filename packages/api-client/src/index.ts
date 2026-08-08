@@ -12,6 +12,7 @@ export {
   type JobResource,
   type ProjectResource,
   type RequestOptions,
+  type RetryJobInput,
   type TransLokaClientOptions,
 } from "./client";
 export {
@@ -22,6 +23,7 @@ export {
   CLIENT_VERSION_HEADER_VALUE,
   DEFAULT_API_BASE_URL,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  IDEMPOTENCY_KEY_HEADER,
   REQUEST_ID_HEADER,
 } from "./constants";
 export type { components, operations, paths } from "./generated/schema";

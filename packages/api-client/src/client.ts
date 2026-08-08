@@ -7,6 +7,7 @@ import {
   CLIENT_VERSION_HEADER_VALUE,
   DEFAULT_API_BASE_URL,
   DEFAULT_REQUEST_TIMEOUT_MS,
+  IDEMPOTENCY_KEY_HEADER,
   REQUEST_ID_HEADER,
 } from "./constants";
 
@@ -28,6 +29,7 @@ export type CancelJobInput = components["schemas"]["CancelJobRequest"];
 export type JobAttemptResource = components["schemas"]["JobAttemptResponse"];
 export type JobResource = components["schemas"]["JobResponse"];
 export type ProjectResource = components["schemas"]["ProjectResponse"];
+export type RetryJobInput = components["schemas"]["RetryJobRequest"];
 
 export type JobListOptions = {
   cursor?: string;
@@ -92,6 +94,7 @@ const MUTATION_METHODS: ReadonlySet<string> = new Set<MutationMethod>([
   "POST",
   "PUT",
 ]);
+const MAX_IDEMPOTENCY_KEY_LENGTH = 200;
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const PROJECT_STATUSES = new Set<ProjectResource["status"]>([
   "CREATED",
@@ -215,6 +218,18 @@ function requestId(value?: string): string {
     }
   }
   return globalThis.crypto.randomUUID();
+}
+
+function idempotencyKey(value: string): string {
+  if (
+    value.length < 1 ||
+    value.length > MAX_IDEMPOTENCY_KEY_LENGTH ||
+    value !== value.trim() ||
+    !SAFE_MESSAGE_PATTERN.test(value)
+  ) {
+    throw new TypeError("Idempotency key is invalid.");
+  }
+  return value;
 }
 
 export function createRequestHeaders(method: string, suppliedRequestId?: string): Headers {
@@ -549,6 +564,7 @@ async function parseJson(response: Response): Promise<unknown> {
 
 type ClientRequest<T> = {
   body?: unknown;
+  headers?: Readonly<Record<string, string>>;
   invalidResponseMessage: string;
   method: "GET" | MutationMethod;
   path: string;
@@ -585,6 +601,9 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
 
     try {
       const headers = createRequestHeaders(definition.method, requestOptions.requestId);
+      for (const [name, value] of Object.entries(definition.headers ?? {})) {
+        headers.set(name, value);
+      }
       const init: RequestInit = {
         cache: "no-store",
         credentials: "omit",
@@ -761,6 +780,26 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
             "The API response did not match the generated job contract.",
           method: "POST",
           path: jobPath(jobId, "/cancel"),
+          validate: isJobDataResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    retryJob(
+      jobId: string,
+      retryKey: string,
+      input: RetryJobInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<JobDataResponse>> {
+      return request(
+        {
+          body: input,
+          headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey(retryKey) },
+          invalidResponseMessage:
+            "The API response did not match the generated job contract.",
+          method: "POST",
+          path: jobPath(jobId, "/retry"),
           validate: isJobDataResponse,
         },
         requestOptions,
