@@ -5,6 +5,7 @@ export {
   type ApiClientError,
   type ApiError,
   type ApiResult,
+  type CancelJobInput,
   type CreateProjectInput,
   type JobAttemptResource,
   type JobListOptions,

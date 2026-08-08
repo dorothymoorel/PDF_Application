@@ -1,7 +1,20 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from transloka_core.database.models.jobs import JobAttemptStatus, JobStatus, JobType
 
 from transloka_api.schemas.projects import ResponseMeta
+
+
+class CancelJobRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid", str_strip_whitespace=True)
+
+    reason: str = Field(min_length=1, max_length=500)
+
+    @field_validator("reason")
+    @classmethod
+    def validate_reason(cls, value: str) -> str:
+        if not value.isprintable():
+            raise ValueError("The cancellation reason contains invalid characters.")
+        return value
 
 
 class JobErrorResponse(BaseModel):

@@ -24,6 +24,7 @@ type FetchImplementation = (input: string | URL, init?: RequestInit) => Promise<
 type MutationMethod = "DELETE" | "PATCH" | "POST" | "PUT";
 
 export type CreateProjectInput = components["schemas"]["CreateProjectRequest"];
+export type CancelJobInput = components["schemas"]["CancelJobRequest"];
 export type JobAttemptResource = components["schemas"]["JobAttemptResponse"];
 export type JobResource = components["schemas"]["JobResponse"];
 export type ProjectResource = components["schemas"]["ProjectResponse"];
@@ -743,6 +744,24 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           method: "GET",
           path: jobPath(jobId, "/attempts"),
           validate: isJobAttemptListResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    cancelJob(
+      jobId: string,
+      input: CancelJobInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<JobDataResponse>> {
+      return request(
+        {
+          body: input,
+          invalidResponseMessage:
+            "The API response did not match the generated job contract.",
+          method: "POST",
+          path: jobPath(jobId, "/cancel"),
+          validate: isJobDataResponse,
         },
         requestOptions,
       );

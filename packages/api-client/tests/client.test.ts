@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import type {
   components,
+  CancelJobInput,
   CreateProjectInput,
   JobAttemptResource,
   JobResource,
@@ -64,6 +65,10 @@ const createProjectInput = {
   translation_style: "PROFESSIONAL",
   reconstruction_mode: "HYBRID",
 } satisfies CreateProjectInput;
+
+const cancelJobInput = {
+  reason: "Cancelled by user.",
+} satisfies CancelJobInput;
 
 const job = {
   id: "job_00000000-0000-4000-8000-000000000001",
@@ -462,6 +467,36 @@ describe("job client", () => {
       `http://127.0.0.1:8000/api/v1/jobs?limit=1&project_id=${project.id}&job_type=MAINTENANCE&status=RUNNING`,
       `http://127.0.0.1:8000/api/v1/jobs/${job.id}/attempts`,
     ]);
+  });
+
+  it("cancels jobs with the generated request and protected mutation headers", async () => {
+    const payload = {
+      data: { ...job, status: "CANCELLATION_REQUESTED" },
+      meta: { request_id: "job-cancel" },
+    } satisfies components["schemas"]["JobDataResponse"];
+    const fetchImplementation = vi.fn(
+      (input: string | URL, init?: RequestInit) => {
+        void input;
+        void init;
+        return Promise.resolve(jsonResponse(payload));
+      },
+    );
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+
+    await expect(client.cancelJob(job.id, cancelJobInput)).resolves.toMatchObject({
+      ok: true,
+    });
+
+    const call = fetchImplementation.mock.calls[0];
+    if (call === undefined) {
+      throw new Error("Expected the cancellation client to call fetch.");
+    }
+    const headers = new Headers(call[1]?.headers);
+    expect(call[0]).toBe(`http://127.0.0.1:8000/api/v1/jobs/${job.id}/cancel`);
+    expect(call[1]?.method).toBe("POST");
+    expect(call[1]?.body).toBe(JSON.stringify(cancelJobInput));
+    expect(headers.get(CLIENT_HEADER)).toBe(CLIENT_HEADER_VALUE);
+    expect(headers.get(CLIENT_VERSION_HEADER)).toBe(CLIENT_VERSION_HEADER_VALUE);
   });
 
   it("rejects malformed job data and invalid identifiers before requests", async () => {

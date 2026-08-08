@@ -20,6 +20,7 @@ from transloka_core.database.models.jobs import (
     ApplicationJob,
     JobAttempt,
     JobAttemptStatus,
+    JobStatus,
     JobType,
 )
 from transloka_core.jobs.dispatch import JobDispatchService
@@ -246,12 +247,79 @@ def test_job_attempts_are_ordered_and_hide_worker_details(
     assert '"private":"detail"' not in response.text
 
 
-def test_job_openapi_contract_is_registered_without_future_mutations() -> None:
+def test_cancel_queued_job_is_immediate_and_repeated_requests_are_idempotent(
+    job_api: tuple[TestClient, sessionmaker[Session], str],
+) -> None:
+    client, factory, project_id = job_api
+    job_id = _dispatch(factory, project_id, "cancel-queued")
+
+    first = client.post(
+        f"/api/v1/jobs/{job_id}/cancel",
+        headers=CLIENT_HEADERS,
+        json={"reason": "Cancelled by user."},
+    )
+    second = client.post(
+        f"/api/v1/jobs/{job_id}/cancel",
+        headers=CLIENT_HEADERS,
+        json={"reason": "Cancelled again."},
+    )
+
+    assert first.status_code == 200
+    assert first.json()["data"]["status"] == "CANCELLED"
+    assert first.json()["data"]["completed_at"] is not None
+    assert second.status_code == 200
+    assert second.json()["data"] == first.json()["data"]
+
+
+def test_cancel_running_job_requests_cooperative_checkpoint(
+    job_api: tuple[TestClient, sessionmaker[Session], str],
+) -> None:
+    client, factory, project_id = job_api
+    job_id = _dispatch(factory, project_id, "cancel-running")
+    JobProgressService(factory).update(job_id, progress=0.4, current_stage="ATOMIC_UNIT")
+
+    response = client.post(
+        f"/api/v1/jobs/{job_id}/cancel",
+        headers=CLIENT_HEADERS,
+        json={"reason": "Cancelled by user."},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "CANCELLATION_REQUESTED"
+    assert response.json()["data"]["progress"] == 0.4
+    assert response.json()["data"]["current_stage"] == "ATOMIC_UNIT"
+    assert response.json()["data"]["completed_at"] is None
+
+
+def test_completed_job_cannot_be_cancelled(
+    job_api: tuple[TestClient, sessionmaker[Session], str],
+) -> None:
+    client, factory, project_id = job_api
+    job_id = _dispatch(factory, project_id, "cancel-completed")
+    with transaction_scope(factory) as session:
+        row = session.get(ApplicationJob, job_id)
+        assert row is not None
+        row.status = JobStatus.COMPLETED.value
+        row.progress = 1.0
+        row.completed_at = "2026-08-08T00:00:00.000Z"
+
+    response = client.post(
+        f"/api/v1/jobs/{job_id}/cancel",
+        headers=CLIENT_HEADERS,
+        json={"reason": "Too late."},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "JOB_STATE_INVALID"
+
+
+def test_job_openapi_contract_includes_cancel_without_future_retry() -> None:
     schema = create_app().openapi()
     operations = {
         ("/api/v1/jobs", "get"): "list_jobs",
         ("/api/v1/jobs/{job_id}", "get"): "get_job",
         ("/api/v1/jobs/{job_id}/attempts", "get"): "get_job_attempts",
+        ("/api/v1/jobs/{job_id}/cancel", "post"): "cancel_job",
     }
 
     for (path, method), operation_id in operations.items():
@@ -262,5 +330,9 @@ def test_job_openapi_contract_is_registered_without_future_mutations() -> None:
                 "schema"
             ]
             assert response_schema["$ref"] == "#/components/schemas/ErrorResponse"
-    assert "/api/v1/jobs/{job_id}/cancel" not in schema["paths"]
+    cancel = schema["paths"]["/api/v1/jobs/{job_id}/cancel"]["post"]
+    assert (
+        cancel["responses"]["409"]["content"]["application/json"]["schema"]["$ref"]
+        == "#/components/schemas/ErrorResponse"
+    )
     assert "/api/v1/jobs/{job_id}/retry" not in schema["paths"]

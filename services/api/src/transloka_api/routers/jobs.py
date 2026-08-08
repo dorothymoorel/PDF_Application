@@ -6,10 +6,12 @@ from typing import Annotated, Any, Never, cast
 from fastapi import APIRouter, Depends, Query, Request, Response
 from sqlalchemy import and_, or_, select
 from sqlalchemy.orm import Session, sessionmaker
+from transloka_api.config import Settings
 from transloka_api.exception_handlers import TransLokaError
 from transloka_api.middleware import get_request_id
 from transloka_api.schemas import ErrorResponse
 from transloka_api.schemas.jobs import (
+    CancelJobRequest,
     CursorPagination,
     JobAttemptErrorResponse,
     JobAttemptListResponse,
@@ -28,6 +30,11 @@ from transloka_core.database.models.jobs import (
     JobStatus,
     JobType,
 )
+from transloka_core.jobs.cancellation import (
+    CancellationJobNotFoundError,
+    JobCancellationService,
+    JobCannotBeCancelledError,
+)
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -37,6 +44,13 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     404: {"description": "The job was not found.", "model": ErrorResponse},
     422: {"description": "The request contains invalid values.", "model": ErrorResponse},
     500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
+}
+_MUTATION_ERROR_RESPONSES = {
+    **_ERROR_RESPONSES,
+    409: {
+        "description": "The job state does not allow cancellation.",
+        "model": ErrorResponse,
+    },
 }
 _FAST_POLL_STATUSES = {JobStatus.RUNNING, JobStatus.CANCELLATION_REQUESTED}
 _SLOW_POLL_STATUSES = {JobStatus.CREATED, JobStatus.QUEUED, JobStatus.RETRYING}
@@ -150,6 +164,36 @@ def get_job(job_id: str, session: JobSession, response: Response) -> JobDataResp
     )
 
 
+@router.post(
+    "/{job_id}/cancel",
+    operation_id="cancel_job",
+    response_model=JobDataResponse,
+    responses=_MUTATION_ERROR_RESPONSES,
+)
+def cancel_job(
+    job_id: str,
+    payload: CancelJobRequest,
+    request: Request,
+    session: JobSession,
+) -> JobDataResponse:
+    factory = _session_factory(request)
+    settings = cast(Settings, request.app.state.settings)
+    try:
+        JobCancellationService(factory, settings.data_directories.temporary).request(
+            job_id,
+            reason=payload.reason,
+        )
+    except CancellationJobNotFoundError:
+        _raise_job_not_found()
+    except JobCannotBeCancelledError:
+        _raise_job_state_invalid()
+
+    return JobDataResponse(
+        data=_job_response(_get_job(session, job_id)),
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
 def _get_job(session: Session, job_id: str) -> ApplicationJob:
     row = session.get(ApplicationJob, job_id)
     if row is None:
@@ -247,6 +291,16 @@ def _request_id() -> str:
     return request_id
 
 
+def _session_factory(request: Request) -> sessionmaker[Session]:
+    try:
+        factory = request.app.state.session_factory
+    except AttributeError as exc:
+        raise RuntimeError("The job database is not configured.") from exc
+    if not callable(factory):
+        raise RuntimeError("The job database is not configured.")
+    return cast(sessionmaker[Session], factory)
+
+
 def _raise_job_not_found() -> Never:
     raise TransLokaError(
         code="JOB_NOT_FOUND",
@@ -260,4 +314,12 @@ def _raise_invalid_cursor() -> Never:
         code="VALIDATION_ERROR",
         message="The request contains invalid values.",
         status_code=422,
+    )
+
+
+def _raise_job_state_invalid() -> Never:
+    raise TransLokaError(
+        code="JOB_STATE_INVALID",
+        message="The job state does not allow cancellation.",
+        status_code=409,
     )
