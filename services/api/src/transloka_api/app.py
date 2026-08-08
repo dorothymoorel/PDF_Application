@@ -28,6 +28,7 @@ from transloka_api.middleware import (
     RequestIdMiddleware,
 )
 from transloka_api.routers.documents import router as documents_router
+from transloka_api.routers.jobs import router as jobs_router
 from transloka_api.routers.projects import router as projects_router
 from transloka_api.schemas import ErrorResponse
 
@@ -113,10 +114,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         allowed_origins=effective_settings.web_origins,
     )
     application.add_middleware(RequestIdMiddleware)
+
+    @application.middleware("http")
+    async def expose_job_poll_hint(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        response = await call_next(request)
+        if request.url.path.startswith("/api/v1/jobs/") and "Retry-After" in response.headers:
+            response.headers["Access-Control-Expose-Headers"] = ", ".join(
+                (*CORS_EXPOSE_HEADERS, "Retry-After")
+            )
+        return response
+
     application.add_exception_handler(TransLokaError, transloka_exception_handler)
     application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(HTTPException, http_exception_handler)
     application.include_router(documents_router)
+    application.include_router(jobs_router)
     application.include_router(projects_router)
 
     @application.get(

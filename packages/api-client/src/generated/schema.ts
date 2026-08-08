@@ -1,6 +1,57 @@
 // This file is generated. Do not edit manually.
 
 export interface paths {
+    "/api/v1/jobs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Jobs */
+        get: operations["list_jobs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{job_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job */
+        get: operations["get_job"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/jobs/{job_id}/attempts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Job Attempts */
+        get: operations["get_job_attempts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects": {
         parameters: {
             query?: never;
@@ -165,6 +216,15 @@ export interface components {
             target_language: string;
             translation_style: components["schemas"]["TranslationStyle"];
         };
+        /** CursorPagination */
+        CursorPagination: {
+            /** Has More */
+            has_more: boolean;
+            /** Limit */
+            limit: number;
+            /** Next Cursor */
+            next_cursor: string | null;
+        };
         /**
          * DocumentType
          * @enum {string}
@@ -207,6 +267,97 @@ export interface components {
              */
             version: string;
         };
+        /** JobAttemptErrorResponse */
+        JobAttemptErrorResponse: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+        };
+        /** JobAttemptListResponse */
+        JobAttemptListResponse: {
+            /** Data */
+            data: components["schemas"]["JobAttemptResponse"][];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /** JobAttemptResponse */
+        JobAttemptResponse: {
+            /** Attempt Number */
+            attempt_number: number;
+            /** Completed At */
+            completed_at: string | null;
+            /** Duration Ms */
+            duration_ms?: number | null;
+            error: components["schemas"]["JobAttemptErrorResponse"] | null;
+            /** Started At */
+            started_at: string;
+            status: components["schemas"]["JobAttemptStatus"];
+        };
+        /**
+         * JobAttemptStatus
+         * @enum {string}
+         */
+        JobAttemptStatus: "RUNNING" | "COMPLETED" | "COMPLETED_WITH_WARNINGS" | "PARTIALLY_COMPLETED" | "FAILED" | "CANCELLED" | "STALE";
+        /** JobCollectionMeta */
+        JobCollectionMeta: {
+            pagination: components["schemas"]["CursorPagination"];
+            /** Request Id */
+            request_id: string;
+        };
+        /** JobDataResponse */
+        JobDataResponse: {
+            data: components["schemas"]["JobResponse"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /** JobErrorResponse */
+        JobErrorResponse: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+        };
+        /** JobListResponse */
+        JobListResponse: {
+            /** Data */
+            data: components["schemas"]["JobResponse"][];
+            meta: components["schemas"]["JobCollectionMeta"];
+        };
+        /** JobResponse */
+        JobResponse: {
+            /** Completed At */
+            completed_at: string | null;
+            /** Created At */
+            created_at: string;
+            /** Current Stage */
+            current_stage: string | null;
+            /** Document Id */
+            document_id: string | null;
+            error: components["schemas"]["JobErrorResponse"] | null;
+            /** Id */
+            id: string;
+            job_type: components["schemas"]["JobType"];
+            /** Max Retries */
+            max_retries: number;
+            /** Progress */
+            progress: number;
+            /** Project Id */
+            project_id: string | null;
+            /** Retry Count */
+            retry_count: number;
+            /** Started At */
+            started_at: string | null;
+            status: components["schemas"]["JobStatus"];
+        };
+        /**
+         * JobStatus
+         * @enum {string}
+         */
+        JobStatus: "CREATED" | "QUEUED" | "RUNNING" | "RETRYING" | "COMPLETED" | "COMPLETED_WITH_WARNINGS" | "PARTIALLY_COMPLETED" | "FAILED" | "CANCELLATION_REQUESTED" | "CANCELLED" | "STALE";
+        /**
+         * JobType
+         * @enum {string}
+         */
+        JobType: "IMPORT_DOCUMENT" | "ANALYZE_DOCUMENT" | "OCR_DOCUMENT" | "DETECT_TERMS" | "TRANSLATE_DOCUMENT" | "RECONSTRUCT_DOCUMENT" | "EXPORT_DOCUMENT" | "BENCHMARK_MODEL" | "BACKUP_DATABASE" | "RESTORE_DATABASE" | "MAINTENANCE";
         /** OffsetPagination */
         OffsetPagination: {
             /** Has More */
@@ -340,6 +491,185 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_jobs: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+                document_id?: string | null;
+                job_type?: components["schemas"]["JobType"] | null;
+                status?: components["schemas"]["JobStatus"] | null;
+                limit?: number;
+                cursor?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobListResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_job: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobDataResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_job_attempts: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                job_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["JobAttemptListResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_projects: {
         parameters: {
             query?: {

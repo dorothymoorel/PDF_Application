@@ -12,6 +12,9 @@ import {
 
 type HealthResponse =
   paths["/health"]["get"]["responses"][200]["content"]["application/json"];
+type JobAttemptListResponse = components["schemas"]["JobAttemptListResponse"];
+type JobDataResponse = components["schemas"]["JobDataResponse"];
+type JobListResponse = components["schemas"]["JobListResponse"];
 type ProjectDataResponse = components["schemas"]["ProjectDataResponse"];
 type ProjectListResponse = components["schemas"]["ProjectListResponse"];
 type GeneratedErrorBody = components["schemas"]["ErrorBody"];
@@ -21,7 +24,18 @@ type FetchImplementation = (input: string | URL, init?: RequestInit) => Promise<
 type MutationMethod = "DELETE" | "PATCH" | "POST" | "PUT";
 
 export type CreateProjectInput = components["schemas"]["CreateProjectRequest"];
+export type JobAttemptResource = components["schemas"]["JobAttemptResponse"];
+export type JobResource = components["schemas"]["JobResponse"];
 export type ProjectResource = components["schemas"]["ProjectResponse"];
+
+export type JobListOptions = {
+  cursor?: string;
+  documentId?: string;
+  jobType?: JobResource["job_type"];
+  limit?: number;
+  projectId?: string;
+  status?: JobResource["status"];
+};
 
 export type ApiError = Omit<GeneratedErrorBody, "request_id"> & {
   requestId: GeneratedErrorBody["request_id"];
@@ -35,7 +49,13 @@ export type ApiClientError =
   | { kind: "aborted"; message: string };
 
 export type ApiResult<T> =
-  | { ok: true; data: T; status: number; requestId: string | null }
+  | {
+      ok: true;
+      data: T;
+      status: number;
+      requestId: string | null;
+      retryAfterSeconds?: number;
+    }
   | {
       ok: false;
       error: ApiClientError;
@@ -59,6 +79,10 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9._-]{1,128}$/;
 const ERROR_CODE_PATTERN = /^[A-Z0-9_]{1,64}$/;
 const PROJECT_ID_PATTERN =
   /^prj_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const DOCUMENT_ID_PATTERN =
+  /^doc_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const JOB_ID_PATTERN =
+  /^job_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SAFE_MESSAGE_PATTERN = /^[^\u0000-\u001F\u007F]{1,512}$/;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,31}$/;
 const MUTATION_METHODS: ReadonlySet<string> = new Set<MutationMethod>([
@@ -88,6 +112,41 @@ const PROJECT_STATUSES = new Set<ProjectResource["status"]>([
   "CANCELLED",
   "ARCHIVED",
   "DELETION_QUEUED",
+]);
+const JOB_TYPES = new Set<JobResource["job_type"]>([
+  "IMPORT_DOCUMENT",
+  "ANALYZE_DOCUMENT",
+  "OCR_DOCUMENT",
+  "DETECT_TERMS",
+  "TRANSLATE_DOCUMENT",
+  "RECONSTRUCT_DOCUMENT",
+  "EXPORT_DOCUMENT",
+  "BENCHMARK_MODEL",
+  "BACKUP_DATABASE",
+  "RESTORE_DATABASE",
+  "MAINTENANCE",
+]);
+const JOB_STATUSES = new Set<JobResource["status"]>([
+  "CREATED",
+  "QUEUED",
+  "RUNNING",
+  "RETRYING",
+  "COMPLETED",
+  "COMPLETED_WITH_WARNINGS",
+  "PARTIALLY_COMPLETED",
+  "FAILED",
+  "CANCELLATION_REQUESTED",
+  "CANCELLED",
+  "STALE",
+]);
+const JOB_ATTEMPT_STATUSES = new Set<JobAttemptResource["status"]>([
+  "RUNNING",
+  "COMPLETED",
+  "COMPLETED_WITH_WARNINGS",
+  "PARTIALLY_COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "STALE",
 ]);
 const DOCUMENT_TYPES = new Set<ProjectResource["document_type"]>([
   "ACADEMIC_PAPER",
@@ -239,6 +298,115 @@ function isNullableString(value: unknown): value is string | null {
   return value === null || typeof value === "string";
 }
 
+function parseRetryAfter(value: string | null): number | undefined {
+  if (value === null || !/^\d{1,3}$/.test(value)) {
+    return undefined;
+  }
+  const seconds = Number(value);
+  return seconds <= 300 ? seconds : undefined;
+}
+
+function isResourceError(value: unknown): boolean {
+  return (
+    value === null ||
+    (isRecord(value) &&
+      typeof value.code === "string" &&
+      ERROR_CODE_PATTERN.test(value.code) &&
+      typeof value.message === "string" &&
+      SAFE_MESSAGE_PATTERN.test(value.message))
+  );
+}
+
+function isJobResource(value: unknown): value is JobResource {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    JOB_ID_PATTERN.test(value.id) &&
+    typeof value.job_type === "string" &&
+    JOB_TYPES.has(value.job_type as JobResource["job_type"]) &&
+    typeof value.status === "string" &&
+    JOB_STATUSES.has(value.status as JobResource["status"]) &&
+    typeof value.progress === "number" &&
+    Number.isFinite(value.progress) &&
+    value.progress >= 0 &&
+    value.progress <= 1 &&
+    isNullableString(value.current_stage) &&
+    (value.project_id === null ||
+      (typeof value.project_id === "string" &&
+        PROJECT_ID_PATTERN.test(value.project_id))) &&
+    (value.document_id === null ||
+      (typeof value.document_id === "string" &&
+        DOCUMENT_ID_PATTERN.test(value.document_id))) &&
+    Number.isInteger(value.retry_count) &&
+    typeof value.retry_count === "number" &&
+    value.retry_count >= 0 &&
+    Number.isInteger(value.max_retries) &&
+    typeof value.max_retries === "number" &&
+    value.max_retries >= 0 &&
+    typeof value.created_at === "string" &&
+    isNullableString(value.started_at) &&
+    isNullableString(value.completed_at) &&
+    isResourceError(value.error)
+  );
+}
+
+function isJobAttemptResource(value: unknown): value is JobAttemptResource {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.attempt_number === "number" &&
+    Number.isInteger(value.attempt_number) &&
+    value.attempt_number >= 1 &&
+    typeof value.status === "string" &&
+    JOB_ATTEMPT_STATUSES.has(value.status as JobAttemptResource["status"]) &&
+    typeof value.started_at === "string" &&
+    isNullableString(value.completed_at) &&
+    (value.duration_ms === null ||
+      (typeof value.duration_ms === "number" &&
+        Number.isInteger(value.duration_ms) &&
+        value.duration_ms >= 0)) &&
+    isResourceError(value.error)
+  );
+}
+
+function isJobDataResponse(value: unknown): value is JobDataResponse {
+  return isRecord(value) && isJobResource(value.data) && isResponseMeta(value.meta);
+}
+
+function isJobListResponse(value: unknown): value is JobListResponse {
+  if (
+    !isRecord(value) ||
+    !Array.isArray(value.data) ||
+    !value.data.every(isJobResource) ||
+    !isRecord(value.meta) ||
+    !isResponseMeta(value.meta) ||
+    !isRecord(value.meta.pagination)
+  ) {
+    return false;
+  }
+  const pagination = value.meta.pagination;
+  return (
+    typeof pagination.limit === "number" &&
+    Number.isInteger(pagination.limit) &&
+    pagination.limit >= 1 &&
+    pagination.limit <= 100 &&
+    isNullableString(pagination.next_cursor) &&
+    typeof pagination.has_more === "boolean"
+  );
+}
+
+function isJobAttemptListResponse(value: unknown): value is JobAttemptListResponse {
+  return (
+    isRecord(value) &&
+    Array.isArray(value.data) &&
+    value.data.every(isJobAttemptResource) &&
+    isResponseMeta(value.meta)
+  );
+}
+
 function isProjectResource(value: unknown): value is ProjectResource {
   if (!isRecord(value)) {
     return false;
@@ -325,6 +493,47 @@ function projectPath(projectId: string, action: "archive" | "unarchive"): string
   return `/api/v1/projects/${projectId}/${action}`;
 }
 
+function jobPath(jobId: string, suffix = ""): string {
+  if (!JOB_ID_PATTERN.test(jobId)) {
+    throw new TypeError("Job ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/jobs/${jobId}${suffix}`;
+}
+
+function jobListPath(options: JobListOptions): string {
+  const query = new URLSearchParams();
+  const limit = options.limit ?? 50;
+  if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+    throw new RangeError("Job list limit must be between 1 and 100.");
+  }
+  query.set("limit", String(limit));
+  if (options.projectId !== undefined) {
+    if (!PROJECT_ID_PATTERN.test(options.projectId)) {
+      throw new TypeError("Project ID must use the canonical prefixed UUID format.");
+    }
+    query.set("project_id", options.projectId);
+  }
+  if (options.documentId !== undefined) {
+    if (!DOCUMENT_ID_PATTERN.test(options.documentId)) {
+      throw new TypeError("Document ID must use the canonical prefixed UUID format.");
+    }
+    query.set("document_id", options.documentId);
+  }
+  if (options.jobType !== undefined) {
+    query.set("job_type", options.jobType);
+  }
+  if (options.status !== undefined) {
+    query.set("status", options.status);
+  }
+  if (options.cursor !== undefined) {
+    if (options.cursor.length < 1 || options.cursor.length > 1024) {
+      throw new TypeError("Job cursor is invalid.");
+    }
+    query.set("cursor", options.cursor);
+  }
+  return `/api/v1/jobs?${query.toString()}`;
+}
+
 async function parseJson(response: Response): Promise<unknown> {
   if (!response.headers.get("content-type")?.toLowerCase().includes("application/json")) {
     return undefined;
@@ -393,11 +602,15 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
 
       if (response.ok) {
         if (definition.validate(payload)) {
+          const retryAfterSeconds = parseRetryAfter(
+            response.headers.get("Retry-After"),
+          );
           return {
             ok: true,
             data: payload,
             status: response.status,
             requestId: responseRequestId,
+            ...(retryAfterSeconds === undefined ? {} : { retryAfterSeconds }),
           };
         }
         return {
@@ -482,6 +695,54 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           method: "GET",
           path: "/api/v1/projects?sort=updated_at&order=desc&limit=100&offset=0",
           validate: isProjectListResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getJob(
+      jobId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<JobDataResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated job contract.",
+          method: "GET",
+          path: jobPath(jobId),
+          validate: isJobDataResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    listJobs(
+      options: JobListOptions = {},
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<JobListResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated job list contract.",
+          method: "GET",
+          path: jobListPath(options),
+          validate: isJobListResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getJobAttempts(
+      jobId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<JobAttemptListResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated job attempt contract.",
+          method: "GET",
+          path: jobPath(jobId, "/attempts"),
+          validate: isJobAttemptListResponse,
         },
         requestOptions,
       );

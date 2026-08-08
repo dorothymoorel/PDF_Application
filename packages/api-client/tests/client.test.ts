@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from "vitest";
 import type {
   components,
   CreateProjectInput,
+  JobAttemptResource,
+  JobResource,
   ProjectResource,
 } from "../src/index";
 import {
@@ -19,12 +21,13 @@ import {
 
 const jsonResponse = (
   body: unknown,
-  options: { requestId?: string; status?: number } = {},
+  options: { requestId?: string; retryAfter?: string; status?: number } = {},
 ) =>
   new Response(JSON.stringify(body), {
     headers: {
       "Content-Type": "application/json",
       ...(options.requestId ? { [REQUEST_ID_HEADER]: options.requestId } : {}),
+      ...(options.retryAfter ? { "Retry-After": options.retryAfter } : {}),
     },
     status: options.status ?? 200,
   });
@@ -61,6 +64,31 @@ const createProjectInput = {
   translation_style: "PROFESSIONAL",
   reconstruction_mode: "HYBRID",
 } satisfies CreateProjectInput;
+
+const job = {
+  id: "job_00000000-0000-4000-8000-000000000001",
+  job_type: "MAINTENANCE",
+  status: "RUNNING",
+  progress: 0.4,
+  current_stage: "EXTRACT_TEXT",
+  project_id: project.id,
+  document_id: null,
+  retry_count: 0,
+  max_retries: 3,
+  created_at: "2026-08-08T10:00:00.000Z",
+  started_at: "2026-08-08T10:00:01.000Z",
+  completed_at: null,
+  error: null,
+} satisfies JobResource;
+
+const attempt = {
+  attempt_number: 1,
+  status: "COMPLETED",
+  started_at: "2026-08-08T10:00:01.000Z",
+  completed_at: "2026-08-08T10:00:02.000Z",
+  duration_ms: 1000,
+  error: null,
+} satisfies JobAttemptResource;
 
 const normalizedError = {
   error: {
@@ -387,5 +415,69 @@ describe("project client", () => {
       error: { kind: "invalid-response" },
     });
     expect(() => client.archiveProject("../../private")).toThrow(TypeError);
+  });
+});
+
+describe("job client", () => {
+  it("gets, lists, and reads attempts using generated response contracts", async () => {
+    const payloads = [
+      { data: job, meta: { request_id: "job-get" } },
+      {
+        data: [job],
+        meta: {
+          request_id: "job-list",
+          pagination: { limit: 1, next_cursor: null, has_more: false },
+        },
+      },
+      { data: [attempt], meta: { request_id: "job-attempts" } },
+    ];
+    const fetchImplementation = vi.fn(
+      (input: string | URL, init?: RequestInit) => {
+        void input;
+        void init;
+        const payload = payloads.shift();
+        return Promise.resolve(
+          jsonResponse(payload, payloads.length === 2 ? { retryAfter: "2" } : {}),
+        );
+      },
+    );
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+
+    await expect(client.getJob(job.id)).resolves.toMatchObject({
+      ok: true,
+      retryAfterSeconds: 2,
+    });
+    await expect(
+      client.listJobs({
+        limit: 1,
+        projectId: project.id,
+        jobType: "MAINTENANCE",
+        status: "RUNNING",
+      }),
+    ).resolves.toMatchObject({ ok: true });
+    await expect(client.getJobAttempts(job.id)).resolves.toMatchObject({ ok: true });
+
+    expect(fetchImplementation.mock.calls.map(([url]) => url)).toEqual([
+      `http://127.0.0.1:8000/api/v1/jobs/${job.id}`,
+      `http://127.0.0.1:8000/api/v1/jobs?limit=1&project_id=${project.id}&job_type=MAINTENANCE&status=RUNNING`,
+      `http://127.0.0.1:8000/api/v1/jobs/${job.id}/attempts`,
+    ]);
+  });
+
+  it("rejects malformed job data and invalid identifiers before requests", async () => {
+    const client = createTransLokaClient({
+      fetch: () =>
+        Promise.resolve(
+          jsonResponse({ data: { ...job, progress: 4 }, meta: { request_id: "bad" } }),
+        ),
+    });
+
+    await expect(client.getJob(job.id)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+    });
+    expect(() => client.getJob("../../private")).toThrow(TypeError);
+    expect(() => client.listJobs({ projectId: "../../private" })).toThrow(TypeError);
+    expect(() => client.listJobs({ limit: 101 })).toThrow(RangeError);
   });
 });
