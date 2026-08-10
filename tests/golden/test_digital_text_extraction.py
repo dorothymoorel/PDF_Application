@@ -10,6 +10,7 @@ from transloka_documents.extraction import (
     extract_digital_text,
     normalize_source_lines,
 )
+from transloka_documents.structure.reading_order import resolve_reading_order
 
 
 @dataclass(frozen=True, slots=True)
@@ -83,6 +84,12 @@ def test_keeps_two_column_lines_as_separate_block_candidates() -> None:
         "Left one\nLeft two",
         "Right one\nRight two",
     }
+    reading_order = resolve_reading_order(page)
+    assert [
+        page.block_candidates[index].source_text for index in reading_order.ordered_block_indexes
+    ] == ["Left one\nLeft two", "Right one\nRight two"]
+    assert reading_order.column_count == 2
+    assert reading_order.warnings == ()
 
 
 def test_heading_font_change_starts_a_new_block_candidate() -> None:
