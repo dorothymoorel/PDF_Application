@@ -86,6 +86,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/pages/{page_id}/editor-view": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Page Editor View */
+        get: operations["get_page_editor_view"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects": {
         parameters: {
             query?: never;
@@ -211,6 +228,11 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * BlockType
+         * @enum {string}
+         */
+        BlockType: "DOCUMENT_TITLE" | "SUBTITLE" | "HEADING_1" | "HEADING_2" | "HEADING_3" | "HEADING_4" | "HEADING_5" | "HEADING_6" | "PARAGRAPH" | "BLOCKQUOTE" | "LIST" | "LIST_ITEM" | "TABLE" | "TABLE_ROW" | "TABLE_CELL" | "IMAGE" | "FIGURE" | "CAPTION" | "HEADER" | "FOOTER" | "PAGE_NUMBER" | "FOOTNOTE" | "ENDNOTE" | "CODE_BLOCK" | "INLINE_CODE_CONTAINER" | "FORMULA" | "EQUATION_LABEL" | "BIBLIOGRAPHY_ENTRY" | "INDEX_ENTRY" | "TABLE_OF_CONTENTS_ENTRY" | "SIDEBAR" | "CALLOUT" | "TEXTBOX" | "FORM_FIELD" | "SIGNATURE_FIELD" | "DECORATIVE_TEXT" | "UNKNOWN";
         /** Body_import_document */
         Body_import_document: {
             /** File */
@@ -265,6 +287,11 @@ export interface components {
             next_cursor: string | null;
         };
         /**
+         * DocumentStatus
+         * @enum {string}
+         */
+        DocumentStatus: "CREATED" | "ANALYZED" | "EXTRACTED" | "OCR_PARTIAL" | "OCR_COMPLETE" | "STRUCTURED" | "TERMS_DETECTED" | "READY_FOR_TRANSLATION" | "TRANSLATING" | "TRANSLATED" | "PARTIALLY_TRANSLATED" | "REVIEWING" | "REVIEWED" | "RECONSTRUCTING" | "RECONSTRUCTED" | "QUALITY_CHECKED" | "READY_FOR_EXPORT" | "EXPORTED" | "FAILED" | "ARCHIVED";
+        /**
          * DocumentType
          * @enum {string}
          */
@@ -285,6 +312,19 @@ export interface components {
         /** ErrorResponse */
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
+        };
+        /** GeometryResponse */
+        GeometryResponse: {
+            /** Coordinate System */
+            coordinate_system: string;
+            /** Height */
+            height: number;
+            /** Width */
+            width: number;
+            /** X */
+            x: number;
+            /** Y */
+            y: number;
         };
         /** HealthResponse */
         HealthResponse: {
@@ -408,6 +448,160 @@ export interface components {
             /** Total */
             total: number;
         };
+        /** PageConfidenceResponse */
+        PageConfidenceResponse: {
+            /** Native Extraction */
+            native_extraction?: number | null;
+            /** Ocr */
+            ocr?: number | null;
+            /** Structure */
+            structure?: number | null;
+        };
+        /** PageEditorBlockResponse */
+        PageEditorBlockResponse: {
+            block_type: components["schemas"]["BlockType"];
+            /** Confidence */
+            confidence?: number | null;
+            /** Global Reading Order */
+            global_reading_order?: number | null;
+            /** Id */
+            id: string;
+            /** Normalized Source Text */
+            normalized_source_text: string | null;
+            /** Page Id */
+            page_id: string;
+            /** Page Reading Order */
+            page_reading_order: number;
+            /** Parent Block Id */
+            parent_block_id: string | null;
+            /** Section Id */
+            section_id: string | null;
+            semantic_role: components["schemas"]["SemanticRole"] | null;
+            source_geometry: components["schemas"]["GeometryResponse"];
+            /** Source Text */
+            source_text: string | null;
+            status: components["schemas"]["DocumentStatus"];
+            target_geometry: components["schemas"]["GeometryResponse"] | null;
+        };
+        /** PageEditorPageResponse */
+        PageEditorPageResponse: {
+            /** Column Count */
+            column_count: number;
+            confidence: components["schemas"]["PageConfidenceResponse"];
+            /** Document Id */
+            document_id: string;
+            /** Height Points */
+            height_points: number;
+            /** Id */
+            id: string;
+            /** Logical Page Number */
+            logical_page_number: string | null;
+            /** Page Classification */
+            page_classification: string | null;
+            page_type: components["schemas"]["PageType"];
+            preview: components["schemas"]["PagePreviewResponse"];
+            /** Reading Direction */
+            reading_direction: string;
+            /** Rotation Degrees */
+            rotation_degrees: number;
+            /** Source Page Number */
+            source_page_number: number;
+            status: components["schemas"]["DocumentStatus"];
+            /** Width Points */
+            width_points: number;
+        };
+        /** PageEditorSegmentResponse */
+        PageEditorSegmentResponse: {
+            /** Block Id */
+            block_id: string;
+            confidence: components["schemas"]["SegmentConfidenceResponse"];
+            /** Current Revision */
+            current_revision: number;
+            /** Final Text */
+            final_text: string | null;
+            /** Global Order */
+            global_order?: number | null;
+            /** Id */
+            id: string;
+            /** Is Locked */
+            is_locked: boolean;
+            /** Machine Translation */
+            machine_translation: string | null;
+            /** Resolved Source Text */
+            resolved_source_text: string;
+            review_status: components["schemas"]["ReviewStatus"];
+            /** Reviewed Translation */
+            reviewed_translation: string | null;
+            /** Section Id */
+            section_id: string | null;
+            /** Segment Order */
+            segment_order: number;
+            /** Source Language */
+            source_language: string;
+            /** Source Text */
+            source_text: string;
+            status: components["schemas"]["SegmentStatus"];
+            /** Target Language */
+            target_language: string;
+            /** Warning Count */
+            warning_count: number;
+        };
+        /** PageEditorViewData */
+        PageEditorViewData: {
+            /** Blocks */
+            blocks: components["schemas"]["PageEditorBlockResponse"][];
+            page: components["schemas"]["PageEditorPageResponse"];
+            /** Segments */
+            segments: components["schemas"]["PageEditorSegmentResponse"][];
+            /** Warnings */
+            warnings: components["schemas"]["PageEditorWarningResponse"][];
+        };
+        /** PageEditorViewResponse */
+        PageEditorViewResponse: {
+            data: components["schemas"]["PageEditorViewData"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /** PageEditorWarningResponse */
+        PageEditorWarningResponse: {
+            /** Created At */
+            created_at: string;
+            /** Details */
+            details: {
+                [key: string]: unknown;
+            };
+            /** Document Id */
+            document_id: string;
+            /** Id */
+            id: string;
+            /** Message */
+            message: string;
+            /** Page Id */
+            page_id: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Resolved At */
+            resolved_at: string | null;
+            /** Segment Id */
+            segment_id: string | null;
+            /** Severity */
+            severity: string;
+            /** Status */
+            status: string;
+            /** Warning Type */
+            warning_type: string;
+        };
+        /** PagePreviewResponse */
+        PagePreviewResponse: {
+            /** Render Url */
+            render_url: string | null;
+            /** Thumbnail Url */
+            thumbnail_url: string | null;
+        };
+        /**
+         * PageType
+         * @enum {string}
+         */
+        PageType: "DIGITAL" | "SCANNED" | "HYBRID" | "IMAGE_ONLY" | "FORM" | "COVER" | "TABLE_OF_CONTENTS" | "INDEX" | "BIBLIOGRAPHY" | "BLANK" | "UNKNOWN";
         /** ProjectDataResponse */
         ProjectDataResponse: {
             data: components["schemas"]["ProjectResponse"];
@@ -468,6 +662,26 @@ export interface components {
             /** Retry Failed Items Only */
             retry_failed_items_only: boolean;
         };
+        /**
+         * ReviewStatus
+         * @enum {string}
+         */
+        ReviewStatus: "NOT_REVIEWED" | "REVIEW_REQUIRED" | "IN_REVIEW" | "EDITED" | "APPROVED" | "REJECTED";
+        /** SegmentConfidenceResponse */
+        SegmentConfidenceResponse: {
+            /** Overall */
+            overall?: number | null;
+        };
+        /**
+         * SegmentStatus
+         * @enum {string}
+         */
+        SegmentStatus: "CREATED" | "EXTRACTED" | "OCR_REQUIRED" | "OCR_COMPLETED" | "NORMALIZED" | "TERMS_DETECTED" | "PROTECTED" | "READY_FOR_TRANSLATION" | "TRANSLATING" | "MACHINE_TRANSLATED" | "TRANSLATION_FAILED" | "NEEDS_REVIEW" | "USER_EDITED" | "APPROVED" | "LOCKED" | "IGNORED" | "NOT_TRANSLATABLE";
+        /**
+         * SemanticRole
+         * @enum {string}
+         */
+        SemanticRole: "TITLE" | "CHAPTER_TITLE" | "SECTION_TITLE" | "BODY_TEXT" | "DEFINITION" | "EXAMPLE" | "WARNING" | "NOTE" | "TIP" | "QUOTE" | "CAPTION" | "REFERENCE" | "CODE" | "FORMULA" | "NAVIGATION" | "DECORATION";
         /** StagedUploadData */
         StagedUploadData: {
             /** Original Filename */
@@ -831,6 +1045,64 @@ export interface operations {
             };
             /** @description The job state, retry limit, or idempotency key prevents retry. */
             409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_page_editor_view: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                page_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PageEditorViewResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The page was not found. */
+            404: {
                 headers: {
                     [name: string]: unknown;
                 };
