@@ -18,8 +18,8 @@ REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 MIGRATION_DIRECTORY = REPOSITORY_ROOT / "infrastructure" / "migrations"
 BASELINE_REVISION = "0001_baseline"
-PARENT_REVISION = "0007_document_pages"
-HEAD_REVISION = "0008_document_ir_structure"
+PARENT_REVISION = "0008_document_ir_structure"
+HEAD_REVISION = "0009_glossary"
 APPLICATION_TABLES = {
     "alembic_version",
     "application_jobs",
@@ -35,10 +35,18 @@ APPLICATION_TABLES = {
     "document_table_cells",
     "document_tables",
     "documents",
+    "glossaries",
+    "glossary_conflicts",
+    "glossary_revisions",
+    "glossary_snapshots",
+    "glossary_terms",
     "job_attempts",
     "job_dependencies",
     "projects",
+    "protected_items",
     "stored_files",
+    "term_candidates",
+    "term_occurrences",
 }
 
 

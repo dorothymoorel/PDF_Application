@@ -71,10 +71,18 @@ def test_migration_creates_exact_strict_application_schema(
         "document_table_cells",
         "document_tables",
         "documents",
+        "glossaries",
+        "glossary_conflicts",
+        "glossary_revisions",
+        "glossary_snapshots",
+        "glossary_terms",
         "job_attempts",
         "job_dependencies",
         "projects",
+        "protected_items",
         "stored_files",
+        "term_candidates",
+        "term_occurrences",
     }
     assert [
         (column["name"], str(column["type"]), column["nullable"])
@@ -143,10 +151,18 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "document_table_cells",
             "document_tables",
             "documents",
+            "glossaries",
+            "glossary_conflicts",
+            "glossary_revisions",
+            "glossary_snapshots",
+            "glossary_terms",
             "job_attempts",
             "job_dependencies",
             "projects",
+            "protected_items",
             "stored_files",
+            "term_candidates",
+            "term_occurrences",
         }
     finally:
         engine.dispose()
