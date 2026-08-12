@@ -39,6 +39,17 @@ from transloka_glossary import (
     UpdateGlossary,
     UpdateTerm,
 )
+from transloka_glossary.impact import (
+    GlossaryImpactChange,
+    GlossaryImpactError,
+    GlossaryImpactIntegrityError,
+    GlossaryImpactProjectNotFoundError,
+    GlossaryImpactTermNotFoundError,
+    InvalidGlossaryImpactRequestError,
+)
+from transloka_glossary.impact import (
+    analyze_glossary_impact as run_glossary_impact_analysis,
+)
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -112,6 +123,16 @@ class UpdateTermRequest(_RequestModel):
     notes: str | None = None
     expected_revision: int = Field(ge=1)
     reason: str | None = None
+
+
+class GlossaryImpactChangeRequest(_RequestModel):
+    term_id: str = Field(min_length=1)
+    proposed_rule_type: GlossaryRuleType
+    proposed_target_term: str | None = None
+
+
+class GlossaryImpactRequest(_RequestModel):
+    changes: list[GlossaryImpactChangeRequest] = Field(min_length=1)
 
 
 class ResponseMeta(BaseModel):
@@ -190,6 +211,31 @@ class TermDataResponse(BaseModel):
 class TermListResponse(BaseModel):
     data: list[TermResponse]
     meta: CollectionMeta
+
+
+class GlossaryImpactConflictResponse(BaseModel):
+    conflict_type: str
+    normalized_source_term: str
+    term_ids: tuple[str, str]
+    resolution_status: str
+    winner_term_id: str | None
+    explanation: str
+    blocking: bool
+
+
+class GlossaryImpactResponseData(BaseModel):
+    affected_segments: int
+    unreviewed_segments: int
+    approved_segments: int
+    locked_segments: int
+    safe_replacement_segments: int
+    retranslation_recommended_segments: int
+    conflicts: list[GlossaryImpactConflictResponse]
+
+
+class GlossaryImpactResponse(BaseModel):
+    data: GlossaryImpactResponseData
+    meta: ResponseMeta
 
 
 def get_glossary_session(request: Request) -> Iterator[Session]:
@@ -508,6 +554,58 @@ def archive_glossary_term(term_id: str, session: GlossarySession) -> TermDataRes
     return _term_data_response(record)
 
 
+@router.post(
+    "/api/v1/projects/{project_id}/glossary-impact",
+    operation_id="analyze_glossary_impact",
+    response_model=GlossaryImpactResponse,
+    responses=_ERROR_RESPONSES,
+)
+def analyze_project_glossary_impact(
+    project_id: str,
+    payload: GlossaryImpactRequest,
+    session: GlossarySession,
+) -> GlossaryImpactResponse:
+    try:
+        result = run_glossary_impact_analysis(
+            session=session,
+            project_id=project_id,
+            changes=(
+                GlossaryImpactChange(
+                    term_id=change.term_id,
+                    proposed_rule_type=change.proposed_rule_type,
+                    proposed_target_term=change.proposed_target_term,
+                )
+                for change in payload.changes
+            ),
+        )
+    except GlossaryImpactError as exc:
+        _raise_glossary_impact_error(exc)
+
+    return GlossaryImpactResponse(
+        data=GlossaryImpactResponseData(
+            affected_segments=result.affected_segments,
+            unreviewed_segments=result.unreviewed_segments,
+            approved_segments=result.approved_segments,
+            locked_segments=result.locked_segments,
+            safe_replacement_segments=result.safe_replacement_segments,
+            retranslation_recommended_segments=result.retranslation_recommended_segments,
+            conflicts=[
+                GlossaryImpactConflictResponse(
+                    conflict_type=conflict.conflict_type.value,
+                    normalized_source_term=conflict.normalized_source_term,
+                    term_ids=conflict.term_ids,
+                    resolution_status=conflict.resolution_status.value,
+                    winner_term_id=conflict.winner_term_id,
+                    explanation=conflict.explanation,
+                    blocking=conflict.blocking,
+                )
+                for conflict in result.conflicts
+            ],
+        ),
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
 def _service(session: Session) -> GlossaryService:
     return GlossaryService(GlossaryRepository(session))
 
@@ -665,6 +763,47 @@ def _raise_glossary_error(exc: GlossaryRepositoryError) -> Never:
             "GLOSSARY_OPERATION_FAILED",
             "The glossary operation could not be completed.",
             409,
+        )
+    raise TransLokaError(
+        code=code,
+        message=message,
+        status_code=status_code,
+        details=details,
+    ) from exc
+
+
+def _raise_glossary_impact_error(exc: GlossaryImpactError) -> Never:
+    details: dict[str, object] = {}
+    if isinstance(exc, GlossaryImpactProjectNotFoundError):
+        code, message, status_code = (
+            "PROJECT_NOT_FOUND",
+            "The requested project was not found.",
+            404,
+        )
+    elif isinstance(exc, GlossaryImpactTermNotFoundError):
+        code, message, status_code = (
+            "TERM_NOT_FOUND",
+            "One or more glossary terms were not found.",
+            404,
+        )
+        details["term_ids"] = list(exc.term_ids)
+    elif isinstance(exc, InvalidGlossaryImpactRequestError):
+        code, message, status_code = (
+            "VALIDATION_ERROR",
+            "The glossary impact request contains invalid values.",
+            422,
+        )
+    elif isinstance(exc, GlossaryImpactIntegrityError):
+        code, message, status_code = (
+            "GLOSSARY_DATA_INVALID",
+            "Stored glossary impact data is invalid.",
+            500,
+        )
+    else:
+        code, message, status_code = (
+            "GLOSSARY_IMPACT_FAILED",
+            "Glossary impact analysis failed.",
+            500,
         )
     raise TransLokaError(
         code=code,
