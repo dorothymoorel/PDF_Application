@@ -18,8 +18,8 @@ REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 MIGRATION_DIRECTORY = REPOSITORY_ROOT / "infrastructure" / "migrations"
 BASELINE_REVISION = "0001_baseline"
-PARENT_REVISION = "0008_document_ir_structure"
-HEAD_REVISION = "0009_glossary"
+PARENT_REVISION = "0009_glossary"
+HEAD_REVISION = "0010_local_models"
 APPLICATION_TABLES = {
     "alembic_version",
     "application_jobs",
@@ -42,6 +42,7 @@ APPLICATION_TABLES = {
     "glossary_terms",
     "job_attempts",
     "job_dependencies",
+    "local_models",
     "projects",
     "protected_items",
     "stored_files",
@@ -141,6 +142,7 @@ def test_offline_upgrade_generates_sql_without_creating_database(
     assert "CREATE TABLE application_jobs" in sql
     assert "CREATE TABLE job_attempts" in sql
     assert "CREATE TABLE job_dependencies" in sql
+    assert "CREATE TABLE local_models" in sql
     assert HEAD_REVISION in sql
     assert str(root) not in sql
     assert not root.exists()
