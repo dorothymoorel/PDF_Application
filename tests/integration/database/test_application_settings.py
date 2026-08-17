@@ -84,6 +84,11 @@ def test_migration_creates_exact_strict_application_schema(
         "stored_files",
         "term_candidates",
         "term_occurrences",
+        "translation_batches",
+        "translation_batch_segments",
+        "translation_attempts",
+        "segment_translations",
+        "translation_validations",
     }
     assert [
         (column["name"], str(column["type"]), column["nullable"])
@@ -165,6 +170,11 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "stored_files",
             "term_candidates",
             "term_occurrences",
+            "translation_batches",
+            "translation_batch_segments",
+            "translation_attempts",
+            "segment_translations",
+            "translation_validations",
         }
     finally:
         engine.dispose()
