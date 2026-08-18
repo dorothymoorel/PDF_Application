@@ -5,6 +5,7 @@ export {
   type ApiClientError,
   type ApiError,
   type ApiResult,
+  type CancelTranslationInput,
   type CancelJobInput,
   type CreateProjectInput,
   type JobAttemptResource,
@@ -12,7 +13,9 @@ export {
   type JobResource,
   type ProjectResource,
   type RequestOptions,
+  type RetryTranslationInput,
   type RetryJobInput,
+  type StartTranslationInput,
   type TransLokaClientOptions,
 } from "./client";
 export {

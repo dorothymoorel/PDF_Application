@@ -18,6 +18,9 @@ type JobDataResponse = components["schemas"]["JobDataResponse"];
 type JobListResponse = components["schemas"]["JobListResponse"];
 type ProjectDataResponse = components["schemas"]["ProjectDataResponse"];
 type ProjectListResponse = components["schemas"]["ProjectListResponse"];
+type TranslationJobResponse = components["schemas"]["TranslationJobResponse"];
+type TranslationReadinessResponse = components["schemas"]["TranslationReadinessResponse"];
+type TranslationStatusResponse = components["schemas"]["TranslationStatusResponse"];
 type GeneratedErrorBody = components["schemas"]["ErrorBody"];
 type GeneratedErrorDetails = components["schemas"]["ErrorDetails"];
 type GeneratedErrorResponse = components["schemas"]["ErrorResponse"];
@@ -30,6 +33,9 @@ export type JobAttemptResource = components["schemas"]["JobAttemptResponse"];
 export type JobResource = components["schemas"]["JobResponse"];
 export type ProjectResource = components["schemas"]["ProjectResponse"];
 export type RetryJobInput = components["schemas"]["RetryJobRequest"];
+export type CancelTranslationInput = components["schemas"]["CancelTranslationRequest"];
+export type RetryTranslationInput = components["schemas"]["RetryTranslationRequest"];
+export type StartTranslationInput = components["schemas"]["StartTranslationRequest"];
 
 export type JobListOptions = {
   cursor?: string;
@@ -392,6 +398,81 @@ function isJobDataResponse(value: unknown): value is JobDataResponse {
   return isRecord(value) && isJobResource(value.data) && isResponseMeta(value.meta);
 }
 
+function isTranslationJobResponse(value: unknown): value is TranslationJobResponse {
+  if (!isRecord(value) || !isRecord(value.data) || !isResponseMeta(value.meta)) {
+    return false;
+  }
+  return (
+    typeof value.data.job_id === "string" &&
+    JOB_ID_PATTERN.test(value.data.job_id) &&
+    typeof value.data.status === "string" &&
+    JOB_STATUSES.has(value.data.status as JobResource["status"])
+  );
+}
+
+function isTranslationReadinessResponse(value: unknown): value is TranslationReadinessResponse {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.data) ||
+    !isResponseMeta(value.meta) ||
+    typeof value.data.ready !== "boolean" ||
+    !Array.isArray(value.data.blocking_issues) ||
+    !Array.isArray(value.data.warnings) ||
+    typeof value.data.segment_count !== "number" ||
+    !Number.isInteger(value.data.segment_count) ||
+    value.data.segment_count < 0 ||
+    typeof value.data.estimated_batches !== "number" ||
+    !Number.isInteger(value.data.estimated_batches) ||
+    value.data.estimated_batches < 0
+  ) {
+    return false;
+  }
+  return (
+    value.data.blocking_issues.every(
+      (issue) =>
+        isRecord(issue) &&
+        typeof issue.code === "string" &&
+        ERROR_CODE_PATTERN.test(issue.code) &&
+        typeof issue.message === "string" &&
+        SAFE_MESSAGE_PATTERN.test(issue.message),
+    ) &&
+    value.data.warnings.every(
+      (warning) =>
+        isRecord(warning) &&
+        typeof warning.code === "string" &&
+        ERROR_CODE_PATTERN.test(warning.code) &&
+        typeof warning.count === "number" &&
+        Number.isInteger(warning.count) &&
+        warning.count >= 0,
+    )
+  );
+}
+
+function isTranslationStatusResponse(value: unknown): value is TranslationStatusResponse {
+  if (!isRecord(value) || !isRecord(value.data) || !isResponseMeta(value.meta)) {
+    return false;
+  }
+  const data = value.data;
+  return (
+    typeof data.status === "string" &&
+    SAFE_MESSAGE_PATTERN.test(data.status) &&
+    (data.active_job_id === null ||
+      (typeof data.active_job_id === "string" && JOB_ID_PATTERN.test(data.active_job_id))) &&
+    [
+      data.total_segments,
+      data.completed_segments,
+      data.failed_segments,
+      data.review_required_segments,
+      data.current_batch,
+      data.total_batches,
+    ].every((item) => typeof item === "number" && Number.isInteger(item) && item >= 0) &&
+    typeof data.progress === "number" &&
+    Number.isFinite(data.progress) &&
+    data.progress >= 0 &&
+    data.progress <= 1
+  );
+}
+
 function isJobListResponse(value: unknown): value is JobListResponse {
   if (
     !isRecord(value) ||
@@ -514,6 +595,20 @@ function jobPath(jobId: string, suffix = ""): string {
     throw new TypeError("Job ID must use the canonical prefixed UUID format.");
   }
   return `/api/v1/jobs/${jobId}${suffix}`;
+}
+
+function translationPath(projectId: string, suffix: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new TypeError("Project ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/projects/${projectId}/translation${suffix}`;
+}
+
+function translationReadinessPath(projectId: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new TypeError("Project ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/projects/${projectId}/translation-readiness`;
 }
 
 function jobListPath(options: JobListOptions): string {
@@ -801,6 +896,96 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           method: "POST",
           path: jobPath(jobId, "/retry"),
           validate: isJobDataResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getTranslationReadiness(
+      projectId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<TranslationReadinessResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated translation readiness contract.",
+          method: "GET",
+          path: translationReadinessPath(projectId),
+          validate: isTranslationReadinessResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    startTranslation(
+      projectId: string,
+      startKey: string,
+      input: StartTranslationInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<TranslationJobResponse>> {
+      return request(
+        {
+          body: input,
+          headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey(startKey) },
+          invalidResponseMessage:
+            "The API response did not match the generated translation start contract.",
+          method: "POST",
+          path: translationPath(projectId, "/start"),
+          validate: isTranslationJobResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getTranslationStatus(
+      projectId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<TranslationStatusResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated translation status contract.",
+          method: "GET",
+          path: translationPath(projectId, "/status"),
+          validate: isTranslationStatusResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    cancelTranslation(
+      projectId: string,
+      input: CancelTranslationInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<TranslationStatusResponse>> {
+      return request(
+        {
+          body: input,
+          invalidResponseMessage:
+            "The API response did not match the generated translation status contract.",
+          method: "POST",
+          path: translationPath(projectId, "/cancel"),
+          validate: isTranslationStatusResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    retryFailedTranslation(
+      projectId: string,
+      retryKey: string,
+      input: RetryTranslationInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<TranslationStatusResponse>> {
+      return request(
+        {
+          body: input,
+          headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey(retryKey) },
+          invalidResponseMessage:
+            "The API response did not match the generated translation status contract.",
+          method: "POST",
+          path: translationPath(projectId, "/retry-failed"),
+          validate: isTranslationStatusResponse,
         },
         requestOptions,
       );

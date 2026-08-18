@@ -31,6 +31,7 @@ from transloka_api.routers.documents import router as documents_router
 from transloka_api.routers.jobs import router as jobs_router
 from transloka_api.routers.pages import router as pages_router
 from transloka_api.routers.projects import router as projects_router
+from transloka_api.routers.translation import router as translation_router
 from transloka_api.schemas import ErrorResponse
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -134,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(jobs_router)
     application.include_router(pages_router)
     application.include_router(projects_router)
+    application.include_router(translation_router)
 
     @application.get(
         "/health",

@@ -173,6 +173,91 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/projects/{project_id}/translation-readiness": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Translation Readiness */
+        get: operations["get_translation_readiness"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/translation/cancel": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Cancel Translation */
+        post: operations["cancel_translation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/translation/retry-failed": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Retry Failed Translation */
+        post: operations["retry_failed_translation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/translation/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Translation */
+        post: operations["start_translation"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/translation/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Translation Status */
+        get: operations["get_translation_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/projects/{project_id}/unarchive": {
         parameters: {
             query?: never;
@@ -245,6 +330,11 @@ export interface components {
         };
         /** CancelJobRequest */
         CancelJobRequest: {
+            /** Reason */
+            reason: string;
+        };
+        /** CancelTranslationRequest */
+        CancelTranslationRequest: {
             /** Reason */
             reason: string;
         };
@@ -662,6 +752,19 @@ export interface components {
             /** Retry Failed Items Only */
             retry_failed_items_only: boolean;
         };
+        /** RetryTranslationRequest */
+        RetryTranslationRequest: {
+            /**
+             * Use Selected Model
+             * @default true
+             */
+            use_selected_model: boolean;
+            /**
+             * Use Smaller Batch
+             * @default true
+             */
+            use_smaller_batch: boolean;
+        };
         /**
          * ReviewStatus
          * @enum {string}
@@ -706,6 +809,50 @@ export interface components {
             data: components["schemas"]["StagedUploadData"];
             meta: components["schemas"]["ResponseMeta"];
         };
+        /** StartTranslationRequest */
+        StartTranslationRequest: {
+            /**
+             * Batch Size
+             * @default 5
+             */
+            batch_size: number;
+            /**
+             * Context Mode
+             * @default STANDARD
+             * @enum {string}
+             */
+            context_mode: "NONE" | "STANDARD" | "EXTENDED";
+            /** Model Id */
+            model_id: string;
+            /** Page Ids */
+            page_ids?: string[] | null;
+            /**
+             * Retranslate Existing
+             * @default false
+             */
+            retranslate_existing: boolean;
+            /**
+             * Run Semantic Validation
+             * @default false
+             */
+            run_semantic_validation: boolean;
+            /**
+             * Scope
+             * @default FULL_DOCUMENT
+             * @enum {string}
+             */
+            scope: "FULL_DOCUMENT" | "UNTRANSLATED_ONLY" | "UNREVIEWED_ONLY" | "SECTION" | "PAGE" | "SELECTED_SEGMENTS";
+            /** Section Ids */
+            section_ids?: string[] | null;
+            /** Segment Ids */
+            segment_ids?: string[] | null;
+            /**
+             * Skip Locked Segments
+             * @default true
+             */
+            skip_locked_segments: boolean;
+            translation_style?: components["schemas"]["TranslationStyle"] | null;
+        };
         /** SystemComponents */
         SystemComponents: {
             database?: components["schemas"]["ComponentHealth"];
@@ -727,6 +874,75 @@ export interface components {
         /** SystemHealthResponse */
         SystemHealthResponse: {
             data?: components["schemas"]["SystemHealthData"];
+        };
+        /** TranslationBlockingIssue */
+        TranslationBlockingIssue: {
+            /** Code */
+            code: string;
+            /** Message */
+            message: string;
+        };
+        /** TranslationJobData */
+        TranslationJobData: {
+            /** Job Id */
+            job_id: string;
+            status: components["schemas"]["JobStatus"];
+        };
+        /** TranslationJobResponse */
+        TranslationJobResponse: {
+            data: components["schemas"]["TranslationJobData"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /** TranslationReadinessData */
+        TranslationReadinessData: {
+            /** Blocking Issues */
+            blocking_issues: components["schemas"]["TranslationBlockingIssue"][];
+            /** Estimated Batches */
+            estimated_batches: number;
+            /** Ready */
+            ready: boolean;
+            /** Segment Count */
+            segment_count: number;
+            /** Warnings */
+            warnings: components["schemas"]["TranslationReadinessWarning"][];
+        };
+        /** TranslationReadinessResponse */
+        TranslationReadinessResponse: {
+            data: components["schemas"]["TranslationReadinessData"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /** TranslationReadinessWarning */
+        TranslationReadinessWarning: {
+            /** Code */
+            code: string;
+            /** Count */
+            count: number;
+        };
+        /** TranslationStatusData */
+        TranslationStatusData: {
+            /** Active Job Id */
+            active_job_id: string | null;
+            /** Completed Segments */
+            completed_segments: number;
+            /** Current Batch */
+            current_batch: number;
+            /** Failed Segments */
+            failed_segments: number;
+            /** Progress */
+            progress: number;
+            /** Review Required Segments */
+            review_required_segments: number;
+            /** Status */
+            status: string;
+            /** Total Batches */
+            total_batches: number;
+            /** Total Segments */
+            total_segments: number;
+        };
+        /** TranslationStatusResponse */
+        TranslationStatusResponse: {
+            data: components["schemas"]["TranslationStatusData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /**
          * TranslationStyle
@@ -1548,6 +1764,357 @@ export interface operations {
                 };
             };
             /** @description The upload metadata or content is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_translation_readiness: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslationReadinessResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The project or translation job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Translation readiness or job state prevents the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    cancel_translation: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CancelTranslationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslationStatusResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The project or translation job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Translation readiness or job state prevents the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    retry_failed_translation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RetryTranslationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslationStatusResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The project or translation job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Translation readiness or job state prevents the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_translation: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartTranslationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslationJobResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The project or translation job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Translation readiness or job state prevents the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_translation_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["TranslationStatusResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The project or translation job was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description Translation readiness or job state prevents the operation. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
             422: {
                 headers: {
                     [name: string]: unknown;
