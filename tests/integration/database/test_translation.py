@@ -10,6 +10,7 @@ from sqlalchemy import Engine, inspect, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_core.database import create_session_factory, create_sqlite_engine, transaction_scope
+from transloka_core.database.models.revisions import SegmentRevision, SegmentRevisionType
 from transloka_core.database.models.translation import (
     SegmentTranslation,
     TranslationAttempt,
@@ -543,3 +544,134 @@ def test_translation_migration_downgrade_and_upgrade_are_reversible(
         command.upgrade(configuration, "head")
 
     assert (root / "database" / "transloka.db").is_file()
+
+
+def _segment_revision(
+    revision_id: str = "revision-1", revision_number: int = 1, **overrides: object
+) -> SegmentRevision:
+    values: dict[str, object] = {
+        "id": revision_id,
+        "segment_id": SEGMENT_ID,
+        "revision_number": revision_number,
+        "revision_type": SegmentRevisionType.MACHINE_TRANSLATION,
+        "previous_text": None,
+        "new_text": "Hello dunia",
+        "source_translation_id": None,
+        "reason": None,
+        "metadata_json": None,
+        "created_at": CREATED_AT,
+    }
+    values.update(overrides)
+    return SegmentRevision(**values)
+
+
+def test_segment_revisions_are_sequential_and_preserve_source_reference(
+    translation_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = translation_database
+    with transaction_scope(factory) as session:
+        session.add(_batch())
+        session.flush()
+        session.add(
+            TranslationBatchSegment(batch_id=BATCH_ID, segment_id=SEGMENT_ID, segment_order=0)
+        )
+        session.flush()
+        session.add(_attempt())
+        session.flush()
+        session.add(
+            SegmentTranslation(
+                id="translation-result-1",
+                segment_id=SEGMENT_ID,
+                batch_id=BATCH_ID,
+                attempt_id=ATTEMPT_ID,
+                translated_text_raw="Hello dunia",
+                translated_text_restored="Hello dunia",
+                status="MACHINE_TRANSLATED",
+                confidence_overall=0.9,
+                confidence_json=None,
+                validation_status="PASSED",
+                created_at=CREATED_AT,
+            )
+        )
+        session.flush()
+        session.add(_segment_revision(source_translation_id="translation-result-1"))
+        session.add(
+            _segment_revision(
+                revision_id="revision-2",
+                revision_number=2,
+                revision_type=SegmentRevisionType.USER_EDIT,
+                previous_text="Hello dunia",
+                new_text="Halo dunia",
+                reason="Terminology correction",
+            )
+        )
+
+    with transaction_scope(factory) as session:
+        revisions = (
+            session.execute(
+                text(
+                    "SELECT revision_number, revision_type, previous_text, new_text, "
+                    "source_translation_id FROM segment_revisions "
+                    "WHERE segment_id = :segment_id ORDER BY revision_number"
+                ),
+                {"segment_id": SEGMENT_ID},
+            )
+            .tuples()
+            .all()
+        )
+
+    assert list(revisions) == [
+        (1, SegmentRevisionType.MACHINE_TRANSLATION, None, "Hello dunia", "translation-result-1"),
+        (2, SegmentRevisionType.USER_EDIT, "Hello dunia", "Halo dunia", None),
+    ]
+
+
+def test_segment_revision_number_is_unique_per_segment(
+    translation_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = translation_database
+    with transaction_scope(factory) as session:
+        session.add(_segment_revision())
+
+    with pytest.raises(IntegrityError):
+        with transaction_scope(factory) as session:
+            session.add(_segment_revision(revision_id="revision-duplicate"))
+            session.flush()
+
+
+def test_restore_creates_new_append_only_revision(
+    translation_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = translation_database
+    with transaction_scope(factory) as session:
+        session.add(_segment_revision())
+        session.add(
+            _segment_revision(
+                revision_id="revision-2",
+                revision_number=2,
+                revision_type=SegmentRevisionType.USER_EDIT,
+                previous_text="Hello dunia",
+                new_text="Halo dunia",
+            )
+        )
+        session.flush()
+        session.add(
+            _segment_revision(
+                revision_id="revision-3",
+                revision_number=3,
+                revision_type=SegmentRevisionType.RESTORE_VERSION,
+                previous_text="Halo dunia",
+                new_text="Hello dunia",
+                reason="Restore revision 1",
+            )
+        )
+
+    with transaction_scope(factory) as session:
+        restored = session.get(SegmentRevision, "revision-3")
+        assert restored is not None
+        assert restored.revision_type == SegmentRevisionType.RESTORE_VERSION
+        assert restored.new_text == "Hello dunia"
+        with pytest.raises(IntegrityError):
+            session.execute(
+                text("UPDATE segment_revisions SET new_text = 'Tampered' WHERE id = 'revision-1'")
+            )
