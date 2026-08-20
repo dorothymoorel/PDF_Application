@@ -46,6 +46,7 @@ from transloka_core.database.models.documents import (
     DocumentStatus,
 )
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
+from transloka_core.database.models.jobs import ApplicationJob
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import DocumentType
 from transloka_core.database.models.revisions import SegmentRevision
@@ -976,3 +977,143 @@ def test_segment_review_rejects_invalid_state_and_stale_revision(
         "expected_revision": 0,
         "current_revision": 1,
     }
+
+
+def test_bulk_approve_updates_multiple_segments_and_preserves_revisions(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    response = client.post(
+        "/api/v1/segments/bulk",
+        headers=CLIENT_HEADERS,
+        json={
+            "action": "approve",
+            "selected_ids": [EARLY_SEGMENT_ID, LATE_SEGMENT_FIRST_ID],
+            "expected_revisions": {EARLY_SEGMENT_ID: 1, LATE_SEGMENT_FIRST_ID: 1},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["succeeded"] == 2
+    assert response.json()["data"]["failed"] == 0
+    assert [item["status"] for item in response.json()["data"]["results"]] == [
+        "SUCCEEDED",
+        "SUCCEEDED",
+    ]
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            rows = session.scalars(
+                select(DocumentSegment).where(
+                    DocumentSegment.id.in_((EARLY_SEGMENT_ID, LATE_SEGMENT_FIRST_ID))
+                )
+            ).all()
+            assert {row.review_status for row in rows} == {ReviewStatus.APPROVED.value}
+            assert {row.current_revision for row in rows} == {2}
+    finally:
+        engine.dispose()
+
+
+def test_bulk_action_returns_partial_failures_for_mixed_state_and_locked_segments(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    approved = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1},
+    )
+    assert approved.status_code == 200
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            SegmentService(session).lock(EARLY_SEGMENT_ID, LockSegment(expected_revision=2))
+    finally:
+        engine.dispose()
+
+    response = client.post(
+        "/api/v1/segments/bulk",
+        headers=CLIENT_HEADERS,
+        json={
+            "action": "retranslate",
+            "selected_ids": [EARLY_SEGMENT_ID, LATE_SEGMENT_FIRST_ID],
+            "expected_revisions": {EARLY_SEGMENT_ID: 3, LATE_SEGMENT_FIRST_ID: 1},
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    data = response.json()["data"]
+    assert data["failed"] == 1
+    assert data["queued"] == 1
+    failures = [item for item in data["results"] if item["status"] == "FAILED"]
+    assert failures[0]["error"]["code"] == "SEGMENT_LOCKED"
+    assert data["job_id"].startswith("job_")
+
+
+def test_bulk_approve_reports_invalid_id_and_revision_conflict_without_rolling_back_success(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    response = client.post(
+        "/api/v1/segments/bulk",
+        headers=CLIENT_HEADERS,
+        json={
+            "action": "approve",
+            "selected_ids": [EARLY_SEGMENT_ID, "seg_00000000-0000-4000-8000-000000000099"],
+            "expected_revisions": {EARLY_SEGMENT_ID: 0},
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["succeeded"] == 0
+    assert data["failed"] == 2
+    by_id = {item["segment_id"]: item for item in data["results"]}
+    assert by_id[EARLY_SEGMENT_ID]["error"]["code"] == "REVISION_CONFLICT"
+    assert by_id["seg_00000000-0000-4000-8000-000000000099"]["error"]["code"] == (
+        "SEGMENT_NOT_FOUND"
+    )
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            row = session.get(DocumentSegment, EARLY_SEGMENT_ID)
+            assert row is not None
+            assert row.current_revision == 1
+    finally:
+        engine.dispose()
+
+
+def test_bulk_retranslation_is_idempotent_and_keeps_selected_ids_in_job_payload(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    headers = {**CLIENT_HEADERS, "Idempotency-Key": "bulk-retranslate-retry"}
+    body = {
+        "action": "retranslate",
+        "selected_ids": [EARLY_SEGMENT_ID, LATE_SEGMENT_FIRST_ID],
+        "expected_revisions": {EARLY_SEGMENT_ID: 1, LATE_SEGMENT_FIRST_ID: 1},
+    }
+
+    first = client.post("/api/v1/segments/bulk", headers=headers, json=body)
+    second = client.post("/api/v1/segments/bulk", headers=headers, json=body)
+
+    assert first.status_code == 202, first.text
+    assert second.status_code == 202, second.text
+    first_job_id = first.json()["data"]["job_id"]
+    assert second.json()["data"]["job_id"] == first_job_id
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            jobs = session.scalars(
+                select(ApplicationJob).where(ApplicationJob.id == first_job_id)
+            ).all()
+            assert len(jobs) == 1
+            assert '"scope":"SELECTED_SEGMENTS"' in jobs[0].payload_json
+            assert EARLY_SEGMENT_ID in jobs[0].payload_json
+            assert LATE_SEGMENT_FIRST_ID in jobs[0].payload_json
+    finally:
+        engine.dispose()
