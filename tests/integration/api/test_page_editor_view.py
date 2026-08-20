@@ -18,6 +18,14 @@ from transloka_api.middleware import (
     REQUEST_ID_HEADER,
 )
 from transloka_api.routers.segments import router as segments_router
+from transloka_api.services.segments import (
+    EmptyUnlockReasonError,
+    LockSegment,
+    SegmentLockStateError,
+    SegmentRevisionConflictError,
+    SegmentService,
+    UnlockSegment,
+)
 from transloka_core.database import (
     create_session_factory,
     create_sqlite_engine,
@@ -654,6 +662,159 @@ def test_segment_approval_supports_optional_lock_after_approval(
     assert data["status"] == "LOCKED"
     assert data["review_status"] == "APPROVED"
     assert data["is_locked"] is True
+
+
+def test_segment_lock_protects_approved_segment_and_creates_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    approved = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1},
+    )
+    assert approved.status_code == 200
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            locked = SegmentService(session).lock(
+                EARLY_SEGMENT_ID,
+                LockSegment(expected_revision=2),
+            )
+            assert locked.status == SegmentStatus.LOCKED.value
+            assert locked.review_status == ReviewStatus.APPROVED.value
+            assert locked.is_locked == 1
+            assert locked.current_revision == 3
+    finally:
+        engine.dispose()
+
+    blocked_edit = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers=CLIENT_HEADERS,
+        json={"reviewed_translation": "Blocked edit", "expected_revision": 3},
+    )
+    assert blocked_edit.status_code == 423
+    assert blocked_edit.json()["error"]["code"] == "SEGMENT_LOCKED"
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            revision = session.scalar(
+                select(SegmentRevision).where(
+                    SegmentRevision.segment_id == EARLY_SEGMENT_ID,
+                    SegmentRevision.revision_number == 3,
+                )
+            )
+            assert revision is not None
+            assert revision.revision_type == "LOCK"
+            assert revision.previous_text == "Terjemahan: Early segment."
+            assert revision.new_text == "Terjemahan: Early segment."
+    finally:
+        engine.dispose()
+
+
+def test_segment_lock_rejects_stale_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    approved = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1},
+    )
+    assert approved.status_code == 200
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            with pytest.raises(SegmentRevisionConflictError) as error:
+                SegmentService(session).lock(
+                    EARLY_SEGMENT_ID,
+                    LockSegment(expected_revision=1),
+                )
+            assert error.value.expected_revision == 1
+            assert error.value.current_revision == 2
+    finally:
+        engine.dispose()
+
+
+def test_segment_unlock_requires_reason_and_creates_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    approved = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1},
+    )
+    assert approved.status_code == 200
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            SegmentService(session).lock(
+                EARLY_SEGMENT_ID,
+                LockSegment(expected_revision=2),
+            )
+    finally:
+        engine.dispose()
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            with pytest.raises(EmptyUnlockReasonError):
+                SegmentService(session).unlock(
+                    EARLY_SEGMENT_ID,
+                    UnlockSegment(expected_revision=3, reason="  "),
+                )
+    finally:
+        engine.dispose()
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            unlocked = SegmentService(session).unlock(
+                EARLY_SEGMENT_ID,
+                UnlockSegment(expected_revision=3, reason="Glossary update requires review."),
+            )
+            assert unlocked.status == SegmentStatus.APPROVED.value
+            assert unlocked.review_status == ReviewStatus.APPROVED.value
+            assert unlocked.is_locked == 0
+            assert unlocked.current_revision == 4
+    finally:
+        engine.dispose()
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            revision = session.scalar(
+                select(SegmentRevision).where(
+                    SegmentRevision.segment_id == EARLY_SEGMENT_ID,
+                    SegmentRevision.revision_number == 4,
+                )
+            )
+            assert revision is not None
+            assert revision.revision_type == "UNLOCK"
+            assert revision.reason == "Glossary update requires review."
+    finally:
+        engine.dispose()
+
+
+def test_segment_unlock_rejects_unlocked_segment(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    _client, data_root = page_editor_api
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            with pytest.raises(SegmentLockStateError):
+                SegmentService(session).unlock(
+                    EARLY_SEGMENT_ID,
+                    UnlockSegment(expected_revision=1, reason="Review again."),
+                )
+    finally:
+        engine.dispose()
 
 
 def test_segment_review_rejects_invalid_state_and_stale_revision(

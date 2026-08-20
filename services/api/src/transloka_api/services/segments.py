@@ -39,11 +39,30 @@ class EmptySegmentTranslationError(SegmentServiceError):
     pass
 
 
+class SegmentLockStateError(SegmentServiceError):
+    pass
+
+
+class EmptyUnlockReasonError(SegmentServiceError):
+    pass
+
+
 @dataclass(frozen=True)
 class EditSegmentTranslation:
     reviewed_translation: str
     expected_revision: int
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class LockSegment:
+    expected_revision: int
+
+
+@dataclass(frozen=True)
+class UnlockSegment:
+    expected_revision: int
+    reason: str
 
 
 CacheInvalidator = Callable[[str], None]
@@ -138,6 +157,145 @@ class SegmentService:
         if updated is None:
             raise SegmentNotFoundError("The segment was not found after editing.")
         return updated
+
+    def lock(self, segment_id: str, command: LockSegment) -> DocumentSegment:
+        row = self._session.get(DocumentSegment, segment_id)
+        if row is None:
+            raise SegmentNotFoundError("The segment was not found.")
+        if row.is_locked:
+            raise SegmentLockStateError("The segment is already locked.")
+        if row.review_status != ReviewStatus.APPROVED.value:
+            raise SegmentLockStateError("Only approved segments can be locked.")
+        if row.current_revision != command.expected_revision:
+            raise SegmentRevisionConflictError(
+                command.expected_revision,
+                row.current_revision,
+            )
+
+        current_text = self._current_text(row)
+        now = _utc_now()
+        revision_number = command.expected_revision + 1
+        source_translation_id = self._latest_translation_id(segment_id)
+        result = cast(
+            CursorResult[Any],
+            self._session.execute(
+                update(DocumentSegment)
+                .where(
+                    DocumentSegment.id == segment_id,
+                    DocumentSegment.current_revision == command.expected_revision,
+                    DocumentSegment.is_locked == 0,
+                    DocumentSegment.review_status == ReviewStatus.APPROVED.value,
+                )
+                .values(
+                    status=SegmentStatus.LOCKED.value,
+                    is_locked=1,
+                    current_revision=revision_number,
+                    updated_at=now,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            self._raise_lock_race_error(segment_id, command.expected_revision)
+
+        self._session.add(
+            SegmentRevision(
+                id=f"rev_{uuid4()}",
+                segment_id=segment_id,
+                revision_number=revision_number,
+                revision_type=SegmentRevisionType.LOCK.value,
+                previous_text=current_text,
+                new_text=current_text,
+                source_translation_id=source_translation_id,
+                reason=None,
+                metadata_json=None,
+                created_at=now,
+            )
+        )
+        self._session.flush()
+        self._invalidate_cache(segment_id)
+
+        updated = self._session.get(DocumentSegment, segment_id)
+        if updated is None:
+            raise SegmentNotFoundError("The segment was not found after locking.")
+        return updated
+
+    def unlock(self, segment_id: str, command: UnlockSegment) -> DocumentSegment:
+        reason = command.reason.strip()
+        if not reason:
+            raise EmptyUnlockReasonError("A reason is required to unlock a segment.")
+
+        row = self._session.get(DocumentSegment, segment_id)
+        if row is None:
+            raise SegmentNotFoundError("The segment was not found.")
+        if not row.is_locked:
+            raise SegmentLockStateError("The segment is not locked.")
+        if row.current_revision != command.expected_revision:
+            raise SegmentRevisionConflictError(
+                command.expected_revision,
+                row.current_revision,
+            )
+
+        current_text = self._current_text(row)
+        now = _utc_now()
+        revision_number = command.expected_revision + 1
+        source_translation_id = self._latest_translation_id(segment_id)
+        result = cast(
+            CursorResult[Any],
+            self._session.execute(
+                update(DocumentSegment)
+                .where(
+                    DocumentSegment.id == segment_id,
+                    DocumentSegment.current_revision == command.expected_revision,
+                    DocumentSegment.is_locked == 1,
+                )
+                .values(
+                    status=SegmentStatus.APPROVED.value,
+                    is_locked=0,
+                    current_revision=revision_number,
+                    updated_at=now,
+                )
+            ),
+        )
+        if result.rowcount != 1:
+            self._raise_lock_race_error(segment_id, command.expected_revision)
+
+        self._session.add(
+            SegmentRevision(
+                id=f"rev_{uuid4()}",
+                segment_id=segment_id,
+                revision_number=revision_number,
+                revision_type=SegmentRevisionType.UNLOCK.value,
+                previous_text=current_text,
+                new_text=current_text,
+                source_translation_id=source_translation_id,
+                reason=reason,
+                metadata_json=None,
+                created_at=now,
+            )
+        )
+        self._session.flush()
+        self._invalidate_cache(segment_id)
+
+        updated = self._session.get(DocumentSegment, segment_id)
+        if updated is None:
+            raise SegmentNotFoundError("The segment was not found after unlocking.")
+        return updated
+
+    def _current_text(self, row: DocumentSegment) -> str:
+        for value in (row.final_text, row.reviewed_translation, row.machine_translation):
+            if value and value.strip():
+                return value
+        raise SegmentLockStateError("A translated value is required before locking.")
+
+    def _raise_lock_race_error(self, segment_id: str, expected_revision: int) -> None:
+        current = self._session.get(DocumentSegment, segment_id)
+        if current is None:
+            raise SegmentNotFoundError("The segment was not found.")
+        if current.current_revision != expected_revision:
+            raise SegmentRevisionConflictError(expected_revision, current.current_revision)
+        if current.is_locked:
+            raise SegmentLockStateError("The segment is already locked.")
+        raise SegmentLockStateError("The segment lock state changed before the update.")
 
     def _latest_translation_id(self, segment_id: str) -> str | None:
         return self._session.scalar(
