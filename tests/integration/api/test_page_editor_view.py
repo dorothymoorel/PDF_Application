@@ -7,6 +7,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.app import create_app
 from transloka_api.middleware import (
@@ -16,7 +17,12 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_core.database import transaction_scope
+from transloka_api.routers.segments import router as segments_router
+from transloka_core.database import (
+    create_session_factory,
+    create_sqlite_engine,
+    transaction_scope,
+)
 from transloka_core.database.models.document_ir import (
     BlockType,
     DocumentBlock,
@@ -33,6 +39,8 @@ from transloka_core.database.models.documents import (
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import DocumentType
+from transloka_core.database.models.revisions import SegmentRevision
+from transloka_core.storage import resolve_local_data_directories
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
@@ -74,6 +82,7 @@ def page_editor_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(data_root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
+    application.include_router(segments_router)
 
     with TestClient(application) as client:
         project_response = client.post(
@@ -419,3 +428,137 @@ def test_page_editor_view_is_registered_with_stable_openapi_contract() -> None:
 
     assert operation["operationId"] == "get_page_editor_view"
     assert set(operation["responses"]) >= {"200", "403", "404", "500"}
+
+
+def _database_factory(data_root: Path) -> tuple[Engine, sessionmaker[Session]]:
+    engine = create_sqlite_engine(resolve_local_data_directories(data_root))
+    return engine, create_session_factory(engine)
+
+
+def test_segment_translation_edit_updates_final_text_and_creates_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    response = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers={**CLIENT_HEADERS, REQUEST_ID_HEADER: "segment-edit"},
+        json={
+            "reviewed_translation": "Terjemahan final yang ditinjau.",
+            "expected_revision": 1,
+            "reason": "Improved naturalness.",
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers[REQUEST_ID_HEADER] == "segment-edit"
+    data = response.json()["data"]
+    assert data["reviewed_translation"] == "Terjemahan final yang ditinjau."
+    assert data["final_text"] == "Terjemahan final yang ditinjau."
+    assert data["status"] == "USER_EDITED"
+    assert data["review_status"] == "EDITED"
+    assert data["current_revision"] == 2
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            revision = session.scalar(
+                select(SegmentRevision).where(
+                    SegmentRevision.segment_id == EARLY_SEGMENT_ID,
+                    SegmentRevision.revision_number == 2,
+                )
+            )
+            assert revision is not None
+            assert revision.previous_text == "Terjemahan: Early segment."
+            assert revision.new_text == "Terjemahan final yang ditinjau."
+            assert revision.reason == "Improved naturalness."
+    finally:
+        engine.dispose()
+
+
+def test_segment_translation_edit_rejects_stale_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    first = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers=CLIENT_HEADERS,
+        json={"reviewed_translation": "First edit", "expected_revision": 1},
+    )
+    stale = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers=CLIENT_HEADERS,
+        json={"reviewed_translation": "Stale edit", "expected_revision": 1},
+    )
+
+    assert first.status_code == 200
+    assert stale.status_code == 409
+    assert stale.json()["error"]["code"] == "REVISION_CONFLICT"
+    assert stale.json()["error"]["details"] == {
+        "expected_revision": 1,
+        "current_revision": 2,
+    }
+
+
+def test_segment_translation_edit_rejects_locked_segment(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            row = session.get(DocumentSegment, EARLY_SEGMENT_ID)
+            assert row is not None
+            row.is_locked = 1
+            row.status = SegmentStatus.LOCKED.value
+    finally:
+        engine.dispose()
+
+    response = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers=CLIENT_HEADERS,
+        json={"reviewed_translation": "Blocked edit", "expected_revision": 1},
+    )
+
+    assert response.status_code == 423
+    assert response.json()["error"]["code"] == "SEGMENT_LOCKED"
+
+
+def test_segment_translation_edit_rejects_empty_translation(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    response = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers=CLIENT_HEADERS,
+        json={"reviewed_translation": "   ", "expected_revision": 1},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+
+
+def test_segment_translation_edit_invokes_cache_invalidator(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    from transloka_api.services.segments import EditSegmentTranslation, SegmentService
+
+    _client, data_root = page_editor_api
+    invalidated: list[str] = []
+    engine, factory = _database_factory(data_root)
+    try:
+        with transaction_scope(factory) as session:
+            updated = SegmentService(
+                session,
+                invalidate_cache=invalidated.append,
+            ).edit_translation(
+                EARLY_SEGMENT_ID,
+                EditSegmentTranslation(
+                    reviewed_translation="Callback edit",
+                    expected_revision=1,
+                ),
+            )
+            assert updated.current_revision == 2
+    finally:
+        engine.dispose()
+
+    assert invalidated == [EARLY_SEGMENT_ID]
