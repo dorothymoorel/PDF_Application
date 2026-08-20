@@ -17,6 +17,7 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
+from transloka_api.routers.revisions import router as revisions_router
 from transloka_api.routers.segments import router as segments_router
 from transloka_api.services.segments import (
     EmptyUnlockReasonError,
@@ -91,6 +92,7 @@ def page_editor_api(
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
     application.include_router(segments_router)
+    application.include_router(revisions_router)
 
     with TestClient(application) as client:
         project_response = client.post(
@@ -815,6 +817,140 @@ def test_segment_unlock_rejects_unlocked_segment(
                 )
     finally:
         engine.dispose()
+
+
+def test_segment_revisions_list_get_and_cursor_order(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    for expected_revision, text in enumerate(("Version one", "Version two", "Version three"), 1):
+        response = client.patch(
+            f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+            headers=CLIENT_HEADERS,
+            json={"reviewed_translation": text, "expected_revision": expected_revision},
+        )
+        assert response.status_code == 200, response.text
+
+    first_page = client.get(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/revisions",
+        headers=CLIENT_HEADERS,
+        params={"limit": 2},
+    )
+    assert first_page.status_code == 200, first_page.text
+    first_data = first_page.json()
+    assert [item["revision_number"] for item in first_data["data"]] == [
+        4,
+        3,
+    ]
+    assert first_data["meta"]["pagination"]["has_more"] is True
+    cursor = first_data["meta"]["pagination"]["next_cursor"]
+    assert cursor
+
+    second_page = client.get(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/revisions",
+        headers=CLIENT_HEADERS,
+        params={"limit": 2, "cursor": cursor},
+    )
+    assert second_page.status_code == 200, second_page.text
+    second_data = second_page.json()
+    assert [item["revision_number"] for item in second_data["data"]] == [2]
+    assert second_data["meta"]["pagination"] == {
+        "limit": 2,
+        "next_cursor": None,
+        "has_more": False,
+    }
+
+    revision_id = first_data["data"][0]["id"]
+    detail = client.get(
+        f"/api/v1/segment-revisions/{revision_id}",
+        headers=CLIENT_HEADERS,
+    )
+    assert detail.status_code == 200, detail.text
+    assert detail.json()["data"] == first_data["data"][0]
+
+
+def test_segment_revision_restore_appends_without_deleting_later_revisions(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    for expected_revision, text in enumerate(("Version one", "Version two", "Version three"), 1):
+        response = client.patch(
+            f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+            headers=CLIENT_HEADERS,
+            json={"reviewed_translation": text, "expected_revision": expected_revision},
+        )
+        assert response.status_code == 200, response.text
+
+    history = client.get(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/revisions",
+        headers=CLIENT_HEADERS,
+        params={"limit": 100},
+    )
+    assert history.status_code == 200
+    revisions_before = history.json()["data"]
+    target = next(item for item in revisions_before if item["revision_number"] == 2)
+
+    restored = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/restore-revision",
+        headers=CLIENT_HEADERS,
+        json={"revision_id": target["id"], "expected_revision": 4},
+    )
+    assert restored.status_code == 200, restored.text
+    restored_data = restored.json()["data"]
+    assert restored_data["final_text"] == "Version one"
+    assert restored_data["reviewed_translation"] == "Version one"
+    assert restored_data["status"] == "USER_EDITED"
+    assert restored_data["review_status"] == "EDITED"
+    assert restored_data["current_revision"] == 5
+
+    history_after = client.get(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/revisions",
+        headers=CLIENT_HEADERS,
+        params={"limit": 100},
+    )
+    assert history_after.status_code == 200
+    revisions_after = history_after.json()["data"]
+    assert [item["revision_number"] for item in revisions_after] == [5, 4, 3, 2]
+    assert revisions_after[0]["revision_type"] == "RESTORE_VERSION"
+    assert revisions_after[0]["new_text"] == "Version one"
+    assert any(item["id"] == target["id"] for item in revisions_after)
+
+
+def test_segment_revision_api_rejects_invalid_revision_and_stale_restore(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    missing = client.get(
+        "/api/v1/segment-revisions/rev_missing",
+        headers=CLIENT_HEADERS,
+    )
+    assert missing.status_code == 404
+    assert missing.json()["error"]["code"] == "REVISION_NOT_FOUND"
+
+    edited = client.patch(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/translation",
+        headers=CLIENT_HEADERS,
+        json={"reviewed_translation": "Current text", "expected_revision": 1},
+    )
+    assert edited.status_code == 200
+    revisions = client.get(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/revisions",
+        headers=CLIENT_HEADERS,
+        params={"limit": 100},
+    )
+    target_id = revisions.json()["data"][0]["id"]
+
+    conflict = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/restore-revision",
+        headers=CLIENT_HEADERS,
+        json={"revision_id": target_id, "expected_revision": 1},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "REVISION_CONFLICT"
+    assert conflict.json()["error"]["details"] == {
+        "expected_revision": 1,
+        "current_revision": 2,
+    }
 
 
 def test_segment_review_rejects_invalid_state_and_stale_revision(
