@@ -562,3 +562,120 @@ def test_segment_translation_edit_invokes_cache_invalidator(
         engine.dispose()
 
     assert invalidated == [EARLY_SEGMENT_ID]
+
+
+def test_segment_approval_makes_reviewed_text_final_and_creates_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    response = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers={**CLIENT_HEADERS, REQUEST_ID_HEADER: "segment-approve"},
+        json={"expected_revision": 1, "lock_after_approval": False},
+    )
+
+    assert response.status_code == 200, response.text
+    assert response.headers[REQUEST_ID_HEADER] == "segment-approve"
+    data = response.json()["data"]
+    assert data["reviewed_translation"] == "Terjemahan: Early segment."
+    assert data["final_text"] == "Terjemahan: Early segment."
+    assert data["status"] == "APPROVED"
+    assert data["review_status"] == "APPROVED"
+    assert data["is_locked"] is False
+    assert data["current_revision"] == 2
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            revision = session.scalar(
+                select(SegmentRevision).where(
+                    SegmentRevision.segment_id == EARLY_SEGMENT_ID,
+                    SegmentRevision.revision_number == 2,
+                )
+            )
+            assert revision is not None
+            assert revision.revision_type == "APPROVE"
+            assert revision.new_text == "Terjemahan: Early segment."
+    finally:
+        engine.dispose()
+
+
+def test_segment_unapproval_returns_segment_to_editable_review_state(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    approved = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1},
+    )
+    response = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/unapprove",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 2, "reason": "Needs terminology revision."},
+    )
+
+    assert approved.status_code == 200
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert data["status"] == "USER_EDITED"
+    assert data["review_status"] == "EDITED"
+    assert data["final_text"] == "Terjemahan: Early segment."
+    assert data["current_revision"] == 3
+
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            revision = session.scalar(
+                select(SegmentRevision).where(
+                    SegmentRevision.segment_id == EARLY_SEGMENT_ID,
+                    SegmentRevision.revision_number == 3,
+                )
+            )
+            assert revision is not None
+            assert revision.revision_type == "UNAPPROVE"
+            assert revision.reason == "Needs terminology revision."
+    finally:
+        engine.dispose()
+
+
+def test_segment_approval_supports_optional_lock_after_approval(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    response = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1, "lock_after_approval": True},
+    )
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["status"] == "LOCKED"
+    assert data["review_status"] == "APPROVED"
+    assert data["is_locked"] is True
+
+
+def test_segment_review_rejects_invalid_state_and_stale_revision(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, _data_root = page_editor_api
+    invalid_unapprove = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/unapprove",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 1},
+    )
+    stale_approve = client.post(
+        f"/api/v1/segments/{EARLY_SEGMENT_ID}/approve",
+        headers=CLIENT_HEADERS,
+        json={"expected_revision": 0},
+    )
+
+    assert invalid_unapprove.status_code == 409
+    assert invalid_unapprove.json()["error"]["code"] == "SEGMENT_STATE_INVALID"
+    assert stale_approve.status_code == 409
+    assert stale_approve.json()["error"]["code"] == "REVISION_CONFLICT"
+    assert stale_approve.json()["error"]["details"] == {
+        "expected_revision": 0,
+        "current_revision": 1,
+    }
