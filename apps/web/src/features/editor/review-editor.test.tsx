@@ -224,6 +224,47 @@ describe("ReviewEditor", () => {
     );
   });
 
+  it("exposes labeled keyboard segment navigation and warning text", async () => {
+    const pageWithWarning: ReviewPageData = {
+      ...PAGE_VIEW,
+      warnings: [
+        {
+          id: "war_00000000-0000-4000-8000-000000000001",
+          project_id: "pro_00000000-0000-4000-8000-000000000001",
+          document_id: PAGE_VIEW.page.document_id,
+          page_id: PAGE_VIEW.page.id,
+          segment_id: FIRST_SEGMENT_ID,
+          warning_type: "LOW_CONFIDENCE",
+          severity: "HIGH",
+          status: "OPEN",
+          message: "Review the terminology before approval.",
+          details: {},
+          created_at: "2026-01-01T00:00:00Z",
+          resolved_at: null,
+        },
+      ],
+    };
+    const client = makeClient(pageResult(pageWithWarning));
+    render(
+      <ReviewEditor
+        client={client}
+        loadDocument={fakePdf()}
+        pageId={PAGE_VIEW.page.id}
+        pdfUrl="/source.pdf"
+      />,
+    );
+
+    expect(await screen.findByRole("navigation", { name: "Segment navigation" })).toBeTruthy();
+    expect(screen.getByLabelText("Reviewed translation")).toBeTruthy();
+    expect(
+      screen.getByRole<HTMLButtonElement>("button", { name: "Previous segment" }).disabled,
+    ).toBe(true);
+    fireEvent.click(screen.getByRole("button", { name: "Next segment" }));
+    expect(screen.getByText("Segment 2 of 2")).toBeTruthy();
+    expect(screen.getByText("Warning — LOW_CONFIDENCE (HIGH)")).toBeTruthy();
+    expect(screen.getByText("Status: OPEN")).toBeTruthy();
+  });
+
   it("edits and saves the selected translation", async () => {
     const updatedSegment = {
       ...FIRST_SEGMENT,

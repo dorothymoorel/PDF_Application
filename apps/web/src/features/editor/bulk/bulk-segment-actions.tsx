@@ -15,6 +15,8 @@ const ACTIONS: readonly { value: BulkSegmentAction; label: string }[] = [
   { value: "lock", label: "Lock selected" },
   { value: "retranslate", label: "Retranslate selected" },
 ];
+const FOCUS_RING_CLASS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2";
 
 function nextSelection(
   selected: ReadonlySet<string>,
@@ -132,6 +134,7 @@ export function BulkSegmentActions({
                   </label>
                   <input
                     checked={selectedIds.length === segments.length}
+                    className={FOCUS_RING_CLASS}
                     id="select-all-segments"
                     onChange={(event) => toggleAll(event.target.checked)}
                     type="checkbox"
@@ -150,6 +153,7 @@ export function BulkSegmentActions({
                     </label>
                     <input
                       checked={selected.has(segment.id)}
+                      className={FOCUS_RING_CLASS}
                       id={`select-segment-${segment.id}`}
                       onChange={(event) =>
                         setSelected((current) =>
@@ -176,7 +180,7 @@ export function BulkSegmentActions({
         <label className="text-sm font-medium text-slate-800" htmlFor="bulk-segment-action">
           Action
           <select
-            className="mt-1 block rounded-lg border border-slate-300 bg-white px-3 py-2 font-normal text-slate-950"
+            className={`mt-1 block rounded-lg border border-slate-300 bg-white px-3 py-2 font-normal text-slate-950 ${FOCUS_RING_CLASS}`}
             id="bulk-segment-action"
             onChange={(event) => setAction(event.target.value as BulkSegmentAction)}
             value={action}
@@ -189,7 +193,7 @@ export function BulkSegmentActions({
           </select>
         </label>
         <button
-          className="rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+          className={`rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
           disabled={selectedIds.length === 0 || isSubmitting}
           onClick={() => void submit()}
           type="button"
@@ -198,7 +202,7 @@ export function BulkSegmentActions({
         </button>
         {failedIds.length > 0 ? (
           <button
-            className="rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50"
+            className={`rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
             disabled={isSubmitting}
             onClick={() => void submit(failedIds)}
             type="button"

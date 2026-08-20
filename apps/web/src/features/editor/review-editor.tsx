@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
 import {
   SourcePageViewer,
@@ -15,6 +15,10 @@ import type {
   ReviewPageData,
   ReviewSegment,
 } from "./types";
+import { FocusTrapDialog } from "./focus-trap-dialog";
+
+const FOCUS_RING_CLASS =
+  "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-blue-500 focus-visible:ring-offset-2";
 
 function initialTranslation(segment: ReviewSegment | undefined): string {
   return (
@@ -68,6 +72,10 @@ export function ReviewEditor({
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
   const [reloadVersion, setReloadVersion] = useState(0);
+  const [conflictOpen, setConflictOpen] = useState(false);
+  const initialErrorRef = useRef<HTMLDivElement>(null);
+  const inlineErrorRef = useRef<HTMLParagraphElement>(null);
+  const translationTextareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -75,6 +83,7 @@ export function ReviewEditor({
     setIsLoading(true);
     setError(null);
     setSaveMessage(null);
+    setConflictOpen(false);
     setView(null);
 
     void client
@@ -115,10 +124,15 @@ export function ReviewEditor({
   }, [client, initialSegmentId, pageId, reloadVersion]);
 
   const selectedSegment = view?.segments.find((segment) => segment.id === selectedSegmentId);
+  const selectedSegmentIndex =
+    view?.segments.findIndex((segment) => segment.id === selectedSegmentId) ?? -1;
 
   useEffect(() => {
     setDraft(initialTranslation(selectedSegment));
     setSaveMessage(null);
+    if (selectedSegment !== undefined) {
+      translationTextareaRef.current?.focus();
+    }
   }, [
     selectedSegment?.current_revision,
     selectedSegment?.final_text,
@@ -126,6 +140,29 @@ export function ReviewEditor({
     selectedSegment?.machine_translation,
     selectedSegment?.reviewed_translation,
   ]);
+
+  useEffect(() => {
+    if (error === null) {
+      return;
+    }
+    if (view === null) {
+      initialErrorRef.current?.focus();
+    } else {
+      inlineErrorRef.current?.focus();
+    }
+  }, [error, view]);
+
+  const moveSelectedSegment = (offset: number) => {
+    if (view === null || selectedSegmentIndex < 0) {
+      return;
+    }
+    const nextSegment = view.segments[selectedSegmentIndex + offset];
+    if (nextSegment !== undefined) {
+      setSelectedSegmentId(nextSegment.id);
+    }
+  };
+
+  const closeConflict = useCallback(() => setConflictOpen(false), []);
 
   const saveTranslation = async () => {
     if (selectedSegment === undefined || selectedSegment.is_locked || isSaving) {
@@ -148,6 +185,9 @@ export function ReviewEditor({
       });
       if (!result.ok) {
         setError(result.error.message);
+        if (result.error.kind === "api" && result.error.code === "REVISION_CONFLICT") {
+          setConflictOpen(true);
+        }
         return;
       }
       const updatedSegment = result.data.data;
@@ -173,7 +213,7 @@ export function ReviewEditor({
     <main
       aria-busy={isLoading || isSaving}
       aria-labelledby="review-editor-heading"
-      className="w-full space-y-6"
+      className="w-full space-y-6 [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-blue-500 [&_button:focus-visible]:ring-offset-2"
     >
       <header>
         <p className="text-sm font-semibold uppercase tracking-wide text-blue-700">Review editor</p>
@@ -197,11 +237,16 @@ export function ReviewEditor({
           Loading review editor…
         </p>
       ) : error !== null && view === null ? (
-        <div className="rounded-xl border border-red-200 bg-red-50 p-5" role="alert">
+        <div
+          className="rounded-xl border border-red-200 bg-red-50 p-5"
+          ref={initialErrorRef}
+          role="alert"
+          tabIndex={-1}
+        >
           <p className="font-medium text-red-900">Review editor could not be loaded.</p>
           <p className="mt-1 text-sm text-red-800">{error}</p>
           <button
-            className="mt-4 rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-900 hover:bg-red-100"
+            className={`mt-4 rounded-lg border border-red-300 bg-white px-3 py-2 text-sm font-medium text-red-900 hover:bg-red-100 ${FOCUS_RING_CLASS}`}
             onClick={() => setReloadVersion((value) => value + 1)}
             type="button"
           >
@@ -292,19 +337,51 @@ export function ReviewEditor({
                   <span className="text-sm font-medium text-amber-800">Editing is disabled.</span>
                 ) : null}
               </div>
+              <nav
+                aria-label="Segment navigation"
+                className="mt-4 flex flex-wrap items-center gap-2 border-y border-slate-200 py-3"
+              >
+                <button
+                  aria-label="Previous segment"
+                  className={`rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
+                  disabled={selectedSegmentIndex <= 0}
+                  onClick={() => moveSelectedSegment(-1)}
+                  type="button"
+                >
+                  Previous segment
+                </button>
+                <p aria-live="polite" className="min-w-32 text-center text-sm text-slate-600">
+                  {selectedSegmentIndex >= 0
+                    ? `Segment ${selectedSegmentIndex + 1} of ${view.segments.length}`
+                    : "No segment selected"}
+                </p>
+                <button
+                  aria-label="Next segment"
+                  className={`rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
+                  disabled={selectedSegmentIndex < 0 || selectedSegmentIndex >= view.segments.length - 1}
+                  onClick={() => moveSelectedSegment(1)}
+                  type="button"
+                >
+                  Next segment
+                </button>
+                <p className="basis-full text-xs text-slate-500">
+                  Use Tab and Enter to navigate between segments.
+                </p>
+              </nav>
               <label className="mt-4 block text-sm font-medium text-slate-800" htmlFor="translation-editor">
                 Reviewed translation
               </label>
               <textarea
-                className="mt-2 min-h-36 w-full resize-y rounded-xl border border-slate-300 px-3 py-3 text-sm leading-6 text-slate-950 outline-none focus:border-blue-700 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100"
+                className={`mt-2 min-h-36 w-full resize-y rounded-xl border border-slate-300 px-3 py-3 text-sm leading-6 text-slate-950 outline-none focus:border-blue-700 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 ${FOCUS_RING_CLASS}`}
                 disabled={selectedSegment === undefined || selectedSegment.is_locked || isSaving}
                 id="translation-editor"
                 onChange={(event) => setDraft(event.target.value)}
                 readOnly={selectedSegment?.is_locked ?? false}
+                ref={translationTextareaRef}
                 value={draft}
               />
               <button
-                className="mt-4 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50"
+                className={`mt-4 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
                 disabled={selectedSegment === undefined || selectedSegment.is_locked || isSaving}
                 onClick={() => void saveTranslation()}
                 type="button"
@@ -317,7 +394,7 @@ export function ReviewEditor({
                 </p>
               ) : null}
               {error !== null && view !== null ? (
-                <p className="mt-3 text-sm text-red-700" role="alert">
+                <p className="mt-3 text-sm text-red-700" ref={inlineErrorRef} role="alert" tabIndex={-1}>
                   {error}
                 </p>
               ) : null}
@@ -358,7 +435,10 @@ export function ReviewEditor({
                 <ul className="mt-3 space-y-2">
                   {view.warnings.map((warning) => (
                     <li className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950" key={warning.id}>
-                      <p className="font-medium">{warning.warning_type}</p>
+                      <p className="font-medium">
+                        Warning — {warning.warning_type} ({warning.severity})
+                      </p>
+                      <p className="mt-1 text-xs uppercase tracking-wide">Status: {warning.status}</p>
                       <p className="mt-1">{warning.message}</p>
                     </li>
                   ))}
@@ -368,6 +448,24 @@ export function ReviewEditor({
           </div>
         </div>
       )}
+      {conflictOpen ? (
+        <FocusTrapDialog onClose={closeConflict} title="Translation conflict">
+          <p>
+            This segment changed after you opened it. Reload the editor to review the latest
+            revision before saving again.
+          </p>
+          <button
+            className={`mt-4 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 ${FOCUS_RING_CLASS}`}
+            onClick={() => {
+              setConflictOpen(false);
+              setReloadVersion((value) => value + 1);
+            }}
+            type="button"
+          >
+            Reload editor
+          </button>
+        </FocusTrapDialog>
+      ) : null}
     </main>
   );
 }
