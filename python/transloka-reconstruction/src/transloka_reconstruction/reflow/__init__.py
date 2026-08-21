@@ -10,6 +10,18 @@ from .builder import (
     build_reflow_html,
     build_sanitized_reflow,
 )
+from .resources import (
+    ResolvedResource,
+    ResourceAccessDenied,
+    ResourceLoaderError,
+    ResourceNotFound,
+    ResourceSymlinkError,
+    ResourceTooLarge,
+    RestrictedResourceLoader,
+    RestrictedWeasyPrintResourceLoader,
+    WeasyPrintResourceLoader,
+    make_restricted_url_fetcher,
+)
 from .types import (
     LOCAL_ASSET_ID_PATTERN,
     ReflowBlock,
@@ -33,9 +45,19 @@ __all__ = [
     "ReflowResult",
     "ReflowSecurityError",
     "ReflowTable",
+    "ResolvedResource",
+    "ResourceAccessDenied",
+    "ResourceLoaderError",
+    "ResourceNotFound",
+    "ResourceSymlinkError",
+    "ResourceTooLarge",
+    "RestrictedResourceLoader",
+    "RestrictedWeasyPrintResourceLoader",
     "SanitizedHTMLBuilder",
     "SanitizedReflowBuilder",
     "build_reflow_html",
     "build_sanitized_reflow",
+    "make_restricted_url_fetcher",
     "validate_local_asset_id",
+    "WeasyPrintResourceLoader",
 ]
