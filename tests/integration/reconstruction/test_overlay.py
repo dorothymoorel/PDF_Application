@@ -2,9 +2,13 @@ from __future__ import annotations
 
 import hashlib
 from io import BytesIO
+from typing import cast
 
+import pypdfium2 as pdfium  # type: ignore[import-untyped]
+from PIL import Image
 from pypdf import PdfReader, PdfWriter
 from pypdf.generic import ArrayObject, DictionaryObject, NameObject
+from reportlab.lib.utils import ImageReader  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
 from transloka_reconstruction.overlay import (
     CoverRegion,
@@ -13,6 +17,12 @@ from transloka_reconstruction.overlay import (
     TextAlignment,
     generate_overlay_page,
     merge_overlay_page,
+)
+from transloka_reconstruction.overlay.cover import (
+    CoverStrategy,
+    CoverWarningCode,
+    raster_background_fallback,
+    solid_background_cover,
 )
 
 
@@ -30,6 +40,17 @@ def _source_page(
 
 def _text(pdf: bytes) -> str:
     return PdfReader(BytesIO(pdf), strict=False).pages[0].extract_text() or ""
+
+
+def _render(pdf: bytes) -> Image.Image:
+    return cast(Image.Image, pdfium.PdfDocument(pdf)[0].render(scale=1).to_pil().convert("RGB"))
+
+
+def _pixel(image: Image.Image, x: int, y: int) -> tuple[int, int, int]:
+    value = image.getpixel((x, y))
+    if not isinstance(value, tuple) or len(value) < 3:
+        raise AssertionError("rendered pixel is not RGB")
+    return (int(value[0]), int(value[1]), int(value[2]))
 
 
 def test_plain_page_copy_preserves_dimensions_and_adds_selectable_text() -> None:
@@ -137,3 +158,82 @@ def test_active_page_annotations_are_not_propagated() -> None:
 
     assert "/Annots" not in output_page
     assert "/AA" not in output_page
+
+
+def test_white_solid_cover_removes_source_and_paints_white_region() -> None:
+    source = _source_page(("White source", 20, 170))
+
+    result = solid_background_cover(
+        source,
+        (CoverRegion(15, 160, 100, 20, source_text="White source"),),
+    )
+    image = _render(result.pdf_bytes)
+
+    assert result.strategy is CoverStrategy.SOLID_BACKGROUND
+    assert result.source_text_covered is True
+    assert "White source" not in _text(result.pdf_bytes)
+    assert _pixel(image, 50, 25) == (255, 255, 255)
+
+
+def test_colored_solid_cover_preserves_requested_background_color() -> None:
+    source = _source_page(("Colored source", 20, 170))
+
+    result = solid_background_cover(
+        source,
+        (CoverRegion(15, 160, 110, 20, fill_color=(0.1, 0.6, 0.2), source_text="Colored source"),),
+    )
+    pixel = _pixel(_render(result.pdf_bytes), 50, 25)
+
+    assert result.warnings == ()
+    assert pixel[1] > pixel[0]
+    assert pixel[1] > pixel[2]
+
+
+def test_raster_background_fallback_covers_text_on_image_background() -> None:
+    source_buffer = BytesIO()
+    canvas = Canvas(source_buffer, pagesize=(300, 200))
+    background = Image.new("RGB", (300, 200), (25, 100, 180))
+    canvas.drawImage(ImageReader(background), 0, 0, width=300, height=200)
+    canvas.setFillColorRGB(1, 1, 1)
+    canvas.drawString(20, 170, "Image source")
+    canvas.save()
+
+    result = raster_background_fallback(
+        source_buffer.getvalue(),
+        (CoverRegion(15, 160, 105, 20, source_text="Image source"),),
+        dpi=144,
+    )
+    image = _render(result.pdf_bytes)
+
+    assert result.strategy is CoverStrategy.RASTER_BACKGROUND
+    assert result.rasterized is True
+    assert result.source_text_covered is True
+    assert _text(result.pdf_bytes) == ""
+    pixel = _pixel(image, 50, 25)
+    assert pixel[2] > pixel[0]
+
+
+def test_uncovered_source_is_returned_with_an_explicit_warning() -> None:
+    source = _source_page(("Uncovered source", 20, 170))
+
+    result = solid_background_cover(source, ())
+
+    assert result.strategy is CoverStrategy.PRESERVE_WITH_WARNING
+    assert result.source_text_covered is False
+    assert any(
+        warning.code is CoverWarningCode.UNCOVERED_SOURCE_TEXT for warning in result.warnings
+    )
+    assert "Uncovered source" in _text(result.pdf_bytes)
+
+
+def test_declared_source_text_that_remains_emits_uncovered_warning() -> None:
+    source = _source_page(("Visible source", 20, 170))
+
+    result = solid_background_cover(
+        source,
+        (CoverRegion(15, 20, 100, 20, source_text="Visible source"),),
+    )
+
+    assert any(
+        warning.code is CoverWarningCode.UNCOVERED_SOURCE_TEXT for warning in result.warnings
+    )
