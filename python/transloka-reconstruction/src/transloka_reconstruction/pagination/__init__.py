@@ -1,0 +1,53 @@
+"""Source-to-target page mapping for reconstruction export and link updates."""
+
+from .mapping import (
+    PageMapper,
+    PageMappingBuilder,
+    TargetPageMapper,
+    build_page_mapping,
+    build_target_page_mapping,
+    create_page_mapping,
+    map_pages,
+    map_source_to_target_pages,
+)
+from .models import (
+    PageExportRecord,
+    PageFragment,
+    PageMapping,
+    PageMappingDocument,
+    PageMappingError,
+    PageMappingResult,
+    PageMappingType,
+    SourcePage,
+    SourcePageRef,
+    TargetPage,
+    TargetPageFragment,
+    TargetPageMapping,
+    TargetPageMappingType,
+    TargetPageRef,
+)
+
+__all__ = [
+    "PageExportRecord",
+    "PageFragment",
+    "PageMapper",
+    "PageMapping",
+    "PageMappingBuilder",
+    "PageMappingDocument",
+    "PageMappingError",
+    "PageMappingResult",
+    "PageMappingType",
+    "SourcePage",
+    "SourcePageRef",
+    "TargetPage",
+    "TargetPageFragment",
+    "TargetPageMapper",
+    "TargetPageMapping",
+    "TargetPageMappingType",
+    "TargetPageRef",
+    "build_page_mapping",
+    "build_target_page_mapping",
+    "create_page_mapping",
+    "map_pages",
+    "map_source_to_target_pages",
+]
