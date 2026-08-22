@@ -18,8 +18,8 @@ REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 MIGRATION_DIRECTORY = REPOSITORY_ROOT / "infrastructure" / "migrations"
 BASELINE_REVISION = "0001_baseline"
-PARENT_REVISION = "0013_warnings"
-HEAD_REVISION = "0014_reconstruction"
+PARENT_REVISION = "0014_reconstruction"
+HEAD_REVISION = "0015_exports"
 APPLICATION_TABLES = {
     "alembic_version",
     "application_jobs",
@@ -59,6 +59,7 @@ APPLICATION_TABLES = {
     "reconstruction_pages",
     "reconstruction_blocks",
     "target_page_mappings",
+    "exports",
 }
 
 

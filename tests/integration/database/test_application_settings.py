@@ -95,6 +95,7 @@ def test_migration_creates_exact_strict_application_schema(
         "reconstruction_pages",
         "reconstruction_blocks",
         "target_page_mappings",
+        "exports",
     }
     assert [
         (column["name"], str(column["type"]), column["nullable"])
@@ -187,6 +188,7 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "reconstruction_pages",
             "reconstruction_blocks",
             "target_page_mappings",
+            "exports",
         }
     finally:
         engine.dispose()
