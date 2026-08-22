@@ -19,7 +19,7 @@ are not third-party dependencies.
   checked with `pnpm list -r --depth 0 --json`.
 - License values were checked against the installed package metadata and,
   where metadata was incomplete, the package's installed license files.
-- `uv.lock` contains 56 resolved package records (including first-party
+- `uv.lock` contains 57 resolved package records (including first-party
   packages); `pnpm-lock.yaml` contains 341 package records. The tables below
   are the complete direct-dependency review. Transitive notices must still be
   regenerated before any public distribution.
@@ -44,6 +44,7 @@ Review statuses:
 | `pdfplumber` | `transloka-documents` | 0.11.10 | Digital PDF text, geometry, and table extraction | MIT (license classifier and `LICENSE.txt`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review PDF fixture rights and transitive notices before redistribution. |
 | `pypdf` | `transloka-documents` (`crypto` extra) | 6.14.2 | PDF structure, page manipulation, and encrypted-PDF support | BSD-3-Clause (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the BSD notice/disclaimer; review the `cryptography` extra and all transitive notices before redistribution. |
 | `pypdfium2` | `transloka-documents` | 5.12.1 | PDF rendering through PDFium | BSD-3-Clause, Apache-2.0, and bundled dependency licenses | VERIFIED_BUNDLED_NOTICES | Ship the package's PDFium and dependency license files/notices with any redistribution. |
+| `reportlab` | `transloka-reconstruction` | 5.0.1 | Generates transparent translated-text overlays for reconstructed PDFs | BSD-3-Clause (installed `LICENSE`) | VERIFIED_DIRECT_METADATA | Preserve ReportLab's BSD license notice and disclaimer; review transitive notices before redistribution. |
 | `fastapi` | `transloka-api` | 0.140.0 | Local HTTP API framework | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
 | `pydantic-settings` | `transloka-api` | 2.14.2 | Typed environment and application settings | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
 | `python-multipart` | `transloka-api` | 0.0.32 | Multipart upload parsing | Apache-2.0 (`License-Expression`) | VERIFIED_DIRECT_METADATA | Include the Apache-2.0 license and NOTICE information and mark modifications, if any. |
@@ -118,7 +119,7 @@ The manifests and lockfiles were checked for `PyMuPDF`, `pymupdf`,
 `pymupdf4llm`, and `fitz`. None is present as a dependency in the Python or
 Node dependency declarations or lockfiles. The names remain in governing
 documentation only as an explicit prohibition. The approved PDF stack is
-`pdfplumber`, `pypdf`, `pypdfium2`, and browser `pdfjs-dist`.
+`pdfplumber`, `pypdf`, `pypdfium2`, `reportlab`, and browser `pdfjs-dist`.
 
 | Prohibited component | Status | Distribution implication |
 | --- | --- | --- |

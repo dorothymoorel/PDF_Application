@@ -2,7 +2,9 @@
 name = "transloka-reconstruction"
 version = "0.0.0"
 requires-python = ">=3.12,<3.13"
-dependencies = []
+dependencies = [
+    "reportlab>=5.0.1,<6",
+]
 classifiers = ["Private :: Do Not Upload"]
 
 [build-system]
