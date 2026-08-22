@@ -16,6 +16,16 @@ export {
   type RetryTranslationInput,
   type RetryJobInput,
   type StartTranslationInput,
+  type PreviewReconstructionInput,
+  type ReconstructionJobResponse,
+  type ReconstructionMode,
+  type ReconstructionPageResponse,
+  type ReconstructionPreviewResponse,
+  type ReconstructionReadinessResponse,
+  type ReconstructionSettings,
+  type ReconstructionStatusResponse,
+  type RetryReconstructionPageInput,
+  type StartReconstructionInput,
   type TransLokaClientOptions,
 } from "./client";
 export {

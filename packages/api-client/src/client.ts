@@ -37,6 +37,81 @@ export type CancelTranslationInput = components["schemas"]["CancelTranslationReq
 export type RetryTranslationInput = components["schemas"]["RetryTranslationRequest"];
 export type StartTranslationInput = components["schemas"]["StartTranslationRequest"];
 
+export type ReconstructionMode = "OVERLAY" | "REFLOW" | "HYBRID";
+export type ReconstructionSettings = {
+  [key: string]: unknown;
+  minimum_body_font_pt?: number;
+  maximum_font_reduction_percent?: number;
+  allow_page_addition?: boolean;
+  allow_column_change?: boolean;
+};
+export type StartReconstructionInput = {
+  mode: ReconstructionMode;
+  page_ids?: string[] | null;
+  settings?: ReconstructionSettings;
+};
+export type PreviewReconstructionInput = {
+  page_id: string;
+  mode: ReconstructionMode;
+  settings?: ReconstructionSettings;
+};
+export type RetryReconstructionPageInput = {
+  fallback_mode: ReconstructionMode;
+  override_settings?: Record<string, unknown>;
+};
+export type ReconstructionReadinessResponse = {
+  data: {
+    ready: boolean;
+    blocking_issues: Array<{ code: string; message: string }>;
+    warnings: Array<{ code: string; count: number }>;
+    available_modes: ReconstructionMode[];
+  };
+  meta: { request_id: string };
+};
+export type ReconstructionJobResponse = {
+  data: { job_id: string; status: JobResource["status"] };
+  meta: { request_id: string };
+};
+export type ReconstructionStatusResponse = {
+  data: {
+    status: string;
+    progress: number;
+    completed_pages: number;
+    total_source_pages: number;
+    generated_target_pages: number;
+    warning_count: number;
+    critical_warning_count: number;
+    active_job_id: string | null;
+  };
+  meta: { request_id: string };
+};
+export type ReconstructionPreviewResponse = {
+  data: {
+    preview_id: string;
+    page_id: string;
+    mode: ReconstructionMode;
+    status: string;
+    temporary: boolean;
+    warnings: Array<{ code: string; message: string }>;
+  };
+  meta: { request_id: string };
+};
+export type ReconstructionPageResponse = {
+  data: {
+    id: string;
+    source_page_id: string;
+    target_page_start: number;
+    target_page_end: number;
+    strategy: string;
+    status: string;
+    block_status: Record<string, string>;
+    target_page_mapping: Array<Record<string, unknown>>;
+    warnings: Array<{ code: string; message: string }>;
+    preview_endpoint: string | null;
+  };
+  meta: { request_id: string };
+};
+
 export type JobListOptions = {
   cursor?: string;
   documentId?: string;
@@ -92,6 +167,10 @@ const DOCUMENT_ID_PATTERN =
   /^doc_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const JOB_ID_PATTERN =
   /^job_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const RECONSTRUCTION_PAGE_ID_PATTERN =
+  /^rcp_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
+const PREVIEW_ID_PATTERN =
+  /^prv_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SAFE_MESSAGE_PATTERN = /^[^\u0000-\u001F\u007F]{1,512}$/;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,31}$/;
 const MUTATION_METHODS: ReadonlySet<string> = new Set<MutationMethod>([
@@ -184,6 +263,25 @@ const RECONSTRUCTION_MODES = new Set<ProjectResource["reconstruction_mode"]>([
   "OVERLAY",
   "REFLOW",
   "HYBRID",
+]);
+
+const RECONSTRUCTION_STATUS_VALUES = new Set([
+  "NOT_STARTED",
+  "CREATED",
+  "QUEUED",
+  "RUNNING",
+  "RETRYING",
+  "CANCELLATION_REQUESTED",
+  "PREPARING",
+  "MEASURING",
+  "LAYING_OUT",
+  "RENDERING",
+  "VALIDATING",
+  "COMPLETED",
+  "COMPLETED_WITH_WARNINGS",
+  "PARTIALLY_COMPLETED",
+  "FAILED",
+  "CANCELLED",
 ]);
 
 function boundedTimeout(value: number): number {
@@ -473,6 +571,128 @@ function isTranslationStatusResponse(value: unknown): value is TranslationStatus
   );
 }
 
+function isReconstructionReadinessResponse(
+  value: unknown,
+): value is ReconstructionReadinessResponse {
+  if (!isRecord(value) || !isRecord(value.data) || !isResponseMeta(value.meta)) {
+    return false;
+  }
+  const data = value.data;
+  return (
+    typeof data.ready === "boolean" &&
+    Array.isArray(data.blocking_issues) &&
+    data.blocking_issues.every(isCodeMessage) &&
+    Array.isArray(data.warnings) &&
+    data.warnings.every(
+      (warning) =>
+        isRecord(warning) &&
+        typeof warning.code === "string" &&
+        ERROR_CODE_PATTERN.test(warning.code) &&
+        typeof warning.count === "number" &&
+        Number.isInteger(warning.count) &&
+        warning.count >= 0,
+    ) &&
+    Array.isArray(data.available_modes) &&
+    data.available_modes.every(
+      (mode) => typeof mode === "string" && RECONSTRUCTION_MODES.has(mode as ReconstructionMode),
+    )
+  );
+}
+
+function isCodeMessage(value: unknown): value is { code: string; message: string } {
+  return (
+    isRecord(value) &&
+    typeof value.code === "string" &&
+    ERROR_CODE_PATTERN.test(value.code) &&
+    typeof value.message === "string" &&
+    SAFE_MESSAGE_PATTERN.test(value.message)
+  );
+}
+
+function isReconstructionJobResponse(value: unknown): value is ReconstructionJobResponse {
+  return (
+    isRecord(value) &&
+    isRecord(value.data) &&
+    isResponseMeta(value.meta) &&
+    typeof value.data.job_id === "string" &&
+    JOB_ID_PATTERN.test(value.data.job_id) &&
+    typeof value.data.status === "string" &&
+    JOB_STATUSES.has(value.data.status as JobResource["status"])
+  );
+}
+
+function isReconstructionStatusResponse(value: unknown): value is ReconstructionStatusResponse {
+  if (!isRecord(value) || !isRecord(value.data) || !isResponseMeta(value.meta)) {
+    return false;
+  }
+  const data = value.data;
+  return (
+    typeof data.status === "string" &&
+    RECONSTRUCTION_STATUS_VALUES.has(data.status) &&
+    typeof data.progress === "number" &&
+    Number.isFinite(data.progress) &&
+    data.progress >= 0 &&
+    data.progress <= 1 &&
+    [
+      data.completed_pages,
+      data.total_source_pages,
+      data.generated_target_pages,
+      data.warning_count,
+      data.critical_warning_count,
+    ].every((item) => typeof item === "number" && Number.isInteger(item) && item >= 0) &&
+    (data.active_job_id === null ||
+      (typeof data.active_job_id === "string" && JOB_ID_PATTERN.test(data.active_job_id)))
+  );
+}
+
+function isReconstructionPreviewResponse(value: unknown): value is ReconstructionPreviewResponse {
+  if (!isRecord(value) || !isRecord(value.data) || !isResponseMeta(value.meta)) {
+    return false;
+  }
+  const data = value.data;
+  return (
+    typeof data.preview_id === "string" &&
+    PREVIEW_ID_PATTERN.test(data.preview_id) &&
+    typeof data.page_id === "string" &&
+    typeof data.mode === "string" &&
+    RECONSTRUCTION_MODES.has(data.mode as ReconstructionMode) &&
+    typeof data.status === "string" &&
+    SAFE_MESSAGE_PATTERN.test(data.status) &&
+    typeof data.temporary === "boolean" &&
+    Array.isArray(data.warnings) &&
+    data.warnings.every(isCodeMessage)
+  );
+}
+
+function isReconstructionPageResponse(value: unknown): value is ReconstructionPageResponse {
+  if (!isRecord(value) || !isRecord(value.data) || !isResponseMeta(value.meta)) {
+    return false;
+  }
+  const data = value.data;
+  return (
+    typeof data.id === "string" &&
+    RECONSTRUCTION_PAGE_ID_PATTERN.test(data.id) &&
+    typeof data.source_page_id === "string" &&
+    typeof data.target_page_start === "number" &&
+    Number.isInteger(data.target_page_start) &&
+    data.target_page_start >= 1 &&
+    typeof data.target_page_end === "number" &&
+    Number.isInteger(data.target_page_end) &&
+    data.target_page_end >= data.target_page_start &&
+    typeof data.strategy === "string" &&
+    SAFE_MESSAGE_PATTERN.test(data.strategy) &&
+    typeof data.status === "string" &&
+    RECONSTRUCTION_STATUS_VALUES.has(data.status) &&
+    isRecord(data.block_status) &&
+    Object.values(data.block_status).every((status) => typeof status === "string") &&
+    Array.isArray(data.target_page_mapping) &&
+    data.target_page_mapping.every(isRecord) &&
+    Array.isArray(data.warnings) &&
+    data.warnings.every(isCodeMessage) &&
+    (data.preview_endpoint === null || typeof data.preview_endpoint === "string")
+  );
+}
+
 function isJobListResponse(value: unknown): value is JobListResponse {
   if (
     !isRecord(value) ||
@@ -609,6 +829,27 @@ function translationReadinessPath(projectId: string): string {
     throw new TypeError("Project ID must use the canonical prefixed UUID format.");
   }
   return `/api/v1/projects/${projectId}/translation-readiness`;
+}
+
+function reconstructionPath(projectId: string, suffix: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new TypeError("Project ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/projects/${projectId}/reconstruction${suffix}`;
+}
+
+function reconstructionReadinessPath(projectId: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new TypeError("Project ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/projects/${projectId}/reconstruction-readiness`;
+}
+
+function reconstructionPagePath(pageId: string, suffix = ""): string {
+  if (!RECONSTRUCTION_PAGE_ID_PATTERN.test(pageId)) {
+    throw new TypeError("Reconstruction page ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/reconstruction/pages/${pageId}${suffix}`;
 }
 
 function jobListPath(options: JobListOptions): string {
@@ -986,6 +1227,128 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           method: "POST",
           path: translationPath(projectId, "/retry-failed"),
           validate: isTranslationStatusResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getReconstructionReadiness(
+      projectId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionReadinessResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the reconstruction readiness contract.",
+          method: "GET",
+          path: reconstructionReadinessPath(projectId),
+          validate: isReconstructionReadinessResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    previewReconstruction(
+      projectId: string,
+      input: PreviewReconstructionInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionPreviewResponse>> {
+      return request(
+        {
+          body: input,
+          invalidResponseMessage:
+            "The API response did not match the reconstruction preview contract.",
+          method: "POST",
+          path: reconstructionPath(projectId, "/preview"),
+          validate: isReconstructionPreviewResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    startReconstruction(
+      projectId: string,
+      startKey: string,
+      input: StartReconstructionInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionJobResponse>> {
+      return request(
+        {
+          body: input,
+          headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey(startKey) },
+          invalidResponseMessage:
+            "The API response did not match the reconstruction start contract.",
+          method: "POST",
+          path: reconstructionPath(projectId, "/start"),
+          validate: isReconstructionJobResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getReconstructionStatus(
+      projectId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionStatusResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the reconstruction status contract.",
+          method: "GET",
+          path: reconstructionPath(projectId, "/status"),
+          validate: isReconstructionStatusResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getReconstructionPage(
+      reconstructionPageId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionPageResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the reconstruction page contract.",
+          method: "GET",
+          path: reconstructionPagePath(reconstructionPageId),
+          validate: isReconstructionPageResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    retryReconstructionPage(
+      reconstructionPageId: string,
+      retryKey: string,
+      input: RetryReconstructionPageInput,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionJobResponse>> {
+      return request(
+        {
+          body: input,
+          headers: { [IDEMPOTENCY_KEY_HEADER]: idempotencyKey(retryKey) },
+          invalidResponseMessage:
+            "The API response did not match the reconstruction retry contract.",
+          method: "POST",
+          path: reconstructionPagePath(reconstructionPageId, "/retry"),
+          validate: isReconstructionJobResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    cancelReconstruction(
+      projectId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ReconstructionStatusResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the reconstruction cancellation contract.",
+          method: "POST",
+          path: reconstructionPath(projectId, "/cancel"),
+          validate: isReconstructionStatusResponse,
         },
         requestOptions,
       );
