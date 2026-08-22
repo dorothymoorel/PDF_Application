@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.cors import CORSMiddleware
+from transloka_core.backup.restore import FileRestoreCoordinator, RestoreWorkflow
 from transloka_core.database import create_session_factory, create_sqlite_engine
 
 from transloka_api import __version__
@@ -27,6 +28,7 @@ from transloka_api.middleware import (
     OriginValidationMiddleware,
     RequestIdMiddleware,
 )
+from transloka_api.routers.backups import router as backups_router
 from transloka_api.routers.documents import router as documents_router
 from transloka_api.routers.jobs import router as jobs_router
 from transloka_api.routers.pages import router as pages_router
@@ -80,6 +82,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine = create_sqlite_engine(effective_settings.data_directories)
         application.state.session_factory = create_session_factory(engine)
+
+        def close_database() -> None:
+            engine.dispose()
+
+        def reopen_database() -> None:
+            nonlocal engine
+            engine.dispose()
+            engine = create_sqlite_engine(effective_settings.data_directories)
+            application.state.session_factory = create_session_factory(engine)
+
+        coordinator = FileRestoreCoordinator(
+            effective_settings.data_directories,
+            close_database=close_database,
+            reopen_database=reopen_database,
+        )
+        application.state.restore_workflow = RestoreWorkflow(
+            effective_settings.data_directories,
+            coordinator=coordinator,
+        )
         try:
             yield
         finally:
@@ -132,6 +153,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(HTTPException, http_exception_handler)
     application.include_router(documents_router)
+    application.include_router(backups_router)
     application.include_router(jobs_router)
     application.include_router(pages_router)
     application.include_router(projects_router)

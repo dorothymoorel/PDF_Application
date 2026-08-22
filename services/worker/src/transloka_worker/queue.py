@@ -11,6 +11,8 @@ from transloka_core.storage import (
     resolve_local_data_directories,
 )
 
+from transloka_worker.maintenance import MaintenanceGate
+
 DEFAULT_WORKER_COUNT = 1
 QUEUE_DATABASE_FILENAME = "tasks.db"
 QUEUE_NAME = "transloka"
@@ -60,10 +62,17 @@ def resolve_queue_configuration(
 def create_huey(configuration: QueueConfiguration | None = None) -> Any:
     effective_configuration = configuration or resolve_queue_configuration()
     ensure_local_data_directories(effective_configuration.directories)
-    return SqliteHuey(
+    huey = SqliteHuey(
         QUEUE_NAME,
         filename=str(effective_configuration.database_path),
     )
+    maintenance_gate = MaintenanceGate(effective_configuration.directories)
+
+    @huey.pre_execute("transloka-maintenance-gate")  # type: ignore[untyped-decorator]
+    def enforce_maintenance_gate(_task: object) -> None:
+        maintenance_gate.ensure_available()
+
+    return huey
 
 
 def create_consumer(configuration: QueueConfiguration | None = None) -> Any:
