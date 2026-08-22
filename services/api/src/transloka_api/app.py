@@ -37,6 +37,7 @@ from transloka_api.middleware import (
 from transloka_api.routers.backups import router as backups_router
 from transloka_api.routers.documents import router as documents_router
 from transloka_api.routers.jobs import router as jobs_router
+from transloka_api.routers.maintenance import router as maintenance_router
 from transloka_api.routers.pages import router as pages_router
 from transloka_api.routers.projects import router as projects_router
 from transloka_api.routers.translation import router as translation_router
@@ -136,7 +137,11 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         marker = effective_settings.data_directories.root / MAINTENANCE_MARKER_FILENAME
         if marker.is_file() and not _maintenance_request_allowed(request):
             return await _maintenance_response(request)
-        if request.method not in {"POST", "PUT", "PATCH", "DELETE"} or _is_restore_request(request):
+        if (
+            request.method not in {"POST", "PUT", "PATCH", "DELETE"}
+            or _is_restore_request(request)
+            or _is_maintenance_request(request)
+        ):
             return await call_next(request)
 
         mutation_lock = ApplicationMutationLock(effective_settings.data_directories)
@@ -180,6 +185,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(documents_router)
     application.include_router(backups_router)
     application.include_router(jobs_router)
+    application.include_router(maintenance_router)
     application.include_router(pages_router)
     application.include_router(projects_router)
     application.include_router(translation_router)
@@ -232,6 +238,16 @@ def _is_restore_request(request: Request) -> bool:
         and parts[1:4] == ["api", "v1", "backups"]
         and bool(parts[4])
         and parts[5] == "restore"
+    )
+
+
+def _is_maintenance_request(request: Request) -> bool:
+    parts = request.url.path.rstrip("/").split("/")
+    return (
+        request.method == "POST"
+        and len(parts) == 5
+        and parts[1:4] == ["api", "v1", "maintenance"]
+        and bool(parts[4])
     )
 
 
