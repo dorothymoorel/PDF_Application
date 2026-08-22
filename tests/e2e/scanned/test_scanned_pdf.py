@@ -46,6 +46,8 @@ from transloka_core.database.models.documents import (
     DocumentClass,
     DocumentStatus,
 )
+from transloka_core.database.models.exports import Export, ExportProfile, ExportStatus, ExportType
+from transloka_core.database.models.files import FileRole, FileStatus
 from transloka_core.database.models.glossary import (
     GlossaryMatchMode,
     GlossaryRuleType,
@@ -89,6 +91,8 @@ from transloka_documents.ocr.orchestration import (
 from transloka_documents.validation import PdfValidationLimits, validate_pdf
 from transloka_glossary import GlossaryRepository
 from transloka_glossary.snapshots import create_glossary_snapshot
+from transloka_quality.pdf import validate_final_pdf
+from transloka_reconstruction.overlay import OverlayText, generate_overlay_page
 from transloka_translation.orchestration import (
     SqlAlchemyTranslationRunStore,
     TranslationOperation,
@@ -124,6 +128,8 @@ SEGMENT_ID = _id("seg_", 905)
 GLOSSARY_ID = _id("gls_", 906)
 TERM_ID = _id("trm_", 907)
 TERM_REVISION_ID = _id("grv_", 908)
+EXPORT_ID = _id("exp_", 909)
+EXPORT_FILE_ID = _id("fil_", 910)
 
 
 @dataclass(frozen=True, slots=True)
@@ -225,7 +231,7 @@ def scanned_workflow(
         engine.dispose()
 
 
-def test_scanned_pdf_workflow_reaches_review_without_mutating_original(
+def test_scanned_pdf_workflow_reaches_downloadable_export_without_mutating_original(
     scanned_workflow: ScannedWorkflowContext,
 ) -> None:
     context = scanned_workflow
@@ -542,8 +548,88 @@ def test_scanned_pdf_workflow_reaches_review_without_mutating_original(
             "Mesin terjemahan memakai alur kerja.",
         ]
 
+    approved_text = "Mesin terjemahan memakai alur kerja."
+    raw_payload = json.loads(raw_path.read_text(encoding="utf-8"))
+    assert raw_payload["text"] == ocr_result.text
+
+    reconstructed_pdf = _reconstruct_scanned_pdf(context.pdf, approved_text)
+    validation_report = validate_final_pdf(
+        BytesIO(reconstructed_pdf),
+        expected_page_count=1,
+        required_segments=(approved_text,),
+        require_selectable_text=True,
+    )
+    validation_report.raise_for_completion()
+    assert validation_report.is_valid is True
+    assert approved_text in validation_report.extracted_text
+
+    export_storage_key = f"projects/{PROJECT_ID}/exports/{EXPORT_ID}.pdf"
+    temporary = context.storage.write_temporary(BytesIO(reconstructed_pdf))
+    committed = context.storage.commit(temporary, export_storage_key, immutable=True)
+    with transaction_scope(context.factory) as session:
+        StoredFilesRepository(session).create(
+            file_id=EXPORT_FILE_ID,
+            project_id=PROJECT_ID,
+            document_id=DOCUMENT_ID,
+            file_role=FileRole.EXPORT,
+            storage_key=committed.storage_key,
+            original_filename="scanned-export.pdf",
+            safe_filename="scanned-export.pdf",
+            mime_type="application/pdf",
+            size_bytes=committed.size_bytes,
+            checksum_sha256=committed.checksum_sha256,
+            is_immutable=True,
+            status=FileStatus.VALIDATED,
+            metadata={"validation_report": validation_report.completion_status},
+            created_at=CREATED_AT,
+        )
+        session.add(
+            Export(
+                id=EXPORT_ID,
+                project_id=PROJECT_ID,
+                document_id=DOCUMENT_ID,
+                reconstruction_job_id=None,
+                file_id=EXPORT_FILE_ID,
+                export_type=ExportType.TRANSLATED_PDF.value,
+                output_profile=ExportProfile.STANDARD.value,
+                version_number=1,
+                status=ExportStatus.COMPLETED.value,
+                page_count=validation_report.page_count,
+                size_bytes=validation_report.size_bytes,
+                checksum_sha256=validation_report.checksum_sha256,
+                validation_report_id="val_scanned_workflow",
+                settings_json="{}",
+                created_at=CREATED_AT,
+                completed_at=CREATED_AT,
+                error_code=None,
+            )
+        )
+
+    with context.storage.open_read(export_storage_key) as exported:
+        assert exported.read() == reconstructed_pdf
+    with context.factory() as session:
+        export = session.get(Export, EXPORT_ID)
+        assert export is not None
+        assert export.status == ExportStatus.COMPLETED.value
+        assert export.file_id == EXPORT_FILE_ID
     with context.storage.open_read(context.original_storage_key) as original:
         assert original.read() == context.pdf
+
+
+def _reconstruct_scanned_pdf(source_pdf: bytes, translated_text: str) -> bytes:
+    return generate_overlay_page(
+        source_pdf,
+        texts=(
+            OverlayText(
+                translated_text,
+                x=72,
+                y=648,
+                width=300,
+                height=24,
+                text_id="scanned-translated-segment",
+            ),
+        ),
+    )
 
 
 class _GlossaryAwareProvider:
