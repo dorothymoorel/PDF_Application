@@ -98,6 +98,7 @@ def test_migration_creates_exact_strict_application_schema(
         "exports",
         "quality_reports",
         "quality_checks",
+        "backups",
     }
     assert [
         (column["name"], str(column["type"]), column["nullable"])
@@ -193,6 +194,7 @@ def test_migration_downgrades_to_baseline_and_reupgrades(
             "exports",
             "quality_reports",
             "quality_checks",
+            "backups",
         }
     finally:
         engine.dispose()
