@@ -18,8 +18,8 @@ REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
 MIGRATION_DIRECTORY = REPOSITORY_ROOT / "infrastructure" / "migrations"
 BASELINE_REVISION = "0001_baseline"
-PARENT_REVISION = "0014_reconstruction"
-HEAD_REVISION = "0015_exports"
+PARENT_REVISION = "0015_exports"
+HEAD_REVISION = "0016_quality"
 APPLICATION_TABLES = {
     "alembic_version",
     "application_jobs",
@@ -60,6 +60,8 @@ APPLICATION_TABLES = {
     "reconstruction_blocks",
     "target_page_mappings",
     "exports",
+    "quality_reports",
+    "quality_checks",
 }
 
 
@@ -166,6 +168,8 @@ def test_offline_upgrade_generates_sql_without_creating_database(
     assert "CREATE TABLE reconstruction_pages" in sql
     assert "CREATE TABLE reconstruction_blocks" in sql
     assert "CREATE TABLE target_page_mappings" in sql
+    assert "CREATE TABLE quality_reports" in sql
+    assert "CREATE TABLE quality_checks" in sql
     assert HEAD_REVISION in sql
     assert str(root) not in sql
     assert not root.exists()
