@@ -12,6 +12,7 @@ from pathlib import Path, PurePosixPath
 from typing import cast
 
 MANIFEST_FORMAT_VERSION = 1
+PRIVATE_DATA_WARNING = "This backup may contain private or sensitive document data."
 _SHA256_PATTERN = re.compile(r"[0-9a-f]{64}\Z")
 
 
@@ -98,6 +99,7 @@ class BackupManifest:
     created_at: str
     format_version: int = MANIFEST_FORMAT_VERSION
     verified: bool = False
+    privacy_warning: str = PRIVATE_DATA_WARNING
 
     def __post_init__(self) -> None:
         if isinstance(self.backup_type, str):
@@ -117,6 +119,7 @@ class BackupManifest:
         _validate_text(self.application_version, "application version")
         _validate_text(self.database_schema_version, "database schema version")
         _validate_text(self.created_at, "created_at")
+        _validate_text(self.privacy_warning, "privacy warning")
         if not self.included_content:
             raise BackupManifestError("A manifest must include at least one content path.")
         normalised_content = tuple(_normalise_relative_path(path) for path in self.included_content)
@@ -176,6 +179,7 @@ class BackupManifest:
             "application_version": self.application_version,
             "database_schema_version": self.database_schema_version,
             "created_at": self.created_at,
+            "privacy_warning": self.privacy_warning,
             "included_content": list(self.included_content),
             "files": [file.to_dict() for file in self.files],
         }
@@ -215,6 +219,9 @@ class BackupManifest:
             raise BackupManifestError("The database schema version is invalid.")
         if not isinstance(raw_created_at, str):
             raise BackupManifestError("The manifest timestamp is invalid.")
+        raw_privacy_warning = payload.get("privacy_warning", PRIVATE_DATA_WARNING)
+        if not isinstance(raw_privacy_warning, str):
+            raise BackupManifestError("The manifest privacy warning is invalid.")
         if not isinstance(raw_content, list) or not all(
             isinstance(path, str) for path in raw_content
         ):
@@ -239,6 +246,7 @@ class BackupManifest:
             files=files,
             created_at=raw_created_at,
             format_version=raw_format_version,
+            privacy_warning=raw_privacy_warning,
         )
 
     @classmethod
@@ -376,6 +384,7 @@ __all__ = [
     "BackupType",
     "MANIFEST_FORMAT_VERSION",
     "ManifestFile",
+    "PRIVATE_DATA_WARNING",
     "build_manifest",
     "create_manifest",
     "load_manifest",
