@@ -1,158 +1,162 @@
 # Third-Party License Inventory
 
-**Project:** TransLoka  
-**Inventory Date:** 2026-07-26  
-**Project License:** All Rights Reserved  
-**Distribution Status:** Personal MVP; not publicly distributed
+**Project:** TransLoka
+**Inventory date:** 2026-08-23
+**Project license:** All Rights Reserved (not yet selected for redistribution)
+**Distribution status:** Personal MVP; not publicly distributed
 
-This inventory records direct dependencies and approved future components. It
-does not constitute legal advice or a complete transitive dependency review.
-First-party TransLoka workspace packages are not third-party dependencies.
+This is an engineering inventory, not legal advice. It records the direct
+third-party dependencies declared by the repository and their resolved
+versions. First-party TransLoka workspace packages are listed separately and
+are not third-party dependencies.
 
-## Current Direct Dependency Inventory
+## Evidence and review method
 
-The repository currently has no third-party runtime dependency. The following
-development dependencies are declared and locked. `uv-build` is declared as
-the workspace build backend but is not recorded in `uv.lock`.
+- Declarations were read from the root, Python workspace, service, and Node
+  workspace manifests.
+- Python versions were resolved from `uv.lock` (`uv tree --depth 1` reports the
+  same resolution); Node versions were resolved from `pnpm-lock.yaml` and
+  checked with `pnpm list -r --depth 0 --json`.
+- License values were checked against the installed package metadata and,
+  where metadata was incomplete, the package's installed license files.
+- `uv.lock` contains 56 resolved package records (including first-party
+  packages); `pnpm-lock.yaml` contains 341 package records. The tables below
+  are the complete direct-dependency review. Transitive notices must still be
+  regenerated before any public distribution.
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| @eslint/js | Node development dependency | ESLint JavaScript rule configuration | DECLARED_LOCKED_DIRECT_DEV | 10.0.1 | MIT | Local cached package metadata (`package.json` license field) | Development-only; review transitive notices before distribution | LOCAL_METADATA_VERIFIED | Direct dependency from `package.json` and `pnpm-lock.yaml` |
-| ESLint | Node development dependency | JavaScript and TypeScript lint runner | DECLARED_LOCKED_DIRECT_DEV | 10.8.0 | MIT | Local cached package metadata (`package.json` license field) | Development-only; review transitive notices before distribution | LOCAL_METADATA_VERIFIED | Direct dependency from `package.json` and `pnpm-lock.yaml` |
-| TypeScript | Node development dependency | TypeScript compiler and type checker | DECLARED_LOCKED_DIRECT_DEV | 6.0.2 | Apache-2.0 | Local cached package metadata (`package.json` license field) | Development-only; preserve required notices if redistributed | LOCAL_METADATA_VERIFIED | Direct dependency from `package.json` and `pnpm-lock.yaml` |
-| typescript-eslint | Node development dependency | Type-aware ESLint integration | DECLARED_LOCKED_DIRECT_DEV | 8.65.0 | MIT | Local cached package metadata (`package.json` license field) | Development-only; review transitive notices before distribution | LOCAL_METADATA_VERIFIED | Direct dependency from `package.json` and `pnpm-lock.yaml` |
-| mypy | Python development dependency | Static Python type checking | DECLARED_LOCKED_DIRECT_DEV | 2.3.0 | MIT | Local cached Python `METADATA` license expression | Development-only; review transitive notices before distribution | LOCAL_METADATA_VERIFIED | Direct development dependency from `pyproject.toml` and `uv.lock` |
-| Ruff | Python development dependency | Python linting, import sorting, and formatting | DECLARED_LOCKED_DIRECT_DEV | 0.16.0 | MIT | Local cached Python `METADATA` license expression | Development-only; review binary and transitive notices before distribution | LOCAL_METADATA_VERIFIED | Direct development dependency from `pyproject.toml` and `uv.lock` |
-| uv-build / `uv_build` | Python build dependency | Build backend for workspace packages | CONFIGURED_BUILD_DEPENDENCY_NOT_LOCKED | `>=0.11.26,<0.12` | REQUIRES_VERIFICATION | Workspace `pyproject.toml` files; no local license metadata found | Do not bundle or distribute until exact resolved version and license are verified | REQUIRES_VERIFICATION | Version is a manifest constraint, not a locked resolution |
+Review statuses:
 
-Transitive packages are intentionally excluded from this bootstrap inventory.
-They must be regenerated and reviewed before distribution.
+- `VERIFIED_DIRECT_METADATA` — version and license verified from local package
+  metadata or the package's installed license file.
+- `VERIFIED_BUNDLED_NOTICES` — package metadata and bundled native/dependency
+  license files were identified; those notices must travel with a distribution.
+- `UNRESOLVED_BUILD_METADATA` — a build-system constraint is declared but is
+  not resolved in the application lockfile.
+- `NOT_SELECTED` — optional model/runtime component has no selected artifact.
 
-## Approved but Not Yet Installed
+## Direct Python runtime dependencies
 
-Every component in this section has version `TBD` and status
-`APPROVED_NOT_INSTALLED`. A listed component is not approved for distribution
-until its exact package, version, direct and transitive licenses, notices, and
-Windows compatibility are verified.
+| Package | Workspace | Version | Function | License | Review status | Distribution implication |
+| --- | --- | ---: | --- | --- | --- | --- |
+| `alembic` | `transloka-core` | 1.18.5 | Database schema migrations | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `sqlalchemy` | `transloka-core` | 2.0.51 | Synchronous database engine, ORM, and persistence primitives | MIT (package metadata) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `pydantic` | `transloka-document-ir` | 2.13.4 | Typed document and API validation models | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `pdfplumber` | `transloka-documents` | 0.11.10 | Digital PDF text, geometry, and table extraction | MIT (license classifier and `LICENSE.txt`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review PDF fixture rights and transitive notices before redistribution. |
+| `pypdf` | `transloka-documents` (`crypto` extra) | 6.14.2 | PDF structure, page manipulation, and encrypted-PDF support | BSD-3-Clause (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the BSD notice/disclaimer; review the `cryptography` extra and all transitive notices before redistribution. |
+| `pypdfium2` | `transloka-documents` | 5.12.1 | PDF rendering through PDFium | BSD-3-Clause, Apache-2.0, and bundled dependency licenses | VERIFIED_BUNDLED_NOTICES | Ship the package's PDFium and dependency license files/notices with any redistribution. |
+| `fastapi` | `transloka-api` | 0.140.0 | Local HTTP API framework | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `pydantic-settings` | `transloka-api` | 2.14.2 | Typed environment and application settings | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `python-multipart` | `transloka-api` | 0.0.32 | Multipart upload parsing | Apache-2.0 (`License-Expression`) | VERIFIED_DIRECT_METADATA | Include the Apache-2.0 license and NOTICE information and mark modifications, if any. |
+| `uvicorn` | `transloka-api` | 0.51.0 | Local ASGI server | BSD-3-Clause (`License-Expression`) | VERIFIED_DIRECT_METADATA | Preserve the BSD notice/disclaimer; review transitive notices before redistribution. |
+| `huey` | `transloka-worker` | 3.3.2 | Local background job queue | MIT (installed `LICENSE` file) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
 
-### Frontend
+## Direct Python development dependencies
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| Next.js | Frontend | Local web application framework | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review framework and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| React | Frontend | User interface runtime | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review runtime and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Tailwind CSS | Frontend | Utility-based styling | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review generated CSS and package notices before distribution | REQUIRES_VERIFICATION | Not installed |
-| shadcn/ui | Frontend | Reusable UI component source | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review copied component source and bundled notices | REQUIRES_VERIFICATION | Exact components remain TBD |
-| TanStack Query | Frontend | Server-state management | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Zustand | Frontend | Local client-state management | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| React Hook Form | Frontend | Form state and validation integration | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Zod | Frontend | TypeScript schema validation | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| PDF.js | Frontend | Browser PDF rendering | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Verify exact package and bundled worker notices | REQUIRES_VERIFICATION | Exact package name remains TBD |
+| Package | Declared by | Version | Function | License | Review status | Distribution implication |
+| --- | --- | ---: | --- | --- | --- | --- |
+| `httpx2` | root `dev` group | 2.9.1 | HTTP client for API/integration tests | BSD-3-Clause (`License-Expression`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the BSD notice/disclaimer and review transitive notices. |
+| `mypy` | root `dev` group | 2.3.0 | Static Python type checking | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `pytest` | root `dev` group | 9.1.1 | Python test runner | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `ruff` | root `dev` group | 0.16.0 | Python linting and formatting | MIT (`License-Expression`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
 
-### Backend
+## Direct Node runtime dependencies
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| FastAPI | Backend | Local HTTP API framework | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Pydantic | Backend | Validation and settings models | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and compiled dependencies before distribution | REQUIRES_VERIFICATION | Not installed |
-| SQLAlchemy | Backend | Database ORM and persistence | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Alembic | Backend | Database migrations | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Huey | Backend | Local background task queue | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
+| Package | Workspace | Version | Function | License | Review status | Distribution implication |
+| --- | --- | ---: | --- | --- | --- | --- |
+| `@hookform/resolvers` | `apps/web` | 5.5.7 | Connects form state to schema resolvers | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `@tanstack/react-query` | `apps/web` | 5.101.4 | Client-side server-state and cache management | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `next` | `apps/web` | 16.2.12 | React web application framework | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review framework transitive notices before redistribution. |
+| `pdfjs-dist` | `apps/web` | 6.2.108 | Browser-side PDF rendering | Apache-2.0 (`package.json`) | VERIFIED_DIRECT_METADATA | Include the Apache-2.0 license and NOTICE information and review bundled worker/transitive notices. |
+| `react` | `apps/web` | 19.2.8 | UI runtime | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `react-dom` | `apps/web` | 19.2.8 | React DOM renderer | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `react-hook-form` | `apps/web` | 7.83.0 | Browser form state management | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
+| `zod` | `apps/web` | 4.4.3 | Runtime TypeScript/JavaScript schema validation | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Preserve the MIT notice; review transitive notices before redistribution. |
 
-### Document Processing
+## Direct Node development dependencies
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| pdfplumber | Document processing | Digital PDF text and geometry extraction | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package, transitive libraries, and PDF fixture rights | REQUIRES_VERIFICATION | Not installed |
-| pypdf | Document processing | PDF structure and page manipulation | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| pypdfium2 | Document processing | PDF rendering | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review bundled PDFium binary license and notices | REQUIRES_VERIFICATION | Not installed |
-| ReportLab | Document processing | Overlay PDF generation | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package, font handling, and notices before distribution | REQUIRES_VERIFICATION | Not installed |
-| Jinja2 | Document processing | Internal reconstruction templates | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review package and transitive licenses before distribution | REQUIRES_VERIFICATION | Not installed |
-| Pillow | Document processing | Image processing | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review native libraries and bundled binary notices | REQUIRES_VERIFICATION | Not installed |
-| OpenCV | Document processing | Image analysis and preprocessing | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Verify exact distribution and bundled native binaries | REQUIRES_VERIFICATION | Exact Python distribution remains TBD |
+| Package | Workspace | Version | Function | License | Review status | Distribution implication |
+| --- | --- | ---: | --- | --- | --- | --- |
+| `@eslint/js` | root | 10.0.1 | ESLint JavaScript rule configuration | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `eslint` | root | 10.8.0 | JavaScript/TypeScript lint runner | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `typescript` | root | 6.0.2 | TypeScript compiler and type checker | Apache-2.0 (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, include Apache-2.0 license/NOTICE information. |
+| `typescript-eslint` | root | 8.65.0 | Type-aware ESLint integration | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `@tailwindcss/postcss` | `apps/web` | 4.3.3 | Tailwind PostCSS integration | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `@testing-library/dom` | `apps/web` | 10.4.1 | DOM behavior testing utilities | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `@testing-library/react` | `apps/web` | 16.3.2 | React component testing utilities | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `@types/node` | `apps/web` | 24.13.3 | Node.js TypeScript declarations | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `@types/react` | `apps/web` | 19.2.17 | React TypeScript declarations | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `@types/react-dom` | `apps/web` | 19.2.3 | React DOM TypeScript declarations | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `jsdom` | `apps/web` | 30.0.0 | DOM implementation for tests | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `tailwindcss` | `apps/web` | 4.3.3 | Utility CSS generation | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `vitest` | `apps/web` and `packages/api-client` | 4.1.10 | JavaScript/TypeScript test runner | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `openapi-typescript` | `packages/api-client` | 7.13.0 | Generates TypeScript API types from OpenAPI | MIT (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, preserve the MIT notice and review transitive notices. |
+| `typescript` | `packages/api-client` | 5.9.3 | API-client TypeScript compiler | Apache-2.0 (`package.json`) | VERIFIED_DIRECT_METADATA | Development-only; if bundled, include Apache-2.0 license/NOTICE information. |
 
-### Testing
+## First-party workspace packages
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| pytest | Testing | Python test runner | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Development-only; review transitive notices | REQUIRES_VERIFICATION | Not installed |
-| pytest-asyncio | Testing | Async Python test support | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Development-only; review transitive notices | REQUIRES_VERIFICATION | Not installed |
-| httpx | Testing | API and integration test client | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review runtime use and transitive licenses | REQUIRES_VERIFICATION | Not installed |
-| Vitest | Testing | TypeScript unit test runner | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Development-only; review transitive notices | REQUIRES_VERIFICATION | Not installed |
-| Testing Library | Testing | UI behavior testing | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Verify exact packages and transitive licenses | REQUIRES_VERIFICATION | Package selection remains TBD |
-| Playwright | Testing | Browser end-to-end testing | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review browser binary licenses and redistribution terms | REQUIRES_VERIFICATION | Not installed |
+The following packages are private, first-party TransLoka workspaces and are
+not third-party license entries: `transloka-workspace`, `transloka-api`,
+`transloka-core`, `transloka-document-ir`, `transloka-documents`,
+`transloka-glossary`, `transloka-quality`, `transloka-reconstruction`,
+`transloka-translation`, `transloka-worker`, `@transloka/root`,
+`@transloka/web`, `@transloka/api-client`, `@transloka/ui`, and
+`@transloka/shared-config`.
 
-### Optional Dependencies
+The Python packages declare `Private :: Do Not Upload`, and the Node workspaces
+are marked `private: true`. These declarations do not grant rights to any
+third-party dependency listed above.
 
-These components are approved only for their documented optional capability.
-They must not become unconditional base dependencies without a new task and
-dependency review.
+## Build-system dependency not resolved in the application lock
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| PaddleOCR | Optional OCR | OCR provider package | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review Python package, PaddlePaddle, binaries, and model weights separately | REQUIRES_VERIFICATION | Optional OCR dependency group |
-| PP-StructureV3 | Optional OCR | Document layout and structure analysis | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Package and model-weight rights require separate review | REQUIRES_VERIFICATION | Optional OCR capability |
-| WeasyPrint | Optional reconstruction | Reflow PDF generation | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review Python package and all native runtime dependencies | REQUIRES_VERIFICATION | Optional reconstruction dependency group |
-| OCRmyPDF | Optional derivative tool | Optional OCR derivative workflow | APPROVED_NOT_INSTALLED | TBD | REQUIRES_VERIFICATION | Not locally verified | Review executable, transitive tools, and redistribution requirements | REQUIRES_VERIFICATION | Not part of the core PDF stack |
+| Package | Constraint | Function | License | Review status | Distribution implication |
+| --- | --- | --- | --- | --- | --- |
+| `uv-build` / `uv_build` | `>=0.11.26,<0.12` in each Python package build-system table | Builds the Python workspace packages | Not locally resolved in `uv.lock` | UNRESOLVED_BUILD_METADATA | Resolve and verify the exact build backend license before bundling or distributing a built artifact. |
 
-## Prohibited Dependencies
+## PyMuPDF exclusion
 
-The following components must not be installed, used, or substituted for the
-approved PDF stack. They are prohibited pending a new licensing and
-architecture decision, an approved ADR, and Project Owner approval. This
-status is a project governance decision, not a legal conclusion.
+The manifests and lockfiles were checked for `PyMuPDF`, `pymupdf`,
+`pymupdf4llm`, and `fitz`. None is present as a dependency in the Python or
+Node dependency declarations or lockfiles. The names remain in governing
+documentation only as an explicit prohibition. The approved PDF stack is
+`pdfplumber`, `pypdf`, `pypdfium2`, and browser `pdfjs-dist`.
 
-| Component | Category | Purpose | Current Status | Version | License | License Source | Distribution Consideration | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| PyMuPDF | Prohibited PDF dependency | PDF processing | PROHIBITED | N/A | NOT_ASSESSED | Governing TransLoka documentation | Must not be installed or distributed with this project | PROHIBITED | Prohibited pending a new licensing and architecture decision |
-| fitz | Prohibited PDF dependency | PyMuPDF import/package alias | PROHIBITED | N/A | NOT_ASSESSED | Governing TransLoka documentation | Must not be installed or distributed with this project | PROHIBITED | Codex must not substitute it for approved PDF libraries |
-| pymupdf4llm | Prohibited PDF dependency | PDF-to-LLM processing | PROHIBITED | N/A | NOT_ASSESSED | Governing TransLoka documentation | Must not be installed or distributed with this project | PROHIBITED | Requires an approved ADR and Project Owner approval |
+| Prohibited component | Status | Distribution implication |
+| --- | --- | --- |
+| PyMuPDF | PROHIBITED; not installed or locked | Must not be added or distributed without a new licensing/architecture decision and owner approval. |
+| `fitz` | PROHIBITED alias; not installed or locked | Must not substitute for the approved PDF stack. |
+| `pymupdf4llm` | PROHIBITED; not installed or locked | Must not be added or distributed without a new approved decision. |
 
-## Local Model License Register
+## Local model license register (separate from application dependencies)
 
-Model licenses are separate from the TransLoka application license. Local
-availability does not imply commercial-use or redistribution rights. Model
-weights must not be committed to Git, and model selection must follow
-`docs/LOCAL_MODEL_BENCHMARK.md`.
+Model weights are not application dependencies and their license must be
+reviewed separately from the Ollama runtime. No model is selected or pinned in
+the repository, and model weights must not be committed to Git.
 
-No default model selected.
+| Artifact | Version/tag | License | Commercial use | Redistribution | Review status |
+| --- | --- | --- | --- | --- | --- |
+| Ollama runtime | Not declared or locked | Separate runtime terms; verify the installed release before distribution | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED |
+| Selected local model weights | None selected | Model-specific license required | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED |
+| PaddleOCR / PP-Structure model weights | None selected | Model-specific license required | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED |
 
-| Model ID | Model Family | Source | Version or Tag | License | Commercial Use Allowed | Redistribution Allowed | Attribution Required | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| TBD | TBD | TBD | TBD | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED | Complete before selecting or distributing any Ollama model |
+Local availability does not imply commercial-use or redistribution rights.
+Selecting a model for a later task requires recording its exact model ID/tag,
+source, license, attribution, and redistribution terms in this section.
 
-## OCR Model License Register
+## Distribution gate and maintenance
 
-The PaddleOCR and PP-Structure Python packages and their model files may have
-different license or redistribution conditions. No rights for model weights
-are assumed.
+The Personal MVP is not currently distributed. Before a public release,
+installer, hosted version, paid distribution, or portfolio download:
 
-| Model ID | Model Family | Source | Version or Tag | License | Commercial Use Allowed | Redistribution Allowed | Attribution Required | Review Status | Notes |
-| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| TBD | PaddleOCR model weights | TBD | TBD | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | Verify the selected OCR model artifact separately |
-| TBD | PP-Structure model weights | TBD | TBD | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | Verify the selected structure-analysis model artifact separately |
+1. Re-resolve both lockfiles and regenerate the direct and transitive notice
+   inventory.
+2. Review all transitive licenses, including bundled PDFium and any native
+   binaries.
+3. Review selected local model and OCR model licenses separately.
+4. Include every required license, copyright, NOTICE, and attribution file.
+5. Verify font and PDF fixture redistribution rights.
+6. Select and record a final project license.
 
-## Distribution Considerations
-
-The current Personal MVP is not being distributed. Before any public release,
-installer, paid distribution, hosted version, or portfolio download:
-
-1. Regenerate the dependency inventory.
-2. Inspect all direct and transitive dependency licenses.
-3. Inspect all selected local model licenses.
-4. Inspect all selected OCR model licenses.
-5. Include every required notice and attribution.
-6. Verify font redistribution rights.
-7. Verify bundled binary licenses.
-8. Review WeasyPrint runtime dependencies.
-9. Review PDF fixture rights.
-10. Select a final project license.
-
-## Maintenance Rules
-
-- Update this file whenever a manifest, lockfile, build dependency, model, or
-  bundled binary changes.
-- Derive installed versions from lockfiles and verify licenses from authoritative
-  package metadata.
-- Mark unresolved entries `REQUIRES_VERIFICATION`; do not infer license rights.
-- Perform a complete direct and transitive review before distribution.
+Update this file whenever a manifest, lockfile, build backend, model, or
+bundled binary changes. Unresolved license metadata must remain explicitly
+marked `UNRESOLVED_BUILD_METADATA` or `REQUIRES_VERIFICATION`; do not infer
+distribution rights from package names alone.
