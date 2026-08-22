@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Any
 
 from huey import SqliteHuey  # type: ignore[import-untyped]
+from huey.signals import SIGNAL_INTERRUPTED  # type: ignore[import-untyped]
 from transloka_core.storage import (
     LocalDataDirectories,
     ensure_local_data_directories,
@@ -70,7 +71,24 @@ def create_huey(configuration: QueueConfiguration | None = None) -> Any:
 
     @huey.pre_execute("transloka-maintenance-gate")  # type: ignore[untyped-decorator]
     def enforce_maintenance_gate(_task: object) -> None:
-        maintenance_gate.ensure_available()
+        maintenance_gate.start_task(_task)
+
+    @huey.post_execute("transloka-maintenance-release")  # type: ignore[untyped-decorator]
+    def release_maintenance_gate(
+        task: object,
+        _task_value: object,
+        _exception: BaseException | None,
+    ) -> None:
+        maintenance_gate.finish_task(task)
+
+    @huey.signal(SIGNAL_INTERRUPTED)  # type: ignore[untyped-decorator]
+    def release_interrupted_task(
+        _signal: str,
+        task: object,
+        *_args: object,
+        **_kwargs: object,
+    ) -> None:
+        maintenance_gate.finish_task(task)
 
     return huey
 

@@ -5,10 +5,16 @@ from typing import Any, Literal
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
 from pydantic import BaseModel, Field
+from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
 from starlette.middleware.cors import CORSMiddleware
-from transloka_core.backup.restore import FileRestoreCoordinator, RestoreWorkflow
+from transloka_core.backup.restore import (
+    MAINTENANCE_MARKER_FILENAME,
+    ApplicationMutationLock,
+    FileRestoreCoordinator,
+    RestoreWorkflow,
+)
 from transloka_core.database import create_session_factory, create_sqlite_engine
 
 from transloka_api import __version__
@@ -123,6 +129,25 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         except Exception as exc:
             return await unexpected_exception_handler(request, exc)
 
+    @application.middleware("http")
+    async def enforce_maintenance_mode(
+        request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        marker = effective_settings.data_directories.root / MAINTENANCE_MARKER_FILENAME
+        if marker.is_file() and not _maintenance_request_allowed(request):
+            return await _maintenance_response(request)
+        if request.method not in {"POST", "PUT", "PATCH", "DELETE"} or _is_restore_request(request):
+            return await call_next(request)
+
+        mutation_lock = ApplicationMutationLock(effective_settings.data_directories)
+        await run_in_threadpool(mutation_lock.acquire)
+        try:
+            if marker.is_file():
+                return await _maintenance_response(request)
+            return await call_next(request)
+        finally:
+            mutation_lock.release()
+
     application.add_middleware(ClientHeaderMiddleware)
     application.add_middleware(
         CORSMiddleware,
@@ -182,3 +207,40 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         return SystemHealthResponse()
 
     return application
+
+
+def _maintenance_request_allowed(request: Request) -> bool:
+    if request.method == "OPTIONS":
+        return True
+    path = request.url.path.rstrip("/") or "/"
+    if path in {"/health", "/api/v1/system/health"}:
+        return request.method in {"GET", "HEAD"}
+    parts = path.split("/")
+    return (
+        request.method in {"GET", "HEAD"}
+        and len(parts) == 5
+        and parts[1:4] == ["api", "v1", "jobs"]
+        and bool(parts[4])
+    )
+
+
+def _is_restore_request(request: Request) -> bool:
+    parts = request.url.path.rstrip("/").split("/")
+    return (
+        request.method == "POST"
+        and len(parts) == 6
+        and parts[1:4] == ["api", "v1", "backups"]
+        and bool(parts[4])
+        and parts[5] == "restore"
+    )
+
+
+async def _maintenance_response(request: Request) -> Response:
+    return await transloka_exception_handler(
+        request,
+        TransLokaError(
+            code="APPLICATION_IN_MAINTENANCE_MODE",
+            message="The application is temporarily unavailable during maintenance.",
+            status_code=503,
+        ),
+    )

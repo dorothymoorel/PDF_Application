@@ -1,6 +1,23 @@
 // This file is generated. Do not edit manually.
 
 export interface paths {
+    "/api/v1/backups/{backup_id}/restore": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Restore Backup */
+        post: operations["restore_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/jobs": {
         parameters: {
             query?: never;
@@ -313,6 +330,12 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * BackupType
+         * @description Supported backup scopes.
+         * @enum {string}
+         */
+        BackupType: "DATABASE_ONLY" | "METADATA" | "FULL_PROJECTS" | "FULL_APPLICATION" | "PRE_RESTORE";
         /**
          * BlockType
          * @enum {string}
@@ -747,6 +770,45 @@ export interface components {
             /** Request Id */
             request_id: string;
         };
+        /** RestoreData */
+        RestoreData: {
+            /** Backup Id */
+            backup_id: string;
+            backup_type: components["schemas"]["BackupType"];
+            /** Job Id */
+            job_id: string;
+            /** Pre Restore Backup Id */
+            pre_restore_backup_id: string;
+            /**
+             * Status
+             * @default COMPLETED
+             * @constant
+             */
+            status: "COMPLETED";
+        };
+        /** RestoreRequest */
+        RestoreRequest: {
+            /**
+             * Confirmation
+             * @constant
+             */
+            confirmation: "RESTORE";
+            /**
+             * Create Pre Restore Backup
+             * @default true
+             * @constant
+             */
+            create_pre_restore_backup: true;
+            /**
+             * Restore Files
+             * @default true
+             */
+            restore_files: boolean;
+        };
+        /** RestoreResponse */
+        RestoreResponse: {
+            data: components["schemas"]["RestoreData"];
+        };
         /** RetryJobRequest */
         RetryJobRequest: {
             /** Retry Failed Items Only */
@@ -965,6 +1027,79 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    restore_backup: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                backup_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RestoreRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RestoreResponse"];
+                };
+            };
+            /** @description The backup was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore conflicts with existing state or maintenance. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore request or archive is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore could not be completed safely. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The application is in maintenance mode. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     list_jobs: {
         parameters: {
             query?: {

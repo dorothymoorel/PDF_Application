@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+import hashlib
+import importlib
 import os
 import shutil
 import sqlite3
 import tempfile
+import time
 from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Protocol
+from typing import Any, BinaryIO, Protocol, cast
 from zipfile import ZipFile
 
 from transloka_core.backup.archive import BackupArchiveArtifact, create_full_project_backup
@@ -27,10 +30,13 @@ from transloka_core.storage import (
 )
 
 MAINTENANCE_MARKER_FILENAME = ".maintenance.lock"
+APPLICATION_MUTATION_LOCK_FILENAME = ".application-mutation.lock"
+WORKER_EXECUTION_LOCK_FILENAME = ".worker-execution.lock"
 QUEUE_DATABASE_FILENAME = "tasks.db"
 _MANIFEST_FILENAME = "manifest.json"
 _WARNING_FILENAME = "backup-warning.txt"
 _CONFIRMATION = "RESTORE"
+_LOCK_POLL_INTERVAL_SECONDS = 0.05
 
 
 class RestoreError(RuntimeError):
@@ -51,6 +57,68 @@ class RestoreBusyError(RestoreError):
 
 class RestoreRollbackError(RestoreError):
     """Raised when the previous state cannot be restored after a failure."""
+
+
+class _CrossProcessFileLock:
+    """One exclusive byte-range lock held through an open file handle."""
+
+    def __init__(self, directories: LocalDataDirectories, filename: str) -> None:
+        self._directories = directories
+        self._path = directories.root / filename
+        self._stream: BinaryIO | None = None
+
+    @property
+    def acquired(self) -> bool:
+        return self._stream is not None
+
+    def acquire(self) -> None:
+        if self._stream is not None:
+            return
+        ensure_local_data_directories(self._directories)
+        stream = self._path.open("a+b")
+        try:
+            stream.seek(0, os.SEEK_END)
+            if stream.tell() == 0:
+                stream.write(b"\0")
+                stream.flush()
+                os.fsync(stream.fileno())
+            while True:
+                stream.seek(0)
+                try:
+                    _lock_stream(stream)
+                except OSError:
+                    time.sleep(_LOCK_POLL_INTERVAL_SECONDS)
+                    continue
+                self._stream = stream
+                return
+        except BaseException:
+            stream.close()
+            raise
+
+    def release(self) -> None:
+        stream = self._stream
+        if stream is None:
+            return
+        self._stream = None
+        try:
+            stream.seek(0)
+            _unlock_stream(stream)
+        finally:
+            stream.close()
+
+
+class WorkerExecutionLock(_CrossProcessFileLock):
+    """Cross-process lease held while a worker mutation executes."""
+
+    def __init__(self, directories: LocalDataDirectories) -> None:
+        super().__init__(directories, WORKER_EXECUTION_LOCK_FILENAME)
+
+
+class ApplicationMutationLock(_CrossProcessFileLock):
+    """Cross-process lease held while an API mutation executes."""
+
+    def __init__(self, directories: LocalDataDirectories) -> None:
+        super().__init__(directories, APPLICATION_MUTATION_LOCK_FILENAME)
 
 
 class RestoreCoordinator(Protocol):
@@ -103,6 +171,8 @@ class FileRestoreCoordinator:
         self._reopen_database = reopen_database or _noop
         self._restart_checks = restart_checks or self._check_database
         self._owns_marker = False
+        self._application_lock = ApplicationMutationLock(directories)
+        self._worker_lock = WorkerExecutionLock(directories)
 
     def enter_maintenance(self) -> None:
         ensure_local_data_directories(self._directories)
@@ -123,10 +193,24 @@ class FileRestoreCoordinator:
             self._marker.unlink(missing_ok=True)
             raise
         self._owns_marker = True
+        try:
+            self._application_lock.acquire()
+        except BaseException:
+            self._marker.unlink(missing_ok=True)
+            self._owns_marker = False
+            raise
+        if not self._marker.is_file():
+            self._application_lock.release()
+            self._owns_marker = False
+            raise RestoreError("Maintenance mode ended before API mutations were paused.")
 
     def pause_worker(self) -> None:
         if not self._owns_marker or not self._marker.is_file():
             raise RestoreError("Maintenance mode was not entered before pausing the worker.")
+        self._worker_lock.acquire()
+        if not self._owns_marker or not self._marker.is_file():
+            self._worker_lock.release()
+            raise RestoreError("Maintenance mode ended before the worker was paused.")
 
     def close_database(self) -> None:
         self._close_database()
@@ -138,12 +222,14 @@ class FileRestoreCoordinator:
         self._restart_checks()
 
     def resume_worker(self) -> None:
-        return None
+        self._worker_lock.release()
 
     def exit_maintenance(self) -> None:
+        self._worker_lock.release()
         if self._owns_marker:
             self._marker.unlink(missing_ok=True)
             self._owns_marker = False
+        self._application_lock.release()
 
     def _check_database(self) -> None:
         database = self._directories.database / DATABASE_FILENAME
@@ -157,10 +243,32 @@ class FileRestoreCoordinator:
                     raise RestoreError(
                         "The restored application database has foreign-key violations."
                     )
+                self._check_managed_files(connection)
         except RestoreError:
             raise
         except sqlite3.Error as exc:
             raise RestoreError("The restored application database could not be opened.") from exc
+
+    def _check_managed_files(self, connection: sqlite3.Connection) -> None:
+        rows = connection.execute(
+            """
+            SELECT storage_key, size_bytes, checksum_sha256
+            FROM stored_files
+            WHERE status IN ('AVAILABLE', 'VALIDATED')
+            ORDER BY id
+            """
+        )
+        for storage_key, size_bytes, checksum_sha256 in rows:
+            try:
+                path = _managed_file(self._directories.root, str(storage_key))
+                if path.stat().st_size != int(size_bytes):
+                    raise RestoreError("A restored managed file has an invalid size.")
+                if _sha256_file(path) != str(checksum_sha256):
+                    raise RestoreError("A restored managed file failed its checksum.")
+            except RestoreError:
+                raise
+            except (OSError, TypeError, ValueError) as exc:
+                raise RestoreError("A restored managed file is unavailable.") from exc
 
 
 class RestoreWorkflow:
@@ -180,9 +288,13 @@ class RestoreWorkflow:
         archive_path: str | os.PathLike[str],
         *,
         confirmation: str,
+        restore_files: bool = True,
+        completion: Callable[[RestoreResult], None] | None = None,
     ) -> RestoreResult:
         if confirmation != _CONFIRMATION:
             raise RestoreConfirmationError("Restore requires the exact confirmation token RESTORE.")
+        if not isinstance(restore_files, bool):
+            raise RestoreValidationError("The restore-files option must be a boolean.")
         ensure_local_data_directories(self._directories)
         source_archive = self._resolve_archive(archive_path)
         entered = False
@@ -192,6 +304,7 @@ class RestoreWorkflow:
         rollback_failed = False
         staging_root: Path | None = None
         pre_restore_backup: BackupArchiveArtifact | None = None
+        result: RestoreResult | None = None
         try:
             self._coordinator.enter_maintenance()
             entered = True
@@ -209,13 +322,28 @@ class RestoreWorkflow:
 
             self._coordinator.close_database()
             database_closed = True
-            replacement = self._replace_active_state(staging_root, verified.manifest.backup_type)
+            replacement = self._replace_active_state(
+                staging_root,
+                verified.manifest.backup_type,
+                restore_files=restore_files,
+            )
             self._coordinator.reopen_database()
             database_closed = False
             self._coordinator.restart_checks()
-        except Exception as exc:
+            result = RestoreResult(
+                archive_path=source_archive,
+                backup_type=verified.manifest.backup_type,
+                restored_content=verified.verified_files,
+                pre_restore_backup=pre_restore_backup,
+            )
+            if completion is not None:
+                completion(result)
+        except BaseException as exc:
             if replacement is not None:
                 try:
+                    if not database_closed:
+                        self._coordinator.close_database()
+                        database_closed = True
                     self._rollback(replacement)
                     self._coordinator.reopen_database()
                     database_closed = False
@@ -231,6 +359,8 @@ class RestoreWorkflow:
                     raise RestoreRollbackError(
                         "The restore failed while the database was closed."
                     ) from reopen_exc
+            if isinstance(exc, (KeyboardInterrupt, SystemExit)):
+                raise
             if isinstance(exc, RestoreError):
                 raise
             raise RestoreError("The restore could not be completed safely.") from exc
@@ -246,14 +376,9 @@ class RestoreWorkflow:
                 if entered:
                     self._coordinator.exit_maintenance()
 
-        if pre_restore_backup is None:
-            raise RestoreError("The pre-restore backup was not created.")
-        return RestoreResult(
-            archive_path=source_archive,
-            backup_type=verified.manifest.backup_type,
-            restored_content=verified.verified_files,
-            pre_restore_backup=pre_restore_backup,
-        )
+        if result is None:
+            raise RestoreError("The restore result was not created.")
+        return result
 
     def _resolve_archive(self, archive_path: str | os.PathLike[str]) -> Path:
         try:
@@ -325,7 +450,11 @@ class RestoreWorkflow:
             raise RestoreValidationError("The restore archive could not be staged safely.") from exc
 
     def _replace_active_state(
-        self, staging_root: Path, backup_type: BackupType
+        self,
+        staging_root: Path,
+        backup_type: BackupType,
+        *,
+        restore_files: bool,
     ) -> _ReplacementState:
         rollback_root = Path(
             tempfile.mkdtemp(prefix="transloka-rollback-", dir=self._directories.temporary)
@@ -346,20 +475,20 @@ class RestoreWorkflow:
                     rollback_root / "database" / QUEUE_DATABASE_FILENAME,
                 )
             staged_projects = staging_root / "projects"
-            if backup_type is BackupType.FULL_PROJECTS:
+            if restore_files and backup_type is BackupType.FULL_PROJECTS:
                 state.projects = _replace_directory(
                     staged_projects,
                     self._directories.projects,
                     rollback_root / "projects",
                 )
-            elif backup_type is BackupType.METADATA:
+            elif restore_files and backup_type is BackupType.METADATA:
                 state.metadata = _replace_metadata_files(
                     staged_projects,
                     self._directories.projects,
                     rollback_root / "projects",
                 )
             return state
-        except Exception:
+        except BaseException:
             try:
                 self._rollback(state)
             except Exception as rollback_exc:
@@ -492,8 +621,62 @@ def _safe_child(root: Path, relative_path: str) -> Path:
     return candidate
 
 
+def _managed_file(root: Path, storage_key: str) -> Path:
+    if (
+        not storage_key
+        or not storage_key.isprintable()
+        or "\\" in storage_key
+        or ":" in storage_key
+    ):
+        raise RestoreError("A restored managed-file key is unsafe.")
+    parts = storage_key.split("/")
+    if any(not part or part in {".", ".."} for part in parts):
+        raise RestoreError("A restored managed-file key is unsafe.")
+    candidate = root.joinpath(*parts)
+    current = root
+    for part in parts:
+        current /= part
+        if current.is_symlink():
+            raise RestoreError("A restored managed-file path is unsafe.")
+    try:
+        resolved = candidate.resolve(strict=True)
+    except OSError as exc:
+        raise RestoreError("A restored managed file is unavailable.") from exc
+    if not resolved.is_relative_to(root.resolve(strict=True)) or not resolved.is_file():
+        raise RestoreError("A restored managed file is unavailable.")
+    return resolved
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def _noop() -> None:
     return None
+
+
+def _lock_stream(stream: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
+        return
+    fcntl = cast(Any, importlib.import_module("fcntl"))
+    fcntl.flock(stream.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock_stream(stream: BinaryIO) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)
+        return
+    fcntl = cast(Any, importlib.import_module("fcntl"))
+    fcntl.flock(stream.fileno(), fcntl.LOCK_UN)
 
 
 def _remove_file(path: Path) -> None:
@@ -513,6 +696,8 @@ def _remove_tree(path: Path | None) -> None:
 
 
 __all__ = [
+    "APPLICATION_MUTATION_LOCK_FILENAME",
+    "ApplicationMutationLock",
     "FileRestoreCoordinator",
     "MAINTENANCE_MARKER_FILENAME",
     "RestoreBusyError",
@@ -523,4 +708,6 @@ __all__ = [
     "RestoreRollbackError",
     "RestoreValidationError",
     "RestoreWorkflow",
+    "WORKER_EXECUTION_LOCK_FILENAME",
+    "WorkerExecutionLock",
 ]
