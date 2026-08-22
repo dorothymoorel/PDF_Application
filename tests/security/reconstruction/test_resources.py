@@ -98,6 +98,7 @@ def test_oversized_data_uri_is_rejected_before_loading(
 
 def test_symlink_resource_is_rejected(
     resource_roots: tuple[Path, Path, Path],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     root, assets, fonts = resource_roots
     outside = root / "outside.png"
@@ -105,8 +106,12 @@ def test_symlink_resource_is_rejected(
     link = assets / "link.png"
     try:
         link.symlink_to(outside)
-    except (OSError, NotImplementedError) as exc:
-        pytest.skip(f"symlinks are unavailable in this environment: {exc}")
+    except (OSError, NotImplementedError):
+        # Windows CI may not grant symlink creation.  Keep this a real
+        # regression test by simulating the filesystem predicate instead of
+        # silently skipping a critical control.
+        link.write_bytes(outside.read_bytes())
+        monkeypatch.setattr(Path, "is_symlink", lambda path: path == link)
     loader = RestrictedResourceLoader(asset_root=assets, font_root=fonts)
 
     with pytest.raises(ResourceSymlinkError):
