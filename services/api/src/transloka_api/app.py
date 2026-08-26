@@ -52,6 +52,7 @@ from transloka_api.routers.settings import router as settings_router
 from transloka_api.routers.translation import router as translation_router
 from transloka_api.routers.warnings import router as warnings_router
 from transloka_api.schemas import ErrorResponse
+from transloka_api.services.benchmarks import ProductionQuickBenchmarkRunner
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -98,16 +99,22 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     @asynccontextmanager
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine = create_sqlite_engine(effective_settings.data_directories)
-        application.state.session_factory = create_session_factory(engine)
+        session_factory = create_session_factory(engine)
+        application.state.session_factory = session_factory
+        application.state.quick_benchmark_runner = ProductionQuickBenchmarkRunner(session_factory)
 
         def close_database() -> None:
             engine.dispose()
 
         def reopen_database() -> None:
-            nonlocal engine
+            nonlocal engine, session_factory
             engine.dispose()
             engine = create_sqlite_engine(effective_settings.data_directories)
-            application.state.session_factory = create_session_factory(engine)
+            session_factory = create_session_factory(engine)
+            application.state.session_factory = session_factory
+            application.state.quick_benchmark_runner = ProductionQuickBenchmarkRunner(
+                session_factory
+            )
 
         coordinator = FileRestoreCoordinator(
             effective_settings.data_directories,

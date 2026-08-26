@@ -8,6 +8,7 @@ from transloka_api.exception_handlers.exceptions import TransLokaError
 from transloka_api.middleware import get_request_id
 from transloka_api.schemas.errors import ErrorResponse
 from transloka_api.schemas.projects import ResponseMeta
+from transloka_api.services.benchmarks import BenchmarkConfigurationError
 from transloka_translation.benchmark import QuickBenchmarkResult
 
 
@@ -107,6 +108,12 @@ async def start_quick_benchmark(
             batch_sizes=payload.batch_sizes,
             benchmark_id=f"{model_id}:{idempotency_key}",
         )
+    except BenchmarkConfigurationError as error:
+        raise TransLokaError(
+            code=error.code,
+            message=str(error),
+            status_code=error.status_code,
+        ) from error
     except ValueError as error:
         raise TransLokaError(
             code="VALIDATION_ERROR",
