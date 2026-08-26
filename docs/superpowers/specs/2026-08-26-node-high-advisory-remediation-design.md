@@ -22,7 +22,9 @@ the configured package registry.
 Use narrowly scoped pnpm overrides to select only the first patched release in each
 affected dependency line:
 
-- update the existing `brace-expansion` override to `5.0.9`;
+- replace the path-specific `brace-expansion` override with an exact official-registry
+  tarball override for `5.0.9`, avoiding stale package-metadata caches while retaining
+  registry integrity verification;
 - update the existing `js-yaml` override to `4.3.1`;
 - add a `postcss@8.5.23>nanoid` override for `3.3.18`.
 
