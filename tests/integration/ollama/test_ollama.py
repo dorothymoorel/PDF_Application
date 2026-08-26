@@ -20,6 +20,13 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
+from transloka_translation.benchmark import QUICK_BENCHMARK_CASES
+from transloka_translation.prompts import (
+    PromptMessage,
+    PromptRole,
+    TranslationPrompt,
+    build_translation_prompt,
+)
 from transloka_translation.providers import (
     ProviderErrorCode,
     ProviderHealthStatus,
@@ -44,12 +51,23 @@ class StubResponse:
     status: int = 200
     delay_seconds: float = 0
     headers: tuple[tuple[str, str], ...] = ()
+    raw_body: bytes | None = None
 
 
 @dataclass(frozen=True, slots=True)
 class FakeOllama:
     base_url: str
     requests: list[tuple[str, str]]
+    request_bodies: list[dict[str, object]]
+
+
+@dataclass(slots=True)
+class Cancellation:
+    is_cancelled: bool = False
+
+
+def _benchmark_request() -> object:
+    return QUICK_BENCHMARK_CASES[0].to_request()
 
 
 @contextmanager
@@ -57,14 +75,28 @@ def _fake_ollama(
     responses: Mapping[str, StubResponse],
 ) -> Iterator[FakeOllama]:
     recorded_requests: list[tuple[str, str]] = []
+    recorded_bodies: list[dict[str, object]] = []
 
     class Handler(BaseHTTPRequestHandler):
         def do_GET(self) -> None:
             recorded_requests.append((self.command, self.path))
+            self._write_response()
+
+        def do_POST(self) -> None:
+            recorded_requests.append((self.command, self.path))
+            content_length = int(self.headers.get("Content-Length", "0"))
+            body = json.loads(self.rfile.read(content_length).decode("utf-8"))
+            assert isinstance(body, dict)
+            recorded_bodies.append(body)
+            self._write_response()
+
+        def _write_response(self) -> None:
             response = responses.get(self.path, StubResponse({"error": "not found"}, status=404))
             if response.delay_seconds:
                 sleep(response.delay_seconds)
-            body = json.dumps(response.payload).encode("utf-8")
+            body = response.raw_body
+            if body is None:
+                body = json.dumps(response.payload).encode("utf-8")
             self.send_response(response.status)
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -86,6 +118,7 @@ def _fake_ollama(
         yield FakeOllama(
             base_url=f"http://127.0.0.1:{server.server_port}",
             requests=recorded_requests,
+            request_bodies=recorded_bodies,
         )
     finally:
         server.shutdown()
@@ -211,6 +244,303 @@ def test_timeout_is_normalized() -> None:
             asyncio.run(provider.list_models())
 
     assert raised.value.code is ProviderErrorCode.TIMEOUT
+
+
+@pytest.mark.parametrize("model_name", ("", "   ", "bad\nmodel", "x" * 201))
+def test_translation_rejects_invalid_bound_model_name(model_name: str) -> None:
+    with pytest.raises(ValueError, match="model name"):
+        OllamaTranslationProvider(model_name=model_name)
+
+
+@pytest.mark.parametrize("temperature", (-0.01, 2.01, float("nan"), True))
+def test_translation_rejects_invalid_temperature(temperature: object) -> None:
+    with pytest.raises(ValueError, match="temperature"):
+        OllamaTranslationProvider(temperature=temperature)  # type: ignore[arg-type]
+
+
+@pytest.mark.parametrize("timeout", (0, 601, float("nan"), True))
+def test_translation_rejects_invalid_translation_timeout(timeout: object) -> None:
+    with pytest.raises(ValueError, match="translation timeout"):
+        OllamaTranslationProvider(translation_timeout_seconds=timeout)  # type: ignore[arg-type]
+
+
+def test_translation_requires_a_bound_model_before_network_access() -> None:
+    with _fake_ollama({}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url)
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(_benchmark_request()))
+
+    assert raised.value.code is ProviderErrorCode.INVALID_REQUEST
+    assert fake.requests == []
+
+
+def test_translation_rejects_unknown_request_type_before_network_access() -> None:
+    with _fake_ollama({}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate({"source": "unsafe"}))
+
+    assert raised.value.code is ProviderErrorCode.INVALID_REQUEST
+    assert fake.requests == []
+
+
+def test_translation_request_posts_structured_chat_payload() -> None:
+    request = QUICK_BENCHMARK_CASES[0].to_request()
+    response_text = json.dumps(
+        {
+            "segments": [
+                {
+                    "segment_id": "quick_001_general_prose",
+                    "translated_text": "Aplikasi menyimpan setiap proyek secara terpisah.",
+                }
+            ]
+        }
+    )
+    with _fake_ollama({"/api/chat": StubResponse({"message": {"content": response_text}})}) as fake:
+        provider = OllamaTranslationProvider(
+            fake.base_url,
+            model_name="model-a:latest",
+            temperature=0.25,
+        )
+        result = asyncio.run(provider.translate(request))
+
+    assert result == response_text
+    assert fake.requests == [("POST", "/api/chat")]
+    assert len(fake.request_bodies) == 1
+    payload = fake.request_bodies[0]
+    assert payload["model"] == "model-a:latest"
+    assert payload["stream"] is False
+    assert payload["options"] == {"temperature": 0.25}
+    messages = payload["messages"]
+    assert isinstance(messages, list)
+    assert len(messages) == 2
+    system_message, user_message = messages
+    assert isinstance(system_message, dict)
+    assert isinstance(user_message, dict)
+    assert [system_message["role"], user_message["role"]] == ["system", "user"]
+    source_envelope = json.loads(user_message["content"])
+    assert isinstance(source_envelope, dict)
+    source_data = source_envelope["source_data"]
+    assert isinstance(source_data, dict)
+    segments = source_data["segments"]
+    assert isinstance(segments, list)
+    first_segment = segments[0]
+    assert isinstance(first_segment, dict)
+    assert first_segment["segment_id"] == "quick_001_general_prose"
+    response_schema = payload["format"]
+    assert isinstance(response_schema, dict)
+    assert response_schema["additionalProperties"] is False
+    properties = response_schema["properties"]
+    assert isinstance(properties, dict)
+    segments_property = properties["segments"]
+    assert isinstance(segments_property, dict)
+    segment_schema = segments_property["items"]
+    assert isinstance(segment_schema, dict)
+    assert segment_schema["additionalProperties"] is False
+    item_properties = segment_schema["properties"]
+    assert isinstance(item_properties, dict)
+    segment_id_property = item_properties["segment_id"]
+    assert isinstance(segment_id_property, dict)
+    assert segment_id_property["enum"] == ["quick_001_general_prose"]
+
+
+def test_translation_accepts_prebuilt_prompt() -> None:
+    prompt = build_translation_prompt(QUICK_BENCHMARK_CASES[0].to_request())
+    response_text = '{"segments":[]}'
+    with _fake_ollama({"/api/chat": StubResponse({"message": {"content": response_text}})}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        result = asyncio.run(provider.translate(prompt))
+
+    assert result == response_text
+    assert fake.request_bodies[0]["format"] == prompt.response_schema
+
+
+@pytest.mark.parametrize("response_schema_json", ("{", "[]"))
+def test_translation_rejects_invalid_prebuilt_schema_before_network_access(
+    response_schema_json: str,
+) -> None:
+    canonical = build_translation_prompt(QUICK_BENCHMARK_CASES[0].to_request())
+    prompt = TranslationPrompt(
+        prompt_version=canonical.prompt_version,
+        messages=canonical.messages,
+        response_schema_json=response_schema_json,
+    )
+    with _fake_ollama({}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(prompt))
+
+    assert raised.value.code is ProviderErrorCode.INVALID_REQUEST
+    assert str(raised.value) == "The translation request is invalid."
+    assert fake.requests == []
+
+
+@pytest.mark.parametrize(
+    ("status", "expected_code", "retryable"),
+    (
+        (400, ProviderErrorCode.INVALID_REQUEST, False),
+        (404, ProviderErrorCode.INVALID_REQUEST, False),
+        (429, ProviderErrorCode.RATE_LIMIT, True),
+        (500, ProviderErrorCode.PROVIDER_UNAVAILABLE, True),
+        (302, ProviderErrorCode.PROVIDER_UNAVAILABLE, False),
+    ),
+)
+def test_translation_normalizes_http_errors(
+    status: int,
+    expected_code: ProviderErrorCode,
+    retryable: bool,
+) -> None:
+    secret = "source-response-secret"
+    headers = (("Location", "/redirected"),) if status == 302 else ()
+    responses = {
+        "/api/chat": StubResponse({"error": secret}, status=status, headers=headers),
+        "/redirected": StubResponse({"message": {"content": "redirect followed"}}),
+    }
+    with _fake_ollama(responses) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(_benchmark_request()))
+
+    assert raised.value.code is expected_code
+    assert raised.value.retryable is retryable
+    assert secret not in str(raised.value)
+    assert raised.value.__cause__ is None
+    assert fake.requests == [("POST", "/api/chat")]
+
+
+@pytest.mark.parametrize(
+    "response",
+    (
+        StubResponse({}, raw_body=b"{"),
+        StubResponse([]),
+        StubResponse({}),
+        StubResponse({"message": None}),
+        StubResponse({"message": {"content": ""}}),
+        StubResponse({"message": {"content": 123}}),
+    ),
+)
+def test_translation_rejects_invalid_outer_response(response: StubResponse) -> None:
+    with _fake_ollama({"/api/chat": response}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(_benchmark_request()))
+
+    assert raised.value.code is ProviderErrorCode.INVALID_RESPONSE
+
+
+def test_translation_rejects_oversized_response() -> None:
+    body = b'{"message":{"content":"' + (b"x" * (1024 * 1024)) + b'"}}'
+    with _fake_ollama({"/api/chat": StubResponse({}, raw_body=body)}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(_benchmark_request()))
+
+    assert raised.value.code is ProviderErrorCode.INVALID_RESPONSE
+
+
+def test_translation_rejects_oversized_request_before_network_access() -> None:
+    canonical = build_translation_prompt(QUICK_BENCHMARK_CASES[0].to_request())
+    oversized = TranslationPrompt(
+        prompt_version=canonical.prompt_version,
+        messages=(
+            canonical.messages[0],
+            PromptMessage(role=PromptRole.USER, content="x" * (1024 * 1024)),
+        ),
+        response_schema_json=canonical.response_schema_json,
+    )
+    with _fake_ollama({}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(oversized))
+
+    assert raised.value.code is ProviderErrorCode.INVALID_REQUEST
+    assert fake.requests == []
+
+
+def test_translation_timeout_is_retryable() -> None:
+    with _fake_ollama(
+        {
+            "/api/chat": StubResponse(
+                {"message": {"content": "{}"}},
+                delay_seconds=0.2,
+            )
+        }
+    ) as fake:
+        provider = OllamaTranslationProvider(
+            fake.base_url,
+            model_name="model-a:latest",
+            translation_timeout_seconds=0.05,
+        )
+        with pytest.raises(TranslationProviderError) as raised:
+            asyncio.run(provider.translate(_benchmark_request()))
+
+    assert raised.value.code is ProviderErrorCode.TIMEOUT
+    assert raised.value.retryable is True
+
+
+def test_translation_honors_cancellation_before_dispatch() -> None:
+    with _fake_ollama({}) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(
+                provider.translate(
+                    _benchmark_request(),
+                    cancellation=Cancellation(is_cancelled=True),
+                )
+            )
+
+    assert fake.requests == []
+
+
+def test_translation_honors_cancellation_while_awaiting_response() -> None:
+    signal = Cancellation()
+
+    async def cancel_during_request(provider: OllamaTranslationProvider) -> float:
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        task = asyncio.create_task(provider.translate(_benchmark_request(), cancellation=signal))
+        await asyncio.sleep(0.05)
+        signal.is_cancelled = True
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        return loop.time() - started
+
+    with _fake_ollama(
+        {
+            "/api/chat": StubResponse(
+                {"message": {"content": "{}"}},
+                delay_seconds=0.5,
+            )
+        }
+    ) as fake:
+        provider = OllamaTranslationProvider(
+            fake.base_url,
+            model_name="model-a:latest",
+            translation_timeout_seconds=1,
+        )
+        elapsed = asyncio.run(cancel_during_request(provider))
+
+    assert elapsed < 0.3
+
+
+def test_translation_propagates_direct_coroutine_cancellation() -> None:
+    async def cancel_task(provider: OllamaTranslationProvider) -> None:
+        task = asyncio.create_task(provider.translate(_benchmark_request()))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+    with _fake_ollama(
+        {
+            "/api/chat": StubResponse(
+                {"message": {"content": "{}"}},
+                delay_seconds=0.2,
+            )
+        }
+    ) as fake:
+        provider = OllamaTranslationProvider(fake.base_url, model_name="model-a:latest")
+        asyncio.run(cancel_task(provider))
 
 
 def test_models_router_exposes_health_and_detected_models(
