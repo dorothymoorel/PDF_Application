@@ -17,8 +17,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.revisions import router as revisions_router
-from transloka_api.routers.segments import router as segments_router
 from transloka_api.services.segments import (
     EmptyUnlockReasonError,
     LockSegment,
@@ -92,8 +90,6 @@ def page_editor_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(data_root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
-    application.include_router(segments_router)
-    application.include_router(revisions_router)
 
     with TestClient(application) as client:
         project_response = client.post(

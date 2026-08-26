@@ -18,7 +18,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.ocr import router as ocr_router
 from transloka_api.services.source_resolution import (
     ResolveSource,
     SourceResolutionService,
@@ -67,7 +66,6 @@ def ocr_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(data_root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
-    application.include_router(ocr_router)
 
     with TestClient(application) as client:
         project_response = client.post(

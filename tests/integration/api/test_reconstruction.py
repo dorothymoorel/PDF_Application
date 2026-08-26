@@ -16,7 +16,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_HEADER,
     CLIENT_VERSION_VALUE,
 )
-from transloka_api.routers.reconstruction import router as reconstruction_router
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.documents import Document, DocumentClass, DocumentStatus
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
@@ -66,7 +65,6 @@ def reconstruction_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path / "reconstruction api"))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
-    application.include_router(reconstruction_router)
     with TestClient(application) as client:
         created = client.post("/api/v1/projects", headers=CLIENT_HEADERS, json=PROJECT)
         assert created.status_code == 201

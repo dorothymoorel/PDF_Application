@@ -35,12 +35,22 @@ from transloka_api.middleware import (
     RequestIdMiddleware,
 )
 from transloka_api.routers.backups import router as backups_router
+from transloka_api.routers.benchmarks import router as benchmarks_router
 from transloka_api.routers.documents import router as documents_router
+from transloka_api.routers.glossaries import router as glossaries_router
 from transloka_api.routers.jobs import router as jobs_router
 from transloka_api.routers.maintenance import router as maintenance_router
+from transloka_api.routers.models import router as models_router
+from transloka_api.routers.ocr import router as ocr_router
 from transloka_api.routers.pages import router as pages_router
 from transloka_api.routers.projects import router as projects_router
+from transloka_api.routers.reconstruction import router as reconstruction_router
+from transloka_api.routers.review import router as review_router
+from transloka_api.routers.revisions import router as revisions_router
+from transloka_api.routers.segments import router as segments_router
+from transloka_api.routers.settings import router as settings_router
 from transloka_api.routers.translation import router as translation_router
+from transloka_api.routers.warnings import router as warnings_router
 from transloka_api.schemas import ErrorResponse
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -182,13 +192,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.add_exception_handler(TransLokaError, transloka_exception_handler)
     application.add_exception_handler(RequestValidationError, request_validation_exception_handler)
     application.add_exception_handler(HTTPException, http_exception_handler)
-    application.include_router(documents_router)
     application.include_router(backups_router)
+    application.include_router(benchmarks_router)
+    application.include_router(documents_router)
+    application.include_router(glossaries_router)
     application.include_router(jobs_router)
     application.include_router(maintenance_router)
+    application.include_router(models_router)
+    application.include_router(ocr_router)
     application.include_router(pages_router)
     application.include_router(projects_router)
+    application.include_router(reconstruction_router)
+    application.include_router(review_router)
+    application.include_router(revisions_router)
+    application.include_router(segments_router)
+    application.include_router(settings_router)
     application.include_router(translation_router)
+    application.include_router(warnings_router)
 
     @application.get(
         "/health",

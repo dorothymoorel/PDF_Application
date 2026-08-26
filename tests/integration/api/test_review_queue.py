@@ -7,7 +7,6 @@ from fastapi.testclient import TestClient
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.middleware import REQUEST_ID_HEADER
-from transloka_api.routers.review import router as review_router
 from transloka_core.database.models.projects import Project
 
 _PAGE_EDITOR_SPEC = spec_from_file_location(
@@ -28,7 +27,6 @@ def review_queue_client(
     page_editor_api: tuple[TestClient, Any],
 ) -> tuple[TestClient, str]:
     client, _data_root = page_editor_api
-    cast(Any, client.app).include_router(review_router)
     factory = cast(sessionmaker[Session], cast(Any, client.app).state.session_factory)
     with factory() as session:
         project_id = cast(str | None, session.scalar(select(Project.id)))

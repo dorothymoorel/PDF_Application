@@ -14,7 +14,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.warnings import router as warnings_router
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.projects import Project
 from transloka_core.database.models.warnings import WarningSeverity, WarningType
@@ -41,7 +40,6 @@ CRITICAL_WARNING_ID = f"wrn_{UUID(int=101)}"
 @pytest.fixture
 def warnings_client(page_editor_api: tuple[TestClient, Any]) -> tuple[TestClient, str]:
     client, _data_root = page_editor_api
-    cast(Any, client.app).include_router(warnings_router)
     factory = cast(sessionmaker[Session], cast(Any, client.app).state.session_factory)
     with factory() as session:
         project_id = cast(str | None, session.scalar(select(Project.id)))

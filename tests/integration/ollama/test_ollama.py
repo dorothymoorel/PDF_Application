@@ -20,7 +20,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.models import router
 from transloka_translation.providers import (
     ProviderErrorCode,
     ProviderHealthStatus,
@@ -105,7 +104,6 @@ def models_api(
     def build(provider: OllamaTranslationProvider) -> TestClient:
         application = create_app()
         application.state.ollama_provider = provider
-        application.include_router(router)
         return TestClient(application)
 
     return build
@@ -454,7 +452,6 @@ def test_models_router_blocks_remote_configuration(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path_factory.mktemp("blocked-models-api")))
     monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "http://example.com:11434")
     application = create_app()
-    application.include_router(router)
 
     with TestClient(application) as client:
         blocked = client.get("/api/v1/models/ollama/health")

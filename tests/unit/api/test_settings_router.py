@@ -16,7 +16,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.settings import router
 from transloka_core.database import (
     create_session_factory,
     create_sqlite_engine,
@@ -45,7 +44,6 @@ def settings_api(
     factory = create_session_factory(engine)
     app = create_app()
     app.state.session_factory = factory
-    app.include_router(router)
     yield TestClient(app), engine, factory
     engine.dispose()
 
@@ -57,8 +55,8 @@ def _seed(factory: sessionmaker[Session]) -> None:
         repository.create("ocr_concurrency", 1)
 
 
-def test_router_is_not_registered_outside_canonical_scope() -> None:
-    assert "/api/v1/settings" not in create_app().openapi()["paths"]
+def test_router_is_registered_by_production_app() -> None:
+    assert "/api/v1/settings" in create_app().openapi()["paths"]
 
 
 def test_list_get_and_category_filter(
@@ -192,7 +190,6 @@ def test_known_but_uninitialized_setting_returns_not_found(
 
 def test_router_openapi_contract_is_stable_and_normalized() -> None:
     app: FastAPI = create_app()
-    app.include_router(router)
     schema = app.openapi()
 
     expected_operations = {

@@ -17,7 +17,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.glossaries import router
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.document_ir import (
     BlockType,
@@ -66,7 +65,6 @@ def impact_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
-    application.include_router(router)
     with TestClient(application) as client:
         project_id = _create_project(client)
         factory = cast(sessionmaker[Session], application.state.session_factory)

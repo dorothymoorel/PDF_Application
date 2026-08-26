@@ -15,7 +15,6 @@ from transloka_api.middleware import (
     CLIENT_VERSION_VALUE,
     REQUEST_ID_HEADER,
 )
-from transloka_api.routers.glossaries import router
 from transloka_glossary import GlossaryRepository
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -44,7 +43,6 @@ def glossary_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
-    application.include_router(router)
     with TestClient(application) as client:
         factory = cast(sessionmaker[Session], application.state.session_factory)
         yield client, factory
@@ -389,11 +387,10 @@ def test_target_required_validation_and_mutation_security(
     assert missing_headers.json()["error"]["code"] == "CLIENT_HEADER_REQUIRED"
 
 
-def test_glossary_router_openapi_is_stable_and_task_scoped() -> None:
-    assert "/api/v1/glossaries" not in create_app().openapi()["paths"]
+def test_glossary_router_openapi_is_stable_and_registered() -> None:
     application = create_app()
-    application.include_router(router)
     schema = application.openapi()
+    assert "/api/v1/glossaries" in schema["paths"]
     operations = {
         ("/api/v1/glossaries", "post"): "create_glossary",
         ("/api/v1/glossaries", "get"): "list_glossaries",

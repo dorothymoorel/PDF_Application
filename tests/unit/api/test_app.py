@@ -15,6 +15,31 @@ def test_app_creation() -> None:
     assert app.state.settings is settings
 
 
+def test_production_app_registers_all_canonical_router_groups() -> None:
+    paths = create_app().openapi()["paths"]
+
+    assert {
+        "/api/v1/glossaries",
+        "/api/v1/models",
+        "/api/v1/models/{model_id}/benchmarks/quick",
+        "/api/v1/pages/{page_id}/ocr",
+        "/api/v1/projects/{project_id}/reconstruction/start",
+        "/api/v1/projects/{project_id}/review-queue",
+        "/api/v1/projects/{project_id}/warnings",
+        "/api/v1/segments/{segment_id}/translation",
+        "/api/v1/segments/{segment_id}/revisions",
+        "/api/v1/settings",
+    } <= set(paths)
+
+    operation_ids = [
+        operation["operationId"]
+        for path in paths.values()
+        for operation in path.values()
+        if isinstance(operation, dict) and "operationId" in operation
+    ]
+    assert len(operation_ids) == len(set(operation_ids))
+
+
 def test_default_bind_is_loopback(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("APP_HOST", raising=False)
     monkeypatch.delenv("APP_PORT", raising=False)
