@@ -1,3 +1,4 @@
+import asyncio
 import json
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -5,10 +6,12 @@ from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from threading import Thread
+from typing import cast
 
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from transloka_api.app import create_app
 from transloka_api.middleware import (
@@ -159,6 +162,36 @@ def test_production_app_runs_quick_benchmark_for_persisted_model(
     assert len(fake.chat_bodies) == 6
     assert all(body["model"] == "model-a:latest" for body in fake.chat_bodies)
     assert all(body["options"] == {"temperature": 0.25} for body in fake.chat_bodies)
+
+
+def test_production_app_exposes_full_benchmark_for_persisted_model(
+    benchmark_api: tuple[TestClient, FakeBenchmarkOllama],
+) -> None:
+    client, fake = benchmark_api
+    model_id = _refresh_model(client)
+    application = cast(FastAPI, client.app)
+
+    result = asyncio.run(
+        application.state.full_benchmark_runner.run(
+            model_id,
+            dataset_version="translation_benchmark_en_id_0.1",
+            temperature=0.0,
+            batch_sizes=[1, 5],
+            context_lengths=["SHORT", "MEDIUM", "LONG"],
+            benchmark_id=f"{model_id}:production-full-1",
+        )
+    )
+
+    assert result.model_id == model_id
+    assert result.benchmark_id == f"{model_id}:production-full-1"
+    assert result.status.value == "COMPLETED"
+    assert result.recommendation.value == "RECOMMENDED_DEFAULT"
+    assert result.completed_runs == result.successful_runs == result.total_runs == 90
+    assert result.failed_runs == 0
+    assert result.hardware_profile.ollama_version == "test"
+    assert len(fake.chat_bodies) == 90
+    assert all(body["model"] == "model-a:latest" for body in fake.chat_bodies)
+    assert all(body["options"] == {"temperature": 0.0} for body in fake.chat_bodies)
 
 
 def test_production_benchmark_rejects_missing_and_uninstalled_models_before_chat(

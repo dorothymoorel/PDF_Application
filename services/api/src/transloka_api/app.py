@@ -52,7 +52,10 @@ from transloka_api.routers.settings import router as settings_router
 from transloka_api.routers.translation import router as translation_router
 from transloka_api.routers.warnings import router as warnings_router
 from transloka_api.schemas import ErrorResponse
-from transloka_api.services.benchmarks import ProductionQuickBenchmarkRunner
+from transloka_api.services.benchmarks import (
+    ProductionFullBenchmarkRunner,
+    ProductionQuickBenchmarkRunner,
+)
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -102,6 +105,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         session_factory = create_session_factory(engine)
         application.state.session_factory = session_factory
         application.state.quick_benchmark_runner = ProductionQuickBenchmarkRunner(session_factory)
+        application.state.full_benchmark_runner = ProductionFullBenchmarkRunner(session_factory)
 
         def close_database() -> None:
             engine.dispose()
@@ -115,6 +119,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             application.state.quick_benchmark_runner = ProductionQuickBenchmarkRunner(
                 session_factory
             )
+            application.state.full_benchmark_runner = ProductionFullBenchmarkRunner(session_factory)
 
         coordinator = FileRestoreCoordinator(
             effective_settings.data_directories,
