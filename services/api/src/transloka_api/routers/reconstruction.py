@@ -203,13 +203,6 @@ class ReconstructionPageResponse(BaseModel):
     meta: ResponseMeta
 
 
-class _FallbackReconstructionQueue:
-    name = "reconstruction"
-
-    def enqueue(self, _job_id: str) -> None:
-        return None
-
-
 def _get_session(request: Request) -> Iterator[Session]:
     with _session_factory(request)() as session:
         yield session
@@ -668,11 +661,16 @@ def cancel_reconstruction(
 
 
 def _reconstruction_queue(request: Request) -> Any:
-    return (
-        getattr(request.app.state, "reconstruction_queue", None)
-        or getattr(request.app.state, "job_queue", None)
-        or _FallbackReconstructionQueue()
-    )
+    queue = getattr(request.app.state, "reconstruction_queue", None)
+    if queue is None:
+        queue = getattr(request.app.state, "job_queue", None)
+    if queue is None:
+        raise TransLokaError(
+            code="QUEUE_NOT_CONFIGURED",
+            message="The reconstruction queue is not configured.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return queue
 
 
 def _project_document(session: Session, project_id: str) -> tuple[Project, Document]:

@@ -8,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.app import create_app
 from transloka_api.middleware import (
@@ -32,6 +33,7 @@ from transloka_core.database.models.documents import (
 )
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.glossary import GlossaryConflict
+from transloka_core.database.models.jobs import ApplicationJob
 from transloka_core.database.models.models import LocalModelRecord, ModelLicenseStatus
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import Project
@@ -77,6 +79,13 @@ class UnavailableProvider:
         return ProviderHealth(status=ProviderHealthStatus.UNAVAILABLE, detail="test")
 
 
+class RecordingQueue:
+    name = "translation"
+
+    def enqueue(self, _job_id: str) -> None:
+        pass
+
+
 @pytest.fixture
 def translation_api(
     monkeypatch: pytest.MonkeyPatch,
@@ -87,6 +96,7 @@ def translation_api(
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
     application.state.ollama_provider = HealthyProvider()
+    application.state.translation_queue = RecordingQueue()
     with TestClient(application) as client:
         project_response = client.post(
             "/api/v1/projects",
@@ -350,6 +360,24 @@ def test_translation_start_is_idempotent_and_readiness_blocks_start(
     )
     assert blocked.status_code == 409
     assert blocked.json()["error"]["code"] == "TRANSLATION_NOT_READY"
+
+
+def test_translation_start_fails_closed_when_queue_is_not_configured(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = translation_api
+    application.state.translation_queue = None
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-no-queue"},
+        json={"model_id": MODEL_ID},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "QUEUE_NOT_CONFIGURED"
+    with factory() as session:
+        assert session.scalars(select(ApplicationJob)).all() == []
 
 
 def test_translation_cancel_and_retry_failed(

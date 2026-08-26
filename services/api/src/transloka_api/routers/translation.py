@@ -52,6 +52,10 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     422: {"description": "The request contains invalid values.", "model": ErrorResponse},
     500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
 }
+_QUEUE_NOT_CONFIGURED_RESPONSE = {
+    "description": "The translation queue is not configured.",
+    "model": ErrorResponse,
+}
 
 router = APIRouter(prefix="/api/v1/projects", tags=["Translation"])
 
@@ -146,13 +150,6 @@ class RetryTranslationRequest(BaseModel):
     use_selected_model: bool = True
 
 
-class _FallbackTranslationQueue:
-    name = "translation"
-
-    def enqueue(self, _job_id: str) -> None:
-        return None
-
-
 class _Readiness:
     def __init__(
         self,
@@ -196,7 +193,7 @@ async def get_translation_readiness(
     "/{project_id}/translation/start",
     operation_id="start_translation",
     response_model=TranslationJobResponse,
-    responses=_ERROR_RESPONSES,
+    responses={**_ERROR_RESPONSES, 503: _QUEUE_NOT_CONFIGURED_RESPONSE},
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def start_translation(
@@ -376,7 +373,13 @@ def _translation_queue(request: Request) -> Any:
     queue = getattr(request.app.state, "translation_queue", None)
     if queue is None:
         queue = getattr(request.app.state, "job_queue", None)
-    return queue or _FallbackTranslationQueue()
+    if queue is None:
+        raise TransLokaError(
+            code="QUEUE_NOT_CONFIGURED",
+            message="The translation queue is not configured.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
+    return queue
 
 
 def _get_project(session: Session, project_id: str) -> Project:

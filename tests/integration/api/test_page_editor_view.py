@@ -6,6 +6,7 @@ from uuid import UUID
 import pytest
 from alembic import command
 from alembic.config import Config
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import Engine, select
 from sqlalchemy.orm import Session, sessionmaker
@@ -81,6 +82,13 @@ LATE_SEGMENT_FIRST_ID = _id("seg_", 10)
 LATE_SEGMENT_SECOND_ID = _id("seg_", 11)
 
 
+class RecordingQueue:
+    name = "translation"
+
+    def enqueue(self, _job_id: str) -> None:
+        pass
+
+
 @pytest.fixture
 def page_editor_api(
     monkeypatch: pytest.MonkeyPatch,
@@ -90,6 +98,7 @@ def page_editor_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(data_root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
+    application.state.translation_queue = RecordingQueue()
 
     with TestClient(application) as client:
         project_response = client.post(
@@ -1111,5 +1120,32 @@ def test_bulk_retranslation_is_idempotent_and_keeps_selected_ids_in_job_payload(
             assert '"scope":"SELECTED_SEGMENTS"' in jobs[0].payload_json
             assert EARLY_SEGMENT_ID in jobs[0].payload_json
             assert LATE_SEGMENT_FIRST_ID in jobs[0].payload_json
+    finally:
+        engine.dispose()
+
+
+def test_bulk_retranslation_fails_closed_when_queue_is_not_configured(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    application = cast(FastAPI, client.app)
+    application.state.translation_queue = None
+
+    response = client.post(
+        "/api/v1/segments/bulk",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "bulk-no-queue"},
+        json={
+            "action": "retranslate",
+            "selected_ids": [EARLY_SEGMENT_ID],
+            "expected_revisions": {EARLY_SEGMENT_ID: 1},
+        },
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "QUEUE_NOT_CONFIGURED"
+    engine, factory = _database_factory(data_root)
+    try:
+        with factory() as session:
+            assert session.scalars(select(ApplicationJob)).all() == []
     finally:
         engine.dispose()

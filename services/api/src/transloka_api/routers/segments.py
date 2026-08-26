@@ -56,6 +56,10 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     423: {"description": "The segment is locked.", "model": ErrorResponse},
     500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
 }
+_QUEUE_NOT_CONFIGURED_RESPONSE = {
+    "description": "The translation queue is not configured.",
+    "model": ErrorResponse,
+}
 
 router = APIRouter(prefix="/api/v1/segments", tags=["Segments"])
 
@@ -237,7 +241,7 @@ def unapprove_segment(
     "/bulk",
     operation_id="bulk_segment_action",
     response_model=BulkSegmentActionResponse,
-    responses=_ERROR_RESPONSES,
+    responses={**_ERROR_RESPONSES, 503: _QUEUE_NOT_CONFIGURED_RESPONSE},
 )
 def bulk_segment_action(
     payload: BulkSegmentActionRequest,
@@ -559,7 +563,11 @@ def _dispatch_selected_retranslation(
     if queue is None:
         queue = getattr(request.app.state, "job_queue", None)
     if queue is None:
-        queue = _FallbackTranslationQueue()
+        raise TransLokaError(
+            code="QUEUE_NOT_CONFIGURED",
+            message="The translation queue is not configured.",
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+        )
     queue_name = getattr(queue, "name", "translation")
     payload_json = json.dumps(
         {
@@ -639,13 +647,6 @@ def _dispatch_selected_retranslation(
         queued.status = JobStatus.QUEUED.value
         queued.queued_at = _utc_now()
     return job_id
-
-
-class _FallbackTranslationQueue:
-    name = "translation"
-
-    def enqueue(self, _job_id: str) -> None:
-        return None
 
 
 def _change_review_state(

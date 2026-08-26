@@ -8,6 +8,7 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.app import create_app
 from transloka_api.middleware import (
@@ -57,6 +58,13 @@ DOCUMENT_ID = _id("doc_", 501)
 PAGE_ID = _id("pag_", 502)
 
 
+class RecordingQueue:
+    name = "reconstruction"
+
+    def enqueue(self, _job_id: str) -> None:
+        pass
+
+
 @pytest.fixture
 def reconstruction_api(
     monkeypatch: pytest.MonkeyPatch,
@@ -65,6 +73,7 @@ def reconstruction_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path / "reconstruction api"))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
+    application.state.reconstruction_queue = RecordingQueue()
     with TestClient(application) as client:
         created = client.post("/api/v1/projects", headers=CLIENT_HEADERS, json=PROJECT)
         assert created.status_code == 201
@@ -196,6 +205,24 @@ def test_reconstruction_start_and_duplicate_are_idempotent(
     )
     assert repeated.status_code == 202
     assert repeated.json()["data"] == first.json()["data"]
+
+
+def test_reconstruction_start_fails_closed_when_queue_is_not_configured(
+    reconstruction_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = reconstruction_api
+    application.state.reconstruction_queue = None
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/reconstruction/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "reconstruction-no-queue"},
+        json={"mode": "HYBRID"},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "QUEUE_NOT_CONFIGURED"
+    with factory() as session:
+        assert session.scalars(select(ApplicationJob)).all() == []
 
 
 def test_reconstruction_cancel(

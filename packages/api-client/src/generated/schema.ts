@@ -6209,6 +6209,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description The translation queue is not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     get_translation_status: {
@@ -6707,6 +6716,15 @@ export interface operations {
             };
             /** @description An unexpected server error was normalized. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The translation queue is not configured. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };
