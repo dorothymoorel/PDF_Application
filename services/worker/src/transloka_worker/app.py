@@ -2,13 +2,22 @@ import logging
 import math
 import signal
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from enum import StrEnum
 from threading import Event, Lock
 from types import FrameType
 from typing import Protocol, cast
 
-from transloka_worker.queue import QueueConfiguration, create_consumer
+from transloka_core.database import create_session_factory, create_sqlite_engine
+from transloka_core.storage.local import LocalFileStorage
+
+from transloka_worker.queue import QueueConfiguration, create_consumer, resolve_queue_configuration
+from transloka_worker.tasks.translation import register_translation_task
+from transloka_worker.translation import (
+    DatabaseTranslationOperationLoader,
+    ProductionTranslationJobRunner,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -42,18 +51,74 @@ class WorkerProcess(Protocol):
 
 
 class QueueWorker:
-    def __init__(self, consumer: Consumer) -> None:
+    def __init__(
+        self,
+        consumer: Consumer,
+        *,
+        close_resources: Callable[[], None] | None = None,
+    ) -> None:
         self._consumer = consumer
+        self._close_resources = close_resources
 
     def run(self) -> None:
-        self._consumer.run()
+        try:
+            self._consumer.run()
+        finally:
+            if self._close_resources is not None:
+                self._close_resources()
 
     def stop(self) -> None:
         self._consumer.stop(graceful=True)
 
 
-def create_queue_worker(configuration: QueueConfiguration | None = None) -> QueueWorker:
-    return QueueWorker(cast(Consumer, create_consumer(configuration)))
+def create_queue_worker(
+    configuration: QueueConfiguration | None = None,
+    *,
+    provider_factory: Callable[[str], object] | None = None,
+    worker_identifier: str | None = None,
+) -> QueueWorker:
+    effective_configuration = configuration or resolve_queue_configuration()
+    directories = effective_configuration.directories
+    engine = create_sqlite_engine(directories)
+    session_factory = create_session_factory(engine)
+    loader = DatabaseTranslationOperationLoader(
+        session_factory,
+        LocalFileStorage(directories),
+    )
+    runner = ProductionTranslationJobRunner(
+        loader,
+        session_factory,
+        directories.temporary,
+        provider_factory=provider_factory,
+        worker_identifier=worker_identifier,
+    )
+
+    def register_tasks(huey: object) -> None:
+        register_translation_task(huey, runner.run)
+
+    try:
+        consumer = cast(
+            Consumer,
+            create_consumer(
+                effective_configuration,
+                register_tasks=register_tasks,
+            ),
+        )
+    except Exception:
+        engine.dispose()
+        raise
+
+    closed = False
+
+    def close_resources() -> None:
+        nonlocal closed
+        if closed:
+            return
+        closed = True
+        cast(object, consumer).huey.storage.close()  # type: ignore[attr-defined]
+        engine.dispose()
+
+    return QueueWorker(consumer, close_resources=close_resources)
 
 
 class Worker:

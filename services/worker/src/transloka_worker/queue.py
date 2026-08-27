@@ -2,7 +2,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from os import PathLike
 from pathlib import Path
-from typing import Any
+from typing import Any, Never
 
 from huey import SqliteHuey  # type: ignore[import-untyped]
 from huey.signals import SIGNAL_INTERRUPTED  # type: ignore[import-untyped]
@@ -13,6 +13,7 @@ from transloka_core.storage import (
 )
 
 from transloka_worker.maintenance import MaintenanceGate
+from transloka_worker.tasks.translation import register_translation_task
 
 DEFAULT_WORKER_COUNT = 1
 QUEUE_DATABASE_FILENAME = "tasks.db"
@@ -50,6 +51,15 @@ class QueueConfiguration:
     @property
     def database_path(self) -> Path:
         return self.directories.database / QUEUE_DATABASE_FILENAME
+
+
+@dataclass(slots=True)
+class TranslationQueueProducer:
+    queue: HueyJobQueue
+    huey: Any
+
+    def close(self) -> None:
+        self.huey.storage.close()
 
 
 def resolve_queue_configuration(
@@ -93,10 +103,32 @@ def create_huey(configuration: QueueConfiguration | None = None) -> Any:
     return huey
 
 
-def create_consumer(configuration: QueueConfiguration | None = None) -> Any:
+def create_translation_producer(
+    configuration: QueueConfiguration | None = None,
+) -> TranslationQueueProducer:
+    huey = create_huey(configuration)
+
+    def producer_only(_job_id: str) -> Never:
+        raise RuntimeError("The API translation producer cannot execute tasks.")
+
+    task = register_translation_task(huey, producer_only)
+    return TranslationQueueProducer(HueyJobQueue(task), huey)
+
+
+def create_consumer(
+    configuration: QueueConfiguration | None = None,
+    *,
+    register_tasks: Callable[[Any], None] | None = None,
+) -> Any:
     effective_configuration = configuration or resolve_queue_configuration()
     huey = create_huey(effective_configuration)
-    return huey.create_consumer(
-        workers=effective_configuration.workers,
-        worker_type="thread",
-    )
+    try:
+        if register_tasks is not None:
+            register_tasks(huey)
+        return huey.create_consumer(
+            workers=effective_configuration.workers,
+            worker_type="thread",
+        )
+    except Exception:
+        huey.storage.close()
+        raise
