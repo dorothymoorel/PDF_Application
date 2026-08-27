@@ -45,6 +45,7 @@ pip-wheel-metadata/
 # IDE, operating system, and editor files
 .vscode/
 .idea/
+.worktrees/
 .DS_Store
 Thumbs.db
 ehthumbs.db
