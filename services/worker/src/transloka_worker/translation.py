@@ -2,13 +2,17 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
 from typing import Self, cast
-from uuid import UUID
+from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session, sessionmaker
+from transloka_core.database import transaction_scope
 from transloka_core.database.models.document_ir import (
     DocumentBlock,
     DocumentSection,
@@ -16,11 +20,19 @@ from transloka_core.database.models.document_ir import (
     ReviewStatus,
     SegmentStatus,
 )
-from transloka_core.database.models.documents import Document
-from transloka_core.database.models.jobs import ApplicationJob, JobStatus, JobType
+from transloka_core.database.models.documents import Document, DocumentStatus
+from transloka_core.database.models.jobs import (
+    ApplicationJob,
+    JobAttempt,
+    JobAttemptStatus,
+    JobStatus,
+    JobType,
+)
 from transloka_core.database.models.models import LocalModelRecord
 from transloka_core.database.models.pages import DocumentPage
-from transloka_core.database.models.projects import Project
+from transloka_core.database.models.projects import Project, ProjectStatus
+from transloka_core.jobs.cancellation import JobCancellationService
+from transloka_core.jobs.progress import JobProgressService
 from transloka_core.storage.local import LocalFileStorage
 from transloka_glossary.snapshots import (
     CompiledGlossaryRule,
@@ -29,11 +41,14 @@ from transloka_glossary.snapshots import (
 )
 from transloka_translation.batching import BatchContext, BatchLimits
 from transloka_translation.orchestration import (
+    SqlAlchemyTranslationRunStore,
     TranslationOperation,
     TranslationOrchestrator,
     TranslationRunResult,
+    TranslationRunStatus,
     TranslationSegmentInput,
 )
+from transloka_translation.providers.ollama import OllamaTranslationProvider
 from transloka_translation.schemas import (
     TranslationContext,
     TranslationGlossaryEntry,
@@ -525,6 +540,458 @@ def _validate_scope_selectors(command: TranslationCommand) -> None:
         return
     if any(populated.values()):
         raise TranslationWorkerError("The translation command selector is invalid.")
+
+
+class DatabaseCancellationSignal:
+    def __init__(self, session_factory: sessionmaker[Session], job_id: str) -> None:
+        self._session_factory = session_factory
+        self._job_id = job_id
+
+    @property
+    def is_cancelled(self) -> bool:
+        with self._session_factory() as session:
+            row = session.get(ApplicationJob, self._job_id)
+            if row is None:
+                raise TranslationWorkerError("The translation job was not found.")
+            return row.status in {
+                JobStatus.CANCELLATION_REQUESTED.value,
+                JobStatus.CANCELLED.value,
+            }
+
+
+class ProductionTranslationJobRunner:
+    def __init__(
+        self,
+        loader: DatabaseTranslationOperationLoader,
+        session_factory: sessionmaker[Session],
+        temporary_root: Path,
+        *,
+        provider_factory: Callable[[str], object] | None = None,
+        worker_identifier: str | None = None,
+    ) -> None:
+        if not isinstance(loader, DatabaseTranslationOperationLoader):
+            raise ValueError("A database translation loader is required.")
+        if not isinstance(temporary_root, Path) or not temporary_root.is_absolute():
+            raise ValueError("The worker temporary root must be absolute.")
+        self._loader = loader
+        self._session_factory = session_factory
+        self._temporary_root = temporary_root.resolve(strict=False)
+        self._provider_factory = provider_factory or (
+            lambda model_name: OllamaTranslationProvider(model_name=model_name)
+        )
+        self._worker_identifier = _worker_identifier(worker_identifier)
+
+    def run(self, job_id: str) -> TranslationRunResult:
+        loaded = self._loader.load(job_id)
+        return _run_loaded_translation_job(
+            loaded,
+            session_factory=self._session_factory,
+            temporary_root=self._temporary_root,
+            provider_factory=self._provider_factory,
+            worker_identifier=self._worker_identifier,
+        )
+
+
+def _run_loaded_translation_job(
+    loaded: LoadedTranslationJob,
+    *,
+    session_factory: sessionmaker[Session],
+    temporary_root: Path,
+    provider_factory: Callable[[str], object],
+    worker_identifier: str,
+) -> TranslationRunResult:
+    try:
+        _start_translation_job(session_factory, loaded, worker_identifier)
+        if loaded.operation is None:
+            result = TranslationRunResult(
+                run_id=str(uuid5(NAMESPACE_URL, f"transloka:translation-noop:{loaded.job_id}")),
+                idempotency_key=loaded.idempotency_key,
+                status=TranslationRunStatus.COMPLETED,
+                completed_segment_ids=(),
+                failed_segment_ids=(),
+                locked_segment_ids=(),
+                cancelled_segment_ids=(),
+            )
+        else:
+            progress = JobProgressService(session_factory)
+
+            def report_progress(completed_batches: int, total_batches: int) -> None:
+                ratio = completed_batches / total_batches if total_batches else 0.0
+                progress.update(
+                    loaded.job_id,
+                    progress=min(0.99, max(0.0, ratio * 0.99)),
+                    current_stage=f"TRANSLATING_{completed_batches}_OF_{total_batches}",
+                )
+
+            orchestrator = TranslationOrchestrator(
+                provider_factory(loaded.ollama_model_name),
+                SqlAlchemyTranslationRunStore(session_factory),
+                batch_progress_sink=report_progress,
+            )
+            result = asyncio.run(
+                orchestrator.run(
+                    loaded.operation,
+                    cancellation=DatabaseCancellationSignal(session_factory, loaded.job_id),
+                )
+            )
+        if result.status is TranslationRunStatus.CANCELLED:
+            JobCancellationService(session_factory, temporary_root).checkpoint(loaded.job_id)
+        _finish_translation_job(session_factory, loaded, result, worker_identifier)
+        return result
+    except Exception as exc:
+        _fail_translation_job(session_factory, loaded, exc, worker_identifier)
+        raise
+
+
+def _worker_identifier(value: str | None) -> str:
+    candidate = (
+        value or os.environ.get("COMPUTERNAME") or os.environ.get("HOSTNAME") or "transloka-worker"
+    )
+    normalized = candidate.strip()
+    if not normalized or not normalized.isprintable() or len(normalized) > 200:
+        return "transloka-worker"
+    return normalized
+
+
+def _start_translation_job(
+    session_factory: sessionmaker[Session],
+    loaded: LoadedTranslationJob,
+    worker_identifier: str,
+) -> None:
+    now = _translation_timestamp()
+    with transaction_scope(session_factory) as session:
+        job = session.get(ApplicationJob, loaded.job_id)
+        project = session.get(Project, loaded.project_id)
+        document = session.get(Document, loaded.document_id)
+        if job is None or project is None or document is None:
+            raise TranslationWorkerError("The translation lifecycle state is unavailable.")
+        if job.status not in {
+            JobStatus.QUEUED.value,
+            JobStatus.RETRYING.value,
+            JobStatus.RUNNING.value,
+        }:
+            raise TranslationWorkerError("The translation job is not executable.")
+        attempts = list(
+            session.scalars(
+                select(JobAttempt)
+                .where(JobAttempt.job_id == loaded.job_id)
+                .order_by(JobAttempt.attempt_number)
+            )
+        )
+        if attempts and attempts[-1].status == JobAttemptStatus.RUNNING.value:
+            attempt = attempts[-1]
+            attempt.worker_identifier = worker_identifier
+        else:
+            statuses: dict[str, str] = {}
+            for segment_id in loaded.selected_segment_ids:
+                segment = session.get(DocumentSegment, segment_id)
+                if segment is None:
+                    raise TranslationWorkerError("A selected translation segment disappeared.")
+                statuses[segment_id] = segment.status
+            details = json.dumps(
+                {
+                    "schema": "transloka.translation.attempt-state.v1",
+                    "document_status": document.status,
+                    "project_status": project.status,
+                    "segment_statuses": statuses,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            attempt_number = len(attempts) + 1
+            attempt = JobAttempt(
+                id=str(
+                    uuid5(
+                        NAMESPACE_URL,
+                        f"transloka:translation-attempt:{loaded.job_id}:{attempt_number}",
+                    )
+                ),
+                job_id=loaded.job_id,
+                attempt_number=attempt_number,
+                status=JobAttemptStatus.RUNNING.value,
+                worker_identifier=worker_identifier,
+                started_at=now,
+                completed_at=None,
+                duration_ms=None,
+                error_code=None,
+                error_message=None,
+                details_json=details,
+            )
+            session.add(attempt)
+        job.status = JobStatus.RUNNING.value
+        job.progress = 0.0
+        job.current_stage = "TRANSLATING"
+        job.started_at = job.started_at or now
+        job.heartbeat_at = now
+        project.status = ProjectStatus.TRANSLATING.value
+        project.progress = 0.0
+        project.updated_at = now
+        document.status = DocumentStatus.TRANSLATING.value
+        document.updated_at = now
+        for segment_id in loaded.selected_segment_ids:
+            segment = session.get(DocumentSegment, segment_id)
+            if segment is None:
+                raise TranslationWorkerError("A selected translation segment disappeared.")
+            segment.status = SegmentStatus.TRANSLATING.value
+            segment.updated_at = now
+        session.flush()
+
+
+def _finish_translation_job(
+    session_factory: sessionmaker[Session],
+    loaded: LoadedTranslationJob,
+    result: TranslationRunResult,
+    worker_identifier: str,
+) -> None:
+    now = _translation_timestamp()
+    job_status = _translation_job_status(result.status)
+    result_json = _translation_result_json(result)
+    with transaction_scope(session_factory) as session:
+        job = session.get(ApplicationJob, loaded.job_id)
+        project = session.get(Project, loaded.project_id)
+        document = session.get(Document, loaded.document_id)
+        if job is None or project is None or document is None:
+            raise TranslationWorkerError("The translation lifecycle state disappeared.")
+        attempt = _running_translation_attempt(session, loaded.job_id)
+        assert attempt is not None
+        previous = _attempt_state(attempt)
+        progress = _terminal_progress(result, len(loaded.selected_segment_ids))
+        job.status = job_status.value
+        job.progress = progress
+        job.current_stage = job_status.value
+        job.result_json = result_json
+        job.completed_at = now
+        job.heartbeat_at = now
+        if job_status is JobStatus.CANCELLED:
+            job.cancelled_at = job.cancelled_at or now
+        error_code, error_message = _translation_result_error(result)
+        job.error_code = error_code
+        job.error_message = error_message
+        project.status = _translation_project_status(job_status).value
+        project.progress = progress
+        project.updated_at = now
+        document.status = _translation_document_status(
+            job_status,
+            previous.get("document_status"),
+        ).value
+        document.updated_at = now
+        failed_ids = set(result.failed_segment_ids)
+        cancelled_ids = set(result.cancelled_segment_ids)
+        previous_segments = previous.get("segment_statuses", {})
+        for segment_id in failed_ids:
+            segment = session.get(DocumentSegment, segment_id)
+            if segment is not None:
+                segment.status = SegmentStatus.TRANSLATION_FAILED.value
+                segment.updated_at = now
+        if isinstance(previous_segments, dict):
+            for segment_id in cancelled_ids:
+                segment = session.get(DocumentSegment, segment_id)
+                old_status = previous_segments.get(segment_id)
+                if segment is not None and isinstance(old_status, str):
+                    segment.status = old_status
+                    segment.updated_at = now
+        _complete_translation_attempt(
+            attempt,
+            job_status,
+            now,
+            worker_identifier,
+            error_code,
+            error_message,
+        )
+        session.flush()
+
+
+def _fail_translation_job(
+    session_factory: sessionmaker[Session],
+    loaded: LoadedTranslationJob,
+    error: Exception,
+    worker_identifier: str,
+) -> None:
+    now = _translation_timestamp()
+    error_code = type(error).__name__.upper()[:100] or "TRANSLATIONWORKERERROR"
+    raw_message = str(error).strip()
+    error_message = (
+        raw_message[:500]
+        if raw_message and raw_message.isprintable()
+        else "Translation job failed."
+    )
+    try:
+        with transaction_scope(session_factory) as session:
+            job = session.get(ApplicationJob, loaded.job_id)
+            if job is None:
+                return
+            attempt = _running_translation_attempt(session, loaded.job_id, required=False)
+            previous = _attempt_state(attempt) if attempt is not None else {}
+            job.status = JobStatus.FAILED.value
+            job.current_stage = JobStatus.FAILED.value
+            job.error_code = error_code
+            job.error_message = error_message
+            job.completed_at = now
+            job.heartbeat_at = now
+            project = session.get(Project, loaded.project_id)
+            if project is not None:
+                project.status = ProjectStatus.FAILED.value
+                project.updated_at = now
+            document = session.get(Document, loaded.document_id)
+            if document is not None:
+                document.status = DocumentStatus.FAILED.value
+                document.updated_at = now
+            previous_segments = previous.get("segment_statuses", {})
+            if isinstance(previous_segments, dict):
+                for segment_id, old_status in previous_segments.items():
+                    segment = session.get(DocumentSegment, segment_id)
+                    if segment is not None and isinstance(old_status, str):
+                        segment.status = old_status
+                        segment.updated_at = now
+            if attempt is not None:
+                _complete_translation_attempt(
+                    attempt,
+                    JobStatus.FAILED,
+                    now,
+                    worker_identifier,
+                    error_code,
+                    error_message,
+                )
+            session.flush()
+    except Exception:
+        return
+
+
+def _running_translation_attempt(
+    session: Session,
+    job_id: str,
+    *,
+    required: bool = True,
+) -> JobAttempt | None:
+    attempt = session.scalars(
+        select(JobAttempt)
+        .where(JobAttempt.job_id == job_id)
+        .order_by(JobAttempt.attempt_number.desc())
+    ).first()
+    if required and (attempt is None or attempt.status != JobAttemptStatus.RUNNING.value):
+        raise TranslationWorkerError("The running translation attempt is unavailable.")
+    return attempt
+
+
+def _attempt_state(attempt: JobAttempt | None) -> dict[str, object]:
+    if attempt is None or attempt.details_json is None:
+        return {}
+    try:
+        payload = json.loads(attempt.details_json)
+    except (TypeError, ValueError):
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def _complete_translation_attempt(
+    attempt: JobAttempt,
+    status: JobStatus,
+    completed_at: str,
+    worker_identifier: str,
+    error_code: str | None,
+    error_message: str | None,
+) -> None:
+    attempt.status = _translation_attempt_status(status).value
+    attempt.completed_at = completed_at
+    attempt.worker_identifier = worker_identifier
+    attempt.error_code = error_code
+    attempt.error_message = error_message
+
+
+def _translation_job_status(status: TranslationRunStatus) -> JobStatus:
+    return {
+        TranslationRunStatus.COMPLETED: JobStatus.COMPLETED,
+        TranslationRunStatus.COMPLETED_WITH_WARNINGS: JobStatus.COMPLETED_WITH_WARNINGS,
+        TranslationRunStatus.PARTIALLY_COMPLETED: JobStatus.PARTIALLY_COMPLETED,
+        TranslationRunStatus.FAILED: JobStatus.FAILED,
+        TranslationRunStatus.CANCELLED: JobStatus.CANCELLED,
+    }[status]
+
+
+def _translation_attempt_status(status: JobStatus) -> JobAttemptStatus:
+    return {
+        JobStatus.COMPLETED: JobAttemptStatus.COMPLETED,
+        JobStatus.COMPLETED_WITH_WARNINGS: JobAttemptStatus.COMPLETED_WITH_WARNINGS,
+        JobStatus.PARTIALLY_COMPLETED: JobAttemptStatus.PARTIALLY_COMPLETED,
+        JobStatus.FAILED: JobAttemptStatus.FAILED,
+        JobStatus.CANCELLED: JobAttemptStatus.CANCELLED,
+    }[status]
+
+
+def _translation_project_status(status: JobStatus) -> ProjectStatus:
+    return {
+        JobStatus.COMPLETED: ProjectStatus.READY_FOR_REVIEW,
+        JobStatus.COMPLETED_WITH_WARNINGS: ProjectStatus.READY_FOR_REVIEW,
+        JobStatus.PARTIALLY_COMPLETED: ProjectStatus.PARTIALLY_COMPLETED,
+        JobStatus.FAILED: ProjectStatus.FAILED,
+        JobStatus.CANCELLED: ProjectStatus.CANCELLED,
+    }[status]
+
+
+def _translation_document_status(
+    status: JobStatus,
+    previous_status: object,
+) -> DocumentStatus:
+    if status in {JobStatus.COMPLETED, JobStatus.COMPLETED_WITH_WARNINGS}:
+        return DocumentStatus.TRANSLATED
+    if status is JobStatus.PARTIALLY_COMPLETED:
+        return DocumentStatus.PARTIALLY_TRANSLATED
+    if status is JobStatus.FAILED:
+        return DocumentStatus.FAILED
+    if not isinstance(previous_status, str):
+        return DocumentStatus.READY_FOR_TRANSLATION
+    try:
+        return DocumentStatus(previous_status)
+    except ValueError:
+        return DocumentStatus.READY_FOR_TRANSLATION
+
+
+def _terminal_progress(result: TranslationRunResult, selected_count: int) -> float:
+    if result.status in {
+        TranslationRunStatus.COMPLETED,
+        TranslationRunStatus.COMPLETED_WITH_WARNINGS,
+    }:
+        return 1.0
+    return len(result.completed_segment_ids) / selected_count if selected_count else 1.0
+
+
+def _translation_result_error(
+    result: TranslationRunResult,
+) -> tuple[str | None, str | None]:
+    if not result.failures:
+        return None, None
+    return (
+        "TRANSLATION_SEGMENT_FAILED",
+        f"{len(result.failed_segment_ids)} translation segment(s) failed.",
+    )
+
+
+def _translation_result_json(result: TranslationRunResult) -> str:
+    return json.dumps(
+        {
+            "schema": "transloka.translation.job-result.v1",
+            "run_id": result.run_id,
+            "status": result.status.value,
+            "completed_segment_ids": list(result.completed_segment_ids),
+            "failed_segment_ids": list(result.failed_segment_ids),
+            "locked_segment_ids": list(result.locked_segment_ids),
+            "cancelled_segment_ids": list(result.cancelled_segment_ids),
+            "warning_count": len(result.warnings),
+            "failures": [
+                {"segment_id": failure.segment_id, "code": failure.code}
+                for failure in result.failures
+            ],
+            "attempt_count": result.attempt_count,
+        },
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def _translation_timestamp() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 class TranslationJobRunner:

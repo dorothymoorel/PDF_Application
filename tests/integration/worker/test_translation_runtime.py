@@ -11,6 +11,7 @@ from alembic import command as alembic_command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.app import create_app
 from transloka_api.middleware import (
@@ -33,17 +34,31 @@ from transloka_core.database.models.document_ir import (
 from transloka_core.database.models.documents import Document, DocumentClass, DocumentStatus
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.glossary import GlossarySnapshot
-from transloka_core.database.models.jobs import ApplicationJob, JobStatus, JobType
+from transloka_core.database.models.jobs import (
+    ApplicationJob,
+    JobAttempt,
+    JobAttemptStatus,
+    JobStatus,
+    JobType,
+)
 from transloka_core.database.models.models import LocalModelRecord, ModelLicenseStatus
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import Project
 from transloka_core.storage.local import LocalFileStorage
 from transloka_translation.batching import BatchLimits
-from transloka_translation.providers import ProviderHealth, ProviderHealthStatus
+from transloka_translation.orchestration import TranslationRunStatus
+from transloka_translation.providers import (
+    ProviderErrorCode,
+    ProviderHealth,
+    ProviderHealthStatus,
+    TranslationProviderError,
+)
 from transloka_worker.translation import (
     TRANSLATION_COMMAND_SCHEMA,
+    DatabaseCancellationSignal,
     DatabaseTranslationOperationLoader,
     LoadedTranslationJob,
+    ProductionTranslationJobRunner,
     TranslationCommand,
     TranslationWorkerError,
 )
@@ -85,6 +100,53 @@ class RecordingQueue:
 
     def enqueue(self, _job_id: str) -> None:
         return None
+
+
+class RuntimeProvider:
+    def __init__(
+        self,
+        responses: list[str | TranslationProviderError] | None = None,
+        *,
+        on_translate: object | None = None,
+    ) -> None:
+        self._responses = responses or []
+        self._on_translate = on_translate
+        self.calls = 0
+
+    async def translate(self, request: object, *, cancellation: object = None) -> str:
+        del cancellation
+        if callable(self._on_translate):
+            self._on_translate()
+        source_data = request.source_data["source_data"]  # type: ignore[attr-defined]
+        segments = source_data["segments"]
+        if self.calls < len(self._responses):
+            response = self._responses[self.calls]
+            self.calls += 1
+            if isinstance(response, TranslationProviderError):
+                raise response
+            return response
+        self.calls += 1
+        return json.dumps(
+            {
+                "segments": [
+                    {
+                        "segment_id": segment["segment_id"],
+                        "translated_text": f"Terjemahan {segment['source_text']}",
+                    }
+                    for segment in segments
+                ]
+            }
+        )
+
+
+def _response(*pairs: tuple[str, str]) -> str:
+    return json.dumps(
+        {
+            "segments": [
+                {"segment_id": segment_id, "translated_text": text} for segment_id, text in pairs
+            ]
+        }
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -617,3 +679,230 @@ def test_loader_fails_closed_for_inconsistent_state(
 
     with pytest.raises(TranslationWorkerError, match=message):
         loader_fixture.load(job_id)
+
+
+def test_production_runner_persists_successful_lifecycle(
+    loader_fixture: LoaderFixture,
+) -> None:
+    job_id = loader_fixture.start()
+    provider_models: list[str] = []
+
+    def provider_factory(model_name: str) -> RuntimeProvider:
+        provider_models.append(model_name)
+        return RuntimeProvider()
+
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=provider_factory,
+        worker_identifier="test-worker",
+    ).run(job_id)
+
+    assert result.status is TranslationRunStatus.COMPLETED
+    assert provider_models == ["translation-test:latest"]
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.COMPLETED.value
+        assert job.progress == 1.0
+        assert json.loads(job.result_json or "")["schema"] == (
+            "transloka.translation.job-result.v1"
+        )
+        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+        assert attempt is not None
+        assert attempt.status == JobAttemptStatus.COMPLETED.value
+        assert attempt.worker_identifier == "test-worker"
+
+
+def test_production_runner_completes_empty_selection_without_provider(
+    loader_fixture: LoaderFixture,
+) -> None:
+    job_id = loader_fixture.start()
+    with transaction_scope(loader_fixture.factory) as session:
+        for segment_id in (SEGMENT_ID, SEGMENT_2_ID):
+            segment = session.get(DocumentSegment, segment_id)
+            assert segment is not None
+            segment.status = SegmentStatus.IGNORED.value
+
+    def unexpected_provider(_model_name: str) -> object:
+        raise AssertionError("provider must not be constructed for a no-op")
+
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=unexpected_provider,
+    ).run(job_id)
+
+    assert result.status is TranslationRunStatus.COMPLETED
+    assert result.completed_segment_ids == ()
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.COMPLETED.value
+        assert job.progress == 1.0
+
+
+@pytest.mark.parametrize(
+    ("responses", "expected_run", "expected_job"),
+    [
+        (
+            [
+                _response((SEGMENT_ID, "Terjemahan " + "panjang " * 20)),
+                _response((SEGMENT_2_ID, "Terjemahan " + "panjang " * 20)),
+            ],
+            TranslationRunStatus.COMPLETED_WITH_WARNINGS,
+            JobStatus.COMPLETED_WITH_WARNINGS,
+        ),
+        (
+            [
+                TranslationProviderError(
+                    ProviderErrorCode.TIMEOUT,
+                    "provider timed out",
+                    retryable=True,
+                ),
+                TranslationProviderError(
+                    ProviderErrorCode.TIMEOUT,
+                    "provider timed out",
+                    retryable=True,
+                ),
+            ],
+            TranslationRunStatus.FAILED,
+            JobStatus.FAILED,
+        ),
+    ],
+)
+def test_production_runner_maps_terminal_statuses(
+    loader_fixture: LoaderFixture,
+    responses: list[str | TranslationProviderError],
+    expected_run: TranslationRunStatus,
+    expected_job: JobStatus,
+) -> None:
+    job_id = loader_fixture.start()
+    provider = RuntimeProvider(responses)
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=lambda _model: provider,
+    ).run(job_id)
+
+    assert result.status is expected_run
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == expected_job.value
+
+
+def test_production_runner_persists_partial_failure_and_failed_segment(
+    loader_fixture: LoaderFixture,
+) -> None:
+    job_id = loader_fixture.start(batch_size=1)
+    provider = RuntimeProvider(
+        [
+            _response((SEGMENT_ID, "Sumber pertama.")),
+            TranslationProviderError(
+                ProviderErrorCode.TIMEOUT,
+                "provider timed out",
+                retryable=True,
+            ),
+        ]
+    )
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=lambda _model: provider,
+    ).run(job_id)
+
+    assert result.status is TranslationRunStatus.PARTIALLY_COMPLETED
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        failed = session.get(DocumentSegment, SEGMENT_2_ID)
+        assert job is not None and failed is not None
+        assert job.status == JobStatus.PARTIALLY_COMPLETED.value
+        assert failed.status == SegmentStatus.TRANSLATION_FAILED.value
+
+
+def test_production_runner_checkpoints_cancellation(
+    loader_fixture: LoaderFixture,
+) -> None:
+    job_id = loader_fixture.start()
+
+    def request_cancellation() -> None:
+        with transaction_scope(loader_fixture.factory) as session:
+            job = session.get(ApplicationJob, job_id)
+            project = session.get(Project, loader_fixture.project_id)
+            document = session.get(Document, DOCUMENT_ID)
+            first = session.get(DocumentSegment, SEGMENT_ID)
+            assert job is not None and project is not None and document is not None
+            assert first is not None
+            assert job.status == JobStatus.RUNNING.value
+            assert project.status == "TRANSLATING"
+            assert document.status == DocumentStatus.TRANSLATING.value
+            assert first.status == SegmentStatus.TRANSLATING.value
+            job.status = JobStatus.CANCELLATION_REQUESTED.value
+
+    provider = RuntimeProvider(on_translate=request_cancellation)
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=lambda _model: provider,
+    ).run(job_id)
+
+    assert result.status is TranslationRunStatus.CANCELLED
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        document = session.get(Document, DOCUMENT_ID)
+        first = session.get(DocumentSegment, SEGMENT_ID)
+        second = session.get(DocumentSegment, SEGMENT_2_ID)
+        assert job is not None and document is not None
+        assert first is not None and second is not None
+        assert job.status == JobStatus.CANCELLED.value
+        assert document.status == DocumentStatus.STRUCTURED.value
+        assert first.status == SegmentStatus.READY_FOR_TRANSLATION.value
+        assert second.status == SegmentStatus.READY_FOR_TRANSLATION.value
+        assert first.machine_translation is None
+        assert second.machine_translation is None
+
+
+def test_production_runner_sanitizes_unexpected_failure_and_reraises(
+    loader_fixture: LoaderFixture,
+) -> None:
+    job_id = loader_fixture.start()
+
+    with pytest.raises(RuntimeError, match="unsafe details"):
+        ProductionTranslationJobRunner(
+            DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+            loader_fixture.factory,
+            loader_fixture.data_root / "temporary",
+            provider_factory=lambda _model: (_ for _ in ()).throw(
+                RuntimeError("unsafe details\nwith control")
+            ),
+        ).run(job_id)
+
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
+        assert job is not None and attempt is not None
+        assert job.status == JobStatus.FAILED.value
+        assert job.error_code == "RUNTIMEERROR"
+        assert job.error_message == "Translation job failed."
+        assert attempt.status == JobAttemptStatus.FAILED.value
+
+
+def test_database_cancellation_signal_reads_persisted_state(
+    loader_fixture: LoaderFixture,
+) -> None:
+    job_id = loader_fixture.start()
+    signal = DatabaseCancellationSignal(loader_fixture.factory, job_id)
+    assert signal.is_cancelled is False
+
+    with transaction_scope(loader_fixture.factory) as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        job.status = JobStatus.CANCELLATION_REQUESTED.value
+
+    assert signal.is_cancelled is True
