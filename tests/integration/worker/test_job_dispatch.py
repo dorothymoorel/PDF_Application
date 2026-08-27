@@ -34,6 +34,20 @@ class UnavailableQueue:
         raise OSError("queue unavailable")
 
 
+class InspectingQueue:
+    name = "transloka"
+
+    def __init__(self, factory: sessionmaker[Session]) -> None:
+        self._factory = factory
+        self.observed_statuses: list[str] = []
+
+    def enqueue(self, job_id: str) -> None:
+        with self._factory() as session:
+            row = session.get(ApplicationJob, job_id)
+            assert row is not None
+            self.observed_statuses.append(row.status)
+
+
 @pytest.fixture
 def job_database(
     monkeypatch: pytest.MonkeyPatch,
@@ -114,6 +128,69 @@ def test_queue_failure_persists_failed_job_instead_of_false_queued(
         assert row.error_message == "The job could not be queued."
         assert row.queued_at is None
         assert row.completed_at is not None
+
+
+def test_dispatch_commits_queued_state_before_enqueuing(
+    job_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = job_database
+    queue = InspectingQueue(factory)
+
+    result = JobDispatchService(factory, queue).dispatch(
+        job_type=JobType.TRANSLATE_DOCUMENT,
+        idempotency_key="translation-race-safe",
+    )
+
+    assert result.status is JobStatus.QUEUED
+    assert queue.observed_statuses == [JobStatus.QUEUED.value]
+
+
+def test_dispatch_persists_canonical_extended_command(
+    job_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = job_database
+    queue = InspectingQueue(factory)
+    command_payload = {
+        "schema": "transloka.translation.command.v1",
+        "project_id": None,
+        "document_id": None,
+        "model_id": "mdl_550e8400-e29b-41d4-a716-446655440000",
+        "segment_ids": ["seg_550e8400-e29b-41d4-a716-446655440001"],
+    }
+
+    result = JobDispatchService(factory, queue).dispatch(
+        job_type=JobType.TRANSLATE_DOCUMENT,
+        idempotency_key="translation-command-1",
+        command_payload=command_payload,
+    )
+
+    with factory() as session:
+        row = session.get(ApplicationJob, result.job_id)
+        assert row is not None
+        assert json.loads(row.payload_json) == command_payload
+        assert row.payload_json == json.dumps(
+            command_payload,
+            ensure_ascii=False,
+            allow_nan=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+
+
+def test_dispatch_rejects_non_json_command_without_creating_job(
+    job_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = job_database
+
+    with pytest.raises(InvalidJobDispatchError, match="JSON-safe"):
+        JobDispatchService(factory, UnavailableQueue()).dispatch(
+            job_type=JobType.TRANSLATE_DOCUMENT,
+            idempotency_key="translation-command-invalid",
+            command_payload={"schema": object()},
+        )
+
+    with factory() as session:
+        assert session.scalar(select(ApplicationJob.id)) is None
 
 
 def test_duplicate_key_reuses_matching_job_without_duplicate_queue_task(

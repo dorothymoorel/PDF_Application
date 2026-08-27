@@ -1,5 +1,5 @@
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
@@ -72,6 +72,7 @@ class JobDispatchService:
         document_id: str | None = None,
         page_ids: Sequence[str] = (),
         max_retries: int = 3,
+        command_payload: Mapping[str, object] | None = None,
     ) -> JobDispatchResult:
         payload_json = _validate_and_serialize_request(
             job_type=job_type,
@@ -80,6 +81,7 @@ class JobDispatchService:
             document_id=document_id,
             page_ids=page_ids,
             max_retries=max_retries,
+            command_payload=command_payload,
         )
         existing = self._existing_job(idempotency_key)
         if existing is not None:
@@ -108,7 +110,7 @@ class JobDispatchService:
                     parent_job_id=None,
                     job_type=job_type.value,
                     queue_name=self._queue_name,
-                    status=JobStatus.CREATED.value,
+                    status=JobStatus.QUEUED.value,
                     progress=0.0,
                     current_stage=None,
                     idempotency_key=idempotency_key,
@@ -119,7 +121,7 @@ class JobDispatchService:
                     error_code=None,
                     error_message=None,
                     created_at=created_at,
-                    queued_at=None,
+                    queued_at=created_at,
                     started_at=None,
                     completed_at=None,
                     cancelled_at=None,
@@ -133,13 +135,6 @@ class JobDispatchService:
         except Exception as exc:
             self._mark_dispatch_failed(job_id)
             raise JobQueueUnavailableError(job_id) from exc
-
-        queued_at = _utc_now()
-        with transaction_scope(self._session_factory) as session:
-            row = _created_job(session, job_id)
-            row.status = JobStatus.QUEUED.value
-            row.queued_at = queued_at
-            session.flush()
         return JobDispatchResult(job_id, JobStatus.QUEUED, created=True)
 
     def _existing_job(self, idempotency_key: str) -> ApplicationJob | None:
@@ -151,10 +146,11 @@ class JobDispatchService:
     def _mark_dispatch_failed(self, job_id: str) -> None:
         failed_at = _utc_now()
         with transaction_scope(self._session_factory) as session:
-            row = _created_job(session, job_id)
+            row = _queued_job(session, job_id)
             row.status = JobStatus.FAILED.value
             row.error_code = QUEUE_DISPATCH_FAILED
             row.error_message = "The job could not be queued."
+            row.queued_at = None
             row.completed_at = failed_at
             session.flush()
 
@@ -167,6 +163,7 @@ def _validate_and_serialize_request(
     document_id: str | None,
     page_ids: Sequence[str],
     max_retries: int,
+    command_payload: Mapping[str, object] | None,
 ) -> str:
     if not isinstance(job_type, JobType):
         raise InvalidJobDispatchError("The job type is invalid.")
@@ -179,16 +176,34 @@ def _validate_and_serialize_request(
         _validate_identifier(page_id, "pag_")
     if isinstance(max_retries, bool) or not isinstance(max_retries, int) or max_retries < 0:
         raise InvalidJobDispatchError("Maximum retries must be a non-negative integer.")
-    return json.dumps(
+    if command_payload is not None:
+        return _serialize_payload(command_payload)
+    return _serialize_payload(
         {
             "document_id": document_id,
             "page_ids": list(page_ids),
             "project_id": project_id,
-        },
-        ensure_ascii=False,
-        separators=(",", ":"),
-        sort_keys=True,
+        }
     )
+
+
+def _serialize_payload(payload: Mapping[str, object]) -> str:
+    if not payload or any(not isinstance(key, str) for key in payload):
+        raise InvalidJobDispatchError("The job command must be a non-empty JSON object.")
+    try:
+        serialized = json.dumps(
+            dict(payload),
+            ensure_ascii=False,
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        decoded = json.loads(serialized)
+    except (TypeError, ValueError):
+        raise InvalidJobDispatchError("The job command must be JSON-safe.") from None
+    if not isinstance(decoded, dict):
+        raise InvalidJobDispatchError("The job command must be a JSON object.")
+    return serialized
 
 
 def _matches_request(
@@ -211,10 +226,10 @@ def _matches_request(
     )
 
 
-def _created_job(session: Session, job_id: str) -> ApplicationJob:
+def _queued_job(session: Session, job_id: str) -> ApplicationJob:
     row = session.get(ApplicationJob, job_id)
-    if row is None or row.status != JobStatus.CREATED.value:
-        raise JobDispatchError("The created job is unavailable or has an invalid status.")
+    if row is None or row.status != JobStatus.QUEUED.value:
+        raise JobDispatchError("The queued job is unavailable or has an invalid status.")
     return row
 
 
