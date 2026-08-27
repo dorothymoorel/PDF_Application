@@ -4,6 +4,9 @@ version = "0.0.0"
 requires-python = ">=3.12,<3.13"
 dependencies = [
     "huey>=3.3.2,<4",
+    "transloka-core",
+    "transloka-glossary",
+    "transloka-translation",
 ]
 classifiers = ["Private :: Do Not Upload"]
 

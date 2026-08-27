@@ -32,12 +32,18 @@ from transloka_core.database.models.documents import (
     DocumentStatus,
 )
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
-from transloka_core.database.models.glossary import GlossaryConflict
-from transloka_core.database.models.jobs import ApplicationJob
+from transloka_core.database.models.glossary import GlossaryConflict, GlossarySnapshot
+from transloka_core.database.models.jobs import (
+    ApplicationJob,
+    JobAttempt,
+    JobAttemptStatus,
+    JobStatus,
+)
 from transloka_core.database.models.models import LocalModelRecord, ModelLicenseStatus
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import Project
 from transloka_translation.providers import ProviderHealth, ProviderHealthStatus
+from transloka_worker.translation import TranslationCommand
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
@@ -82,8 +88,18 @@ class UnavailableProvider:
 class RecordingQueue:
     name = "translation"
 
+    def __init__(self) -> None:
+        self.enqueued: list[str] = []
+
+    def enqueue(self, job_id: str) -> None:
+        self.enqueued.append(job_id)
+
+
+class UnavailableQueue:
+    name = "translation"
+
     def enqueue(self, _job_id: str) -> None:
-        pass
+        raise OSError("queue unavailable")
 
 
 @pytest.fixture
@@ -349,6 +365,25 @@ def test_translation_start_is_idempotent_and_readiness_blocks_start(
     assert repeated.status_code == 202
     assert repeated.json()["data"] == first.json()["data"]
 
+    job_id = first.json()["data"]["job_id"]
+    with factory() as session:
+        row = session.get(ApplicationJob, job_id)
+        assert row is not None
+        command = TranslationCommand.from_payload_json(row.payload_json)
+        assert command.project_id == project_id
+        assert command.document_id == DOCUMENT_ID
+        assert command.model_id == MODEL_ID
+        snapshot = session.get(GlossarySnapshot, command.glossary_snapshot_id)
+        assert snapshot is not None
+
+    conflict = client.post(
+        start_path,
+        headers=headers,
+        json={"model_id": MODEL_ID, "batch_size": 6},
+    )
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
+
     with transaction_scope(factory) as session:
         model = session.get(LocalModelRecord, MODEL_ID)
         assert model is not None
@@ -383,7 +418,7 @@ def test_translation_start_fails_closed_when_queue_is_not_configured(
 def test_translation_cancel_and_retry_failed(
     translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
 ) -> None:
-    client, _factory, project_id, _application = translation_api
+    client, _factory, project_id, application = translation_api
     start = client.post(
         f"/api/v1/projects/{project_id}/translation/start",
         headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-lifecycle"},
@@ -407,6 +442,54 @@ def test_translation_cancel_and_retry_failed(
     assert retried.status_code == 202
     assert retried.json()["data"]["status"] == "TRANSLATING"
 
+    repeated = client.post(
+        f"/api/v1/projects/{project_id}/translation/retry-failed",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-retry-1"},
+        json={"use_smaller_batch": True, "use_selected_model": True},
+    )
+    assert repeated.status_code == 202
+    queue = cast(RecordingQueue, application.state.translation_queue)
+    assert queue.enqueued == [start.json()["data"]["job_id"], start.json()["data"]["job_id"]]
+
     status_response = client.get(f"/api/v1/projects/{project_id}/translation/status")
     assert status_response.status_code == 200
     assert status_response.json()["data"]["active_job_id"] == start.json()["data"]["job_id"]
+
+
+def test_translation_retry_queue_failure_persists_terminal_state(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = translation_api
+    start = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-retry-queue-failure"},
+        json={"model_id": MODEL_ID},
+    )
+    job_id = start.json()["data"]["job_id"]
+    client.post(
+        f"/api/v1/projects/{project_id}/translation/cancel",
+        headers=CLIENT_HEADERS,
+        json={"reason": "Prepare a retryable job."},
+    )
+    application.state.translation_queue = UnavailableQueue()
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/retry-failed",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-retry-queue-failure-1"},
+        json={"use_smaller_batch": True, "use_selected_model": True},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "QUEUE_UNAVAILABLE"
+    with factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.FAILED.value
+        attempt = session.scalar(
+            select(JobAttempt)
+            .where(JobAttempt.job_id == job_id)
+            .order_by(JobAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        assert attempt is not None
+        assert attempt.status == JobAttemptStatus.FAILED.value

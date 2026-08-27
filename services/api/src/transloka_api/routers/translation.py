@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from math import ceil
 from typing import Annotated, Any, Literal, Never, cast
 
@@ -12,9 +13,16 @@ from transloka_api.exception_handlers import TransLokaError
 from transloka_api.middleware import get_request_id
 from transloka_api.schemas import ErrorResponse
 from transloka_api.schemas.projects import ResponseMeta
+from transloka_core.database import transaction_scope
 from transloka_core.database.models.document_ir import DocumentBlock, DocumentSegment, SegmentStatus
 from transloka_core.database.models.glossary import GlossaryConflict
-from transloka_core.database.models.jobs import ApplicationJob, JobStatus, JobType
+from transloka_core.database.models.jobs import (
+    ApplicationJob,
+    JobAttempt,
+    JobAttemptStatus,
+    JobStatus,
+    JobType,
+)
 from transloka_core.database.models.models import LocalModelRecord
 from transloka_core.database.models.pages import DocumentPage
 from transloka_core.database.models.projects import Project, TranslationStyle
@@ -24,6 +32,7 @@ from transloka_core.jobs.cancellation import (
     JobCannotBeCancelledError,
 )
 from transloka_core.jobs.dispatch import (
+    QUEUE_DISPATCH_FAILED,
     InvalidJobDispatchError,
     JobDispatchService,
     JobIdempotencyConflictError,
@@ -36,8 +45,11 @@ from transloka_core.jobs.retry import (
     RetryIdempotencyConflictError,
     RetryJobNotFoundError,
 )
+from transloka_core.storage.local import LocalFileStorage
+from transloka_glossary.snapshots import GlossarySnapshotError, create_glossary_snapshot
 from transloka_translation.providers import ProviderHealthStatus
 from transloka_translation.providers.ollama import OllamaTranslationProvider
+from transloka_worker.translation import TranslationCommand, TranslationWorkerError
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -225,15 +237,43 @@ async def start_translation(
             },
         )
 
+    queue = _translation_queue(request)
+    session_factory = _session_factory(request)
     try:
-        result = JobDispatchService(
-            _session_factory(request), _translation_queue(request)
-        ).dispatch(
+        with transaction_scope(session_factory) as snapshot_session:
+            snapshot = create_glossary_snapshot(
+                session=snapshot_session,
+                storage=LocalFileStorage(request.app.state.settings.data_directories),
+                project_id=project_id,
+                document_id=document_id,
+            )
+        command = TranslationCommand(
+            project_id=project_id,
+            document_id=document_id,
+            scope=payload.scope,
+            section_ids=tuple(payload.section_ids or ()),
+            page_ids=tuple(payload.page_ids or ()),
+            segment_ids=tuple(payload.segment_ids or ()),
+            model_id=payload.model_id,
+            translation_style=(
+                payload.translation_style.value
+                if payload.translation_style is not None
+                else readiness.project.translation_style
+            ),
+            batch_size=payload.batch_size,
+            context_mode=payload.context_mode,
+            retranslate_existing=payload.retranslate_existing,
+            skip_locked_segments=payload.skip_locked_segments,
+            run_semantic_validation=payload.run_semantic_validation,
+            glossary_snapshot_id=snapshot.id,
+        )
+        result = JobDispatchService(session_factory, queue).dispatch(
             job_type=JobType.TRANSLATE_DOCUMENT,
             idempotency_key=idempotency_key,
             project_id=project_id,
             document_id=document_id,
             page_ids=tuple(payload.page_ids or ()),
+            command_payload=command.to_payload(),
         )
     except JobIdempotencyConflictError as exc:
         raise TransLokaError(
@@ -248,7 +288,7 @@ async def start_translation(
             status_code=503,
             details={"job_id": exc.job_id},
         ) from exc
-    except InvalidJobDispatchError as exc:
+    except (InvalidJobDispatchError, GlossarySnapshotError, TranslationWorkerError) as exc:
         raise TransLokaError(
             code="VALIDATION_ERROR",
             message="The translation request contains invalid values.",
@@ -327,12 +367,27 @@ def retry_failed_translation(
     if job is None:
         _raise_job_not_found()
     try:
-        JobRetryService(_session_factory(request)).request(
+        retry = JobRetryService(_session_factory(request)).request(
             job.id,
             idempotency_key=idempotency_key,
             retry_failed_items_only=True,
             reason=("SMALLER_BATCH" if payload.use_smaller_batch else "USER_REQUESTED"),
         )
+        if retry.created:
+            try:
+                _translation_queue(request).enqueue(job.id)
+            except Exception as exc:
+                _mark_retry_queue_failure(
+                    _session_factory(request),
+                    job.id,
+                    retry.attempt_id,
+                )
+                raise TransLokaError(
+                    code="QUEUE_UNAVAILABLE",
+                    message="The translation job could not be queued.",
+                    status_code=503,
+                    details={"job_id": job.id},
+                ) from exc
     except RetryJobNotFoundError as exc:
         _raise_job_not_found()
         raise AssertionError from exc
@@ -355,6 +410,31 @@ def retry_failed_translation(
             status_code=409,
         ) from exc
     return _status_response(session, project)
+
+
+def _mark_retry_queue_failure(
+    session_factory: sessionmaker[Session],
+    job_id: str,
+    attempt_id: str,
+) -> None:
+    completed_at = _utc_now()
+    with transaction_scope(session_factory) as failed_session:
+        job = failed_session.get(ApplicationJob, job_id)
+        attempt = failed_session.get(JobAttempt, attempt_id)
+        if job is None or attempt is None:
+            return
+        job.status = JobStatus.FAILED.value
+        job.current_stage = JobStatus.FAILED.value
+        job.error_code = QUEUE_DISPATCH_FAILED
+        job.error_message = "The translation job could not be queued."
+        job.queued_at = None
+        job.started_at = None
+        job.completed_at = completed_at
+        job.heartbeat_at = completed_at
+        attempt.status = JobAttemptStatus.FAILED.value
+        attempt.completed_at = completed_at
+        attempt.error_code = QUEUE_DISPATCH_FAILED
+        attempt.error_message = "The translation job could not be queued."
 
 
 def _get_session(request: Request) -> Iterator[Session]:
@@ -649,6 +729,10 @@ def _request_id() -> str:
     if request_id is None:
         raise RuntimeError("The request identifier is unavailable.")
     return request_id
+
+
+def _utc_now() -> str:
+    return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
 def _raise_job_not_found() -> Never:

@@ -674,6 +674,7 @@ dependencies = [
     { name = "fastapi" },
     { name = "pydantic-settings" },
     { name = "python-multipart" },
+    { name = "transloka-worker" },
     { name = "uvicorn" },
 ]
 
@@ -682,6 +683,7 @@ requires-dist = [
     { name = "fastapi", specifier = ">=0.140.0" },
     { name = "pydantic-settings", specifier = ">=2.14.2" },
     { name = "python-multipart", specifier = ">=0.0.32" },
+    { name = "transloka-worker", editable = "services/worker" },
     { name = "uvicorn", specifier = ">=0.51.0" },
 ]
 
@@ -760,10 +762,18 @@ version = "0.0.0"
 source = { editable = "services/worker" }
 dependencies = [
     { name = "huey" },
+    { name = "transloka-core" },
+    { name = "transloka-glossary" },
+    { name = "transloka-translation" },
 ]
 
 [package.metadata]
-requires-dist = [{ name = "huey", specifier = ">=3.3.2,<4" }]
+requires-dist = [
+    { name = "huey", specifier = ">=3.3.2,<4" },
+    { name = "transloka-core", editable = "python/transloka-core" },
+    { name = "transloka-glossary", editable = "python/transloka-glossary" },
+    { name = "transloka-translation", editable = "python/transloka-translation" },
+]
 
 [[package]]
 name = "transloka-workspace"
