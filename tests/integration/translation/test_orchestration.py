@@ -142,6 +142,30 @@ def test_partial_failure_identifies_only_failed_batch() -> None:
     assert result.failures[0].code == ProviderErrorCode.TIMEOUT.value
 
 
+def test_orchestrator_reports_progress_after_each_batch() -> None:
+    provider = _ScriptedProvider(
+        [
+            _response(("s1", "Satu")),
+            _response(("s2", "Dua")),
+        ]
+    )
+    updates: list[tuple[int, int]] = []
+    orchestrator = TranslationOrchestrator(
+        provider,
+        InMemoryTranslationRunStore(),
+        batch_progress_sink=lambda completed, total: updates.append((completed, total)),
+    )
+    operation = _operation(
+        _segment("s1", "One", order=0),
+        _segment("s2", "Two", order=1),
+        limits=BatchLimits(max_segments=1),
+    )
+
+    asyncio.run(orchestrator.run(operation))
+
+    assert updates == [(1, 2), (2, 2)]
+
+
 def test_provider_timeout_marks_segment_failed() -> None:
     provider: FakeTranslationProvider[object, str] = FakeTranslationProvider(
         response="unused",

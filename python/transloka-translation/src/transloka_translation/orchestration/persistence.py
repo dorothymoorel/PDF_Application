@@ -339,6 +339,11 @@ class SqlAlchemyTranslationRunStore:
         report: ValidationReport,
     ) -> StoredSegmentResult:
         from transloka_core.database import transaction_scope
+        from transloka_core.database.models.document_ir import (
+            DocumentSegment,
+            ReviewStatus,
+            SegmentStatus,
+        )
         from transloka_core.database.models.translation import (
             SegmentTranslation,
             SegmentTranslationStatus,
@@ -354,6 +359,9 @@ class SqlAlchemyTranslationRunStore:
             else TranslationValidationStatus.PASSED.value
         )
         with transaction_scope(self._session_factory) as session:
+            segment = session.get(DocumentSegment, segment_id)
+            if segment is None:
+                raise LookupError(f"Document segment not found: {segment_id}")
             session.add(
                 SegmentTranslation(
                     id=result_id,
@@ -369,6 +377,18 @@ class SqlAlchemyTranslationRunStore:
                     created_at=_now(),
                 )
             )
+            segment.machine_translation = translated_text_restored
+            segment.status = (
+                SegmentStatus.NEEDS_REVIEW.value
+                if report.warnings
+                else SegmentStatus.MACHINE_TRANSLATED.value
+            )
+            segment.review_status = (
+                ReviewStatus.REVIEW_REQUIRED.value
+                if report.warnings
+                else ReviewStatus.NOT_REVIEWED.value
+            )
+            segment.updated_at = _now()
             for issue in report.issues:
                 try:
                     validator_type = ValidatorType[issue.code.name]

@@ -364,6 +364,9 @@ def test_digital_pdf_workflow_reaches_downloadable_export_without_mutating_origi
         assert approved_text == "Gunakan API_KEY dalam alur kerja."
         segment = session.get(DocumentSegment, SEGMENT_ID)
         assert segment is not None
+        assert segment.machine_translation == approved_text
+        assert segment.status == SegmentStatus.MACHINE_TRANSLATED.value
+        assert segment.review_status == ReviewStatus.NOT_REVIEWED.value
         segment.protected_source_text = protected.text
         segment.machine_translation = approved_text
         segment.status = SegmentStatus.NEEDS_REVIEW.value

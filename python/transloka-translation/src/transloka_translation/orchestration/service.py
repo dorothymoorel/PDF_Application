@@ -68,6 +68,7 @@ class TranslationOrchestrator:
         detector: ProtectedContentDetector | None = None,
         restorer: PlaceholderRestorer | None = None,
         status_sink: Callable[[TranslationRunStatus], None] | None = None,
+        batch_progress_sink: Callable[[int, int], None] | None = None,
     ) -> None:
         self._provider = provider
         self._store = store
@@ -76,6 +77,7 @@ class TranslationOrchestrator:
         self._detector = detector or ProtectedContentDetector()
         self._restorer = restorer or PlaceholderRestorer()
         self._status_sink = status_sink
+        self._batch_progress_sink = batch_progress_sink
 
     async def run(
         self,
@@ -118,9 +120,11 @@ class TranslationOrchestrator:
         warnings: list[str] = []
         attempt_count = 0
 
-        for batch in plan.batches:
+        total_batches = len(plan.batches)
+        for batch_number, batch in enumerate(plan.batches, start=1):
             if _is_cancelled(cancellation):
                 cancelled.extend(batch.segment_ids)
+                self._emit_batch_progress(batch_number, total_batches)
                 continue
             protected = self._prepare_batch(operation, batch)
             attempt_count += 1
@@ -133,6 +137,7 @@ class TranslationOrchestrator:
                 raw_response = await self._provider.translate(prompt, cancellation=cancellation)
                 if _is_cancelled(cancellation):
                     cancelled.extend(batch.segment_ids)
+                    self._emit_batch_progress(batch_number, total_batches)
                     continue
                 response = _coerce_response(raw_response, protected.request.segment_ids)
                 report = validate_translation(protected.request, response)
@@ -202,6 +207,7 @@ class TranslationOrchestrator:
                     error_code="INVALID_RESPONSE",
                     error_message=str(error),
                 )
+            self._emit_batch_progress(batch_number, total_batches)
 
         locked = list(plan.excluded_locked_segment_ids)
         final_status = _final_status(completed, failed, cancelled, warnings, len(locked))
@@ -260,6 +266,10 @@ class TranslationOrchestrator:
     def _emit(self, status: TranslationRunStatus) -> None:
         if self._status_sink is not None:
             self._status_sink(status)
+
+    def _emit_batch_progress(self, completed_batches: int, total_batches: int) -> None:
+        if self._batch_progress_sink is not None:
+            self._batch_progress_sink(completed_batches, total_batches)
 
     @staticmethod
     def _result_for_existing(run: StoredRun) -> TranslationRunResult:
