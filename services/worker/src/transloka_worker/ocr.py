@@ -1,22 +1,33 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Self
+from uuid import UUID
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_core.database import transaction_scope
+from transloka_core.database.models.documents import Document
+from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.jobs import (
     ApplicationJob,
     JobAttempt,
     JobAttemptStatus,
     JobStatus,
+    JobType,
 )
+from transloka_core.database.models.pages import DocumentPage, PageType
+from transloka_core.database.models.projects import Project
 from transloka_core.jobs.cancellation import JobCancellationService
 from transloka_core.jobs.progress import JobProgressService
+from transloka_core.storage.local import LocalFileStorage, LocalFileStorageError
+from transloka_documents.ocr import OCRSettings
 from transloka_documents.ocr.orchestration import (
     OCRJobRequest,
     OCRPageOrchestrator,
@@ -24,9 +35,217 @@ from transloka_documents.ocr.orchestration import (
     OCRRunStatus,
 )
 
+OCR_COMMAND_SCHEMA = "transloka.ocr.command.v1"
+_OCR_COMMAND_FIELDS = frozenset(
+    {
+        "schema",
+        "project_id",
+        "document_id",
+        "mode",
+        "page_ids",
+        "language",
+        "detect_tables",
+        "detect_formulas",
+        "dpi",
+        "timeout_seconds",
+        "low_confidence_threshold",
+        "max_attempts",
+    }
+)
+_OCR_MODES = frozenset({"AUTO", "FORCE"})
+_OCR_DPI_VALUES = frozenset({72, 96, 120, 144, 150, 200, 300})
+
 
 class OCRWorkerError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class OCRCommand:
+    project_id: str
+    document_id: str
+    mode: str
+    page_ids: tuple[str, ...]
+    language: str
+    detect_tables: bool
+    detect_formulas: bool
+    dpi: int = 150
+    timeout_seconds: float = 30.0
+    low_confidence_threshold: float = 0.75
+    max_attempts: int = 3
+
+    def __post_init__(self) -> None:
+        _validate_identifier(self.project_id, "prj_")
+        _validate_identifier(self.document_id, "doc_")
+        _validate_page_ids(self.page_ids)
+        if self.mode not in _OCR_MODES:
+            raise OCRWorkerError("The OCR command mode is invalid.")
+        if self.mode == "AUTO" and self.page_ids:
+            raise OCRWorkerError("Automatic OCR cannot contain explicit page identifiers.")
+        if self.mode == "FORCE" and not self.page_ids:
+            raise OCRWorkerError("Forced OCR requires page identifiers.")
+        if (
+            not isinstance(self.language, str)
+            or not self.language
+            or self.language != self.language.strip()
+            or not self.language.isprintable()
+            or len(self.language) > 20
+        ):
+            raise OCRWorkerError("The OCR command language is invalid.")
+        if type(self.detect_tables) is not bool or type(self.detect_formulas) is not bool:
+            raise OCRWorkerError("The OCR command flags are invalid.")
+        if type(self.dpi) is not int or self.dpi not in _OCR_DPI_VALUES:
+            raise OCRWorkerError("The OCR command DPI is invalid.")
+        if (
+            isinstance(self.timeout_seconds, bool)
+            or not isinstance(self.timeout_seconds, int | float)
+            or not math.isfinite(self.timeout_seconds)
+            or not 0 < self.timeout_seconds <= 300
+        ):
+            raise OCRWorkerError("The OCR command timeout is invalid.")
+        if (
+            isinstance(self.low_confidence_threshold, bool)
+            or not isinstance(self.low_confidence_threshold, int | float)
+            or not math.isfinite(self.low_confidence_threshold)
+            or not 0 <= self.low_confidence_threshold <= 1
+        ):
+            raise OCRWorkerError("The OCR command confidence threshold is invalid.")
+        if type(self.max_attempts) is not int or not 1 <= self.max_attempts <= 5:
+            raise OCRWorkerError("The OCR command maximum attempts are invalid.")
+
+    def to_payload(self) -> dict[str, object]:
+        return {
+            "schema": OCR_COMMAND_SCHEMA,
+            "project_id": self.project_id,
+            "document_id": self.document_id,
+            "mode": self.mode,
+            "page_ids": list(self.page_ids),
+            "language": self.language,
+            "detect_tables": self.detect_tables,
+            "detect_formulas": self.detect_formulas,
+            "dpi": self.dpi,
+            "timeout_seconds": self.timeout_seconds,
+            "low_confidence_threshold": self.low_confidence_threshold,
+            "max_attempts": self.max_attempts,
+        }
+
+    @classmethod
+    def from_payload_json(cls, value: str) -> Self:
+        payload = _decode_ocr_command(value)
+        if frozenset(payload) != _OCR_COMMAND_FIELDS:
+            raise OCRWorkerError("The OCR command fields are invalid.")
+        if payload["schema"] != OCR_COMMAND_SCHEMA:
+            raise OCRWorkerError("The OCR command schema is unsupported.")
+        try:
+            return cls(
+                project_id=_string_value(payload, "project_id"),
+                document_id=_string_value(payload, "document_id"),
+                mode=_string_value(payload, "mode"),
+                page_ids=_page_id_tuple(payload["page_ids"]),
+                language=_string_value(payload, "language"),
+                detect_tables=_boolean_value(payload, "detect_tables"),
+                detect_formulas=_boolean_value(payload, "detect_formulas"),
+                dpi=_integer_value(payload, "dpi"),
+                timeout_seconds=_number_value(payload, "timeout_seconds"),
+                low_confidence_threshold=_number_value(payload, "low_confidence_threshold"),
+                max_attempts=_integer_value(payload, "max_attempts"),
+            )
+        except (KeyError, TypeError):
+            raise OCRWorkerError("The OCR command values are invalid.") from None
+
+
+@dataclass(frozen=True, slots=True)
+class LoadedOCRJob:
+    request: OCRJobRequest
+    selected_page_ids: tuple[str, ...]
+
+
+class DatabaseOCRRequestLoader:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        storage: LocalFileStorage,
+    ) -> None:
+        self._session_factory = session_factory
+        self._storage = storage
+
+    def load(self, job_id: str) -> LoadedOCRJob:
+        _validate_identifier(job_id, "job_")
+        with self._session_factory() as session:
+            job = session.get(ApplicationJob, job_id)
+            if job is None or job.job_type != JobType.OCR_DOCUMENT.value:
+                raise OCRWorkerError("The OCR job is unavailable.")
+            if job.status not in {
+                JobStatus.QUEUED.value,
+                JobStatus.RETRYING.value,
+                JobStatus.RUNNING.value,
+                JobStatus.CANCELLATION_REQUESTED.value,
+                JobStatus.CANCELLED.value,
+            }:
+                raise OCRWorkerError("The OCR job is not executable.")
+
+            command = OCRCommand.from_payload_json(job.payload_json)
+            project = session.get(Project, command.project_id)
+            document = session.get(Document, command.document_id)
+            if (
+                project is None
+                or document is None
+                or document.project_id != command.project_id
+                or project.active_document_id != command.document_id
+                or job.project_id != command.project_id
+                or job.document_id != command.document_id
+            ):
+                raise OCRWorkerError("The OCR command state is inconsistent.")
+
+            original = session.get(StoredFile, document.original_file_id)
+            if (
+                original is None
+                or original.project_id != command.project_id
+                or original.file_role != FileRole.ORIGINAL.value
+                or original.status != FileStatus.VALIDATED.value
+                or not original.is_immutable
+                or original.mime_type != "application/pdf"
+            ):
+                raise OCRWorkerError("The OCR source PDF is unavailable.")
+
+            pages = tuple(
+                session.scalars(
+                    select(DocumentPage)
+                    .where(DocumentPage.document_id == command.document_id)
+                    .order_by(DocumentPage.source_page_number, DocumentPage.id)
+                )
+            )
+            selected = _selected_pages(pages, command)
+            try:
+                checksum = self._storage.checksum(original.storage_key)
+            except LocalFileStorageError as exc:
+                raise OCRWorkerError("The OCR source PDF is unavailable.") from exc
+            if checksum != original.checksum_sha256:
+                raise OCRWorkerError("The OCR source PDF checksum is invalid.")
+
+            request = OCRJobRequest(
+                job_id=job.id,
+                project_id=command.project_id,
+                document_id=command.document_id,
+                source_pdf=lambda: self._storage.open_read(original.storage_key),
+                page_numbers=tuple(page.source_page_number for page in selected),
+                dpi=command.dpi,
+                settings=OCRSettings(
+                    language=command.language,
+                    detect_tables=command.detect_tables,
+                    detect_formulas=command.detect_formulas,
+                    timeout_seconds=command.timeout_seconds,
+                    low_confidence_threshold=command.low_confidence_threshold,
+                ),
+                max_attempts=command.max_attempts,
+            )
+            return LoadedOCRJob(
+                request=request,
+                selected_page_ids=tuple(page.id for page in selected),
+            )
+
+    def __call__(self, job_id: str) -> OCRJobRequest:
+        return self.load(job_id).request
 
 
 class OCRJobRunner:
@@ -388,6 +607,95 @@ def _worker_identifier(value: str | None) -> str:
 
 def _utc_now() -> str:
     return datetime.now(UTC).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def _selected_pages(
+    pages: tuple[DocumentPage, ...],
+    command: OCRCommand,
+) -> tuple[DocumentPage, ...]:
+    by_id = {page.id: page for page in pages}
+    if command.mode == "FORCE":
+        if not set(command.page_ids).issubset(by_id):
+            raise OCRWorkerError("An OCR command page is unavailable.")
+        return tuple(by_id[page_id] for page_id in command.page_ids)
+    return tuple(
+        page for page in pages if page.page_type in {PageType.SCANNED.value, PageType.HYBRID.value}
+    )
+
+
+def _decode_ocr_command(value: str) -> dict[str, object]:
+    if not isinstance(value, str):
+        raise OCRWorkerError("The OCR command JSON is invalid.")
+
+    def pairs_hook(pairs: list[tuple[str, object]]) -> dict[str, object]:
+        payload: dict[str, object] = {}
+        for key, item in pairs:
+            if key in payload:
+                raise OCRWorkerError("The OCR command fields are duplicated.")
+            payload[key] = item
+        return payload
+
+    try:
+        payload = json.loads(value, object_pairs_hook=pairs_hook)
+    except OCRWorkerError:
+        raise
+    except (TypeError, ValueError):
+        raise OCRWorkerError("The OCR command JSON is invalid.") from None
+    if not isinstance(payload, dict):
+        raise OCRWorkerError("The OCR command must be a JSON object.")
+    return payload
+
+
+def _validate_identifier(value: str, prefix: str) -> None:
+    if not isinstance(value, str) or not value.startswith(prefix):
+        raise OCRWorkerError("An OCR command identifier is invalid.")
+    try:
+        parsed = UUID(value[len(prefix) :])
+    except (AttributeError, ValueError):
+        raise OCRWorkerError("An OCR command identifier is invalid.") from None
+    if value != f"{prefix}{parsed}":
+        raise OCRWorkerError("An OCR command identifier is invalid.")
+
+
+def _validate_page_ids(values: tuple[str, ...]) -> None:
+    if not isinstance(values, tuple) or len(set(values)) != len(values):
+        raise OCRWorkerError("The OCR command page identifiers are invalid.")
+    for value in values:
+        _validate_identifier(value, "pag_")
+
+
+def _page_id_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise OCRWorkerError("The OCR command page identifiers are invalid.")
+    return tuple(value)
+
+
+def _string_value(payload: dict[str, object], key: str) -> str:
+    value = payload[key]
+    if not isinstance(value, str):
+        raise TypeError
+    return value
+
+
+def _boolean_value(payload: dict[str, object], key: str) -> bool:
+    value = payload[key]
+    if type(value) is not bool:
+        raise TypeError
+    return value
+
+
+def _integer_value(payload: dict[str, object], key: str) -> int:
+    value = payload[key]
+    if type(value) is not int:
+        raise TypeError
+    return value
+
+
+def _number_value(payload: dict[str, object], key: str) -> float:
+    value = payload[key]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise TypeError
+    return float(value)
 
 
 # Compatibility alias for callers that name worker adapters explicitly.

@@ -18,6 +18,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{document_id}/ocr/start": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Start Document Ocr */
+        post: operations["start_document_ocr"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/ocr/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Document Ocr Status */
+        get: operations["get_document_ocr_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/glossaries": {
         parameters: {
             query?: never;
@@ -1716,6 +1750,17 @@ export interface components {
             /** Model Id */
             model_id: string;
         };
+        /** OCRJobData */
+        OCRJobData: {
+            /** Job Id */
+            job_id: string;
+            status: components["schemas"]["JobStatus"];
+        };
+        /** OCRJobResponse */
+        OCRJobResponse: {
+            data: components["schemas"]["OCRJobData"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
         /** OCRPageData */
         OCRPageData: {
             /** Ocr Confidence */
@@ -1773,6 +1818,28 @@ export interface components {
             target_language: string;
             /** Warning Count */
             warning_count: number;
+        };
+        /** OCRStatusData */
+        OCRStatusData: {
+            /** Active Job Id */
+            active_job_id: string | null;
+            /** Completed Pages */
+            completed_pages: number;
+            /** Current Stage */
+            current_stage: string | null;
+            /** Failed Pages */
+            failed_pages: number;
+            /** Progress */
+            progress: number;
+            /** Selected Pages */
+            selected_pages: number;
+            /** Status */
+            status: string;
+        };
+        /** OCRStatusResponse */
+        OCRStatusResponse: {
+            data: components["schemas"]["OCRStatusData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** OffsetPagination */
         OffsetPagination: {
@@ -2584,6 +2651,32 @@ export interface components {
             data: components["schemas"]["StagedUploadData"];
             meta: components["schemas"]["ResponseMeta"];
         };
+        /** StartOCRRequest */
+        StartOCRRequest: {
+            /**
+             * Detect Formulas
+             * @default true
+             */
+            detect_formulas: boolean;
+            /**
+             * Detect Tables
+             * @default true
+             */
+            detect_tables: boolean;
+            /**
+             * Language
+             * @default en
+             */
+            language: string;
+            /**
+             * Mode
+             * @default AUTO
+             * @enum {string}
+             */
+            mode: "AUTO" | "FORCE";
+            /** Page Ids */
+            page_ids?: string[] | null;
+        };
         /** StartReconstructionRequest */
         StartReconstructionRequest: {
             mode: components["schemas"]["ReconstructionMode"];
@@ -3007,6 +3100,173 @@ export interface operations {
             };
             /** @description The application is in maintenance mode. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    start_document_ocr: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["StartOCRRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OCRJobResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The OCR page or segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The segment revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The segment is locked. */
+            423: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The OCR queue is not configured. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_document_ocr_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["OCRStatusResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The OCR page or segment was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The segment revision is stale. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The segment is locked. */
+            423: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

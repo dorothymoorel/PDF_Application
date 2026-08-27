@@ -763,6 +763,7 @@ source = { editable = "services/worker" }
 dependencies = [
     { name = "huey" },
     { name = "transloka-core" },
+    { name = "transloka-documents" },
     { name = "transloka-glossary" },
     { name = "transloka-translation" },
 ]
@@ -771,6 +772,7 @@ dependencies = [
 requires-dist = [
     { name = "huey", specifier = ">=3.3.2,<4" },
     { name = "transloka-core", editable = "python/transloka-core" },
+    { name = "transloka-documents", editable = "python/transloka-documents" },
     { name = "transloka-glossary", editable = "python/transloka-glossary" },
     { name = "transloka-translation", editable = "python/transloka-translation" },
 ]

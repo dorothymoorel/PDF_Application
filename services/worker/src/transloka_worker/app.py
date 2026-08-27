@@ -11,8 +11,13 @@ from typing import Protocol, cast
 
 from transloka_core.database import create_session_factory, create_sqlite_engine
 from transloka_core.storage.local import LocalFileStorage
+from transloka_documents.ocr import OCRProvider
+from transloka_documents.ocr.orchestration import OCRPageOrchestrator, OCRRawOutputStore
+from transloka_documents.ocr.paddle import PaddleOCRProviderAdapter
 
+from transloka_worker.ocr import DatabaseOCRRequestLoader, OCRJobRunner
 from transloka_worker.queue import QueueConfiguration, create_consumer, resolve_queue_configuration
+from transloka_worker.tasks.ocr import register_ocr_task
 from transloka_worker.tasks.translation import register_translation_task
 from transloka_worker.translation import (
     DatabaseTranslationOperationLoader,
@@ -75,15 +80,17 @@ def create_queue_worker(
     configuration: QueueConfiguration | None = None,
     *,
     provider_factory: Callable[[str], object] | None = None,
+    ocr_provider_factory: Callable[[], OCRProvider] | None = None,
     worker_identifier: str | None = None,
 ) -> QueueWorker:
     effective_configuration = configuration or resolve_queue_configuration()
     directories = effective_configuration.directories
     engine = create_sqlite_engine(directories)
     session_factory = create_session_factory(engine)
+    storage = LocalFileStorage(directories)
     loader = DatabaseTranslationOperationLoader(
         session_factory,
-        LocalFileStorage(directories),
+        storage,
     )
     runner = ProductionTranslationJobRunner(
         loader,
@@ -92,9 +99,27 @@ def create_queue_worker(
         provider_factory=provider_factory,
         worker_identifier=worker_identifier,
     )
+    ocr_provider = (
+        ocr_provider_factory()
+        if ocr_provider_factory is not None
+        else PaddleOCRProviderAdapter(model_cache_dir=directories.cache / "paddleocr")
+    )
+    ocr_loader = DatabaseOCRRequestLoader(session_factory, storage)
+    ocr_runner = OCRJobRunner(
+        OCRPageOrchestrator(
+            ocr_provider,
+            storage,
+            raw_output_store=OCRRawOutputStore(storage, session_factory),
+        ),
+        ocr_loader,
+        session_factory,
+        directories.temporary,
+        worker_identifier=worker_identifier,
+    )
 
     def register_tasks(huey: object) -> None:
         register_translation_task(huey, runner.run)
+        register_ocr_task(huey, ocr_runner.run)
 
     try:
         consumer = cast(

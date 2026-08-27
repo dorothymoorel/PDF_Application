@@ -13,6 +13,7 @@ from transloka_core.storage import (
 )
 
 from transloka_worker.maintenance import MaintenanceGate
+from transloka_worker.tasks.ocr import register_ocr_task
 from transloka_worker.tasks.translation import register_translation_task
 
 DEFAULT_WORKER_COUNT = 1
@@ -55,6 +56,15 @@ class QueueConfiguration:
 
 @dataclass(slots=True)
 class TranslationQueueProducer:
+    queue: HueyJobQueue
+    huey: Any
+
+    def close(self) -> None:
+        self.huey.storage.close()
+
+
+@dataclass(slots=True)
+class OCRQueueProducer:
     queue: HueyJobQueue
     huey: Any
 
@@ -113,6 +123,18 @@ def create_translation_producer(
 
     task = register_translation_task(huey, producer_only)
     return TranslationQueueProducer(HueyJobQueue(task), huey)
+
+
+def create_ocr_producer(
+    configuration: QueueConfiguration | None = None,
+) -> OCRQueueProducer:
+    huey = create_huey(configuration)
+
+    def producer_only(_job_id: str) -> Never:
+        raise RuntimeError("The API OCR producer cannot execute tasks.")
+
+    task = register_ocr_task(huey, producer_only)
+    return OCRQueueProducer(HueyJobQueue(task), huey)
 
 
 def create_consumer(
