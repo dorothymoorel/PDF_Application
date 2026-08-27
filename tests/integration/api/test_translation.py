@@ -111,9 +111,9 @@ def translation_api(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
-    application.state.ollama_provider = HealthyProvider()
-    application.state.translation_queue = RecordingQueue()
     with TestClient(application) as client:
+        application.state.ollama_provider = HealthyProvider()
+        application.state.translation_queue = RecordingQueue()
         project_response = client.post(
             "/api/v1/projects",
             headers=CLIENT_HEADERS,
@@ -275,6 +275,48 @@ def _seed_translation_inputs(factory: sessionmaker[Session], project_id: str) ->
 
 def _readiness(client: TestClient, project_id: str) -> Any:
     return client.get(f"/api/v1/projects/{project_id}/translation-readiness")
+
+
+def test_production_queue_is_owned_by_application_lifespan(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "production queue"
+    monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
+    command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
+    application = create_app()
+
+    with TestClient(application):
+        producer = application.state.translation_queue_owner
+        assert application.state.translation_queue is producer.queue
+        assert producer.huey.pending_count() == 0
+        assert Path(producer.huey.storage.filename) == root / "database" / "tasks.db"
+
+    assert producer.huey.storage.close() is False
+
+
+def test_production_queue_is_isolated_per_application(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    producers: list[Any] = []
+    database_paths: list[Path] = []
+    for name in ("first", "second"):
+        root = tmp_path / name
+        monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
+        command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
+        application = create_app()
+        with TestClient(application):
+            producer = application.state.translation_queue_owner
+            producers.append(producer)
+            database_paths.append(Path(producer.huey.storage.filename))
+        assert producer.huey.storage.close() is False
+
+    assert producers[0].huey is not producers[1].huey
+    assert database_paths == [
+        tmp_path / "first" / "database" / "tasks.db",
+        tmp_path / "second" / "database" / "tasks.db",
+    ]
 
 
 def test_translation_readiness_ready(

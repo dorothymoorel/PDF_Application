@@ -16,6 +16,10 @@ from transloka_core.backup.restore import (
     RestoreWorkflow,
 )
 from transloka_core.database import create_session_factory, create_sqlite_engine
+from transloka_worker.queue import (
+    create_translation_producer,
+    resolve_queue_configuration,
+)
 
 from transloka_api import __version__
 from transloka_api.config import Settings
@@ -103,7 +107,16 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     async def lifespan(application: FastAPI) -> AsyncIterator[None]:
         engine = create_sqlite_engine(effective_settings.data_directories)
         session_factory = create_session_factory(engine)
+        try:
+            translation_queue_owner = create_translation_producer(
+                resolve_queue_configuration(effective_settings.data_directories.root)
+            )
+        except Exception:
+            engine.dispose()
+            raise
         application.state.session_factory = session_factory
+        application.state.translation_queue_owner = translation_queue_owner
+        application.state.translation_queue = translation_queue_owner.queue
         application.state.quick_benchmark_runner = ProductionQuickBenchmarkRunner(session_factory)
         application.state.full_benchmark_runner = ProductionFullBenchmarkRunner(session_factory)
 
@@ -133,6 +146,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            translation_queue_owner.close()
             engine.dispose()
 
     application = FastAPI(
