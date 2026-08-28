@@ -1,3 +1,4 @@
+from transloka_worker.tasks.backup import BACKUP_TASK_NAME, register_backup_task
 from transloka_worker.tasks.ocr import OCR_TASK_NAME, register_ocr_task
 from transloka_worker.tasks.reconstruction import (
     RECONSTRUCTION_TASK_NAME,
@@ -9,9 +10,11 @@ from transloka_worker.tasks.translation import (
 )
 
 __all__ = [
+    "BACKUP_TASK_NAME",
     "OCR_TASK_NAME",
     "RECONSTRUCTION_TASK_NAME",
     "TRANSLATION_TASK_NAME",
+    "register_backup_task",
     "register_ocr_task",
     "register_reconstruction_task",
     "register_translation_task",

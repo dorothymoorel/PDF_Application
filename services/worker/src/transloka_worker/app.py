@@ -15,12 +15,14 @@ from transloka_documents.ocr import OCRProvider
 from transloka_documents.ocr.orchestration import OCRPageOrchestrator, OCRRawOutputStore
 from transloka_documents.ocr.paddle import PaddleOCRProviderAdapter
 
+from transloka_worker.backup import DatabaseBackupRequestLoader, ProductionBackupJobRunner
 from transloka_worker.ocr import DatabaseOCRRequestLoader, OCRJobRunner
 from transloka_worker.queue import QueueConfiguration, create_consumer, resolve_queue_configuration
 from transloka_worker.reconstruction import (
     DatabaseReconstructionRequestLoader,
     ProductionReconstructionJobRunner,
 )
+from transloka_worker.tasks.backup import register_backup_task
 from transloka_worker.tasks.ocr import register_ocr_task
 from transloka_worker.tasks.reconstruction import register_reconstruction_task
 from transloka_worker.tasks.translation import register_translation_task
@@ -74,11 +76,14 @@ class QueueWorker:
         try:
             self._consumer.run()
         finally:
-            if self._close_resources is not None:
-                self._close_resources()
+            self.close_resources()
 
     def stop(self) -> None:
         self._consumer.stop(graceful=True)
+
+    def close_resources(self) -> None:
+        if self._close_resources is not None:
+            self._close_resources()
 
 
 def create_queue_worker(
@@ -129,11 +134,19 @@ def create_queue_worker(
         directories.temporary,
         worker_identifier=worker_identifier,
     )
+    backup_loader = DatabaseBackupRequestLoader(session_factory)
+    backup_runner = ProductionBackupJobRunner(
+        backup_loader,
+        session_factory,
+        directories,
+        worker_identifier=worker_identifier,
+    )
 
     def register_tasks(huey: object) -> None:
         register_translation_task(huey, runner.run)
         register_ocr_task(huey, ocr_runner.run)
         register_reconstruction_task(huey, reconstruction_runner.run)
+        register_backup_task(huey, backup_runner.run)
 
     try:
         consumer = cast(

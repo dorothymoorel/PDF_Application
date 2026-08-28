@@ -13,6 +13,7 @@ from transloka_core.storage import (
 )
 
 from transloka_worker.maintenance import MaintenanceGate
+from transloka_worker.tasks.backup import register_backup_task
 from transloka_worker.tasks.ocr import register_ocr_task
 from transloka_worker.tasks.reconstruction import register_reconstruction_task
 from transloka_worker.tasks.translation import register_translation_task
@@ -75,6 +76,15 @@ class OCRQueueProducer:
 
 @dataclass(slots=True)
 class ReconstructionQueueProducer:
+    queue: HueyJobQueue
+    huey: Any
+
+    def close(self) -> None:
+        self.huey.storage.close()
+
+
+@dataclass(slots=True)
+class BackupQueueProducer:
     queue: HueyJobQueue
     huey: Any
 
@@ -157,6 +167,18 @@ def create_reconstruction_producer(
 
     task = register_reconstruction_task(huey, producer_only)
     return ReconstructionQueueProducer(HueyJobQueue(task), huey)
+
+
+def create_backup_producer(
+    configuration: QueueConfiguration | None = None,
+) -> BackupQueueProducer:
+    huey = create_huey(configuration)
+
+    def producer_only(_job_id: str) -> Never:
+        raise RuntimeError("The API backup producer cannot execute tasks.")
+
+    task = register_backup_task(huey, producer_only)
+    return BackupQueueProducer(HueyJobQueue(task), huey)
 
 
 def create_consumer(

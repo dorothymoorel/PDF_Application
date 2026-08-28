@@ -6,11 +6,13 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, Request, status
 from fastapi import Path as PathParameter
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, StrictBool
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.exception_handlers import TransLokaError
+from transloka_api.middleware import get_request_id
 from transloka_api.schemas import ErrorResponse
+from transloka_api.schemas.projects import ResponseMeta
 from transloka_core.backup.manifest import BackupType
 from transloka_core.backup.restore import (
     RestoreBusyError,
@@ -25,6 +27,13 @@ from transloka_core.database import transaction_scope
 from transloka_core.database.models.backups import Backup, BackupStatus
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.jobs import ApplicationJob, JobStatus, JobType
+from transloka_core.jobs.dispatch import (
+    InvalidJobDispatchError,
+    JobDispatchService,
+    JobIdempotencyConflictError,
+    JobQueueUnavailableError,
+)
+from transloka_worker.backup import BackupWorkerError, map_public_backup_request
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     404: {"description": "The backup was not found.", "model": ErrorResponse},
@@ -40,6 +49,108 @@ _BACKUP_ID_PATTERN = r"^bkp_[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9
 _RESTORE_QUEUE_NAME = "transloka-api"
 
 router = APIRouter(prefix="/api/v1/backups", tags=["Backups"])
+
+BackupJobStatus = Literal[
+    "QUEUED",
+    "RUNNING",
+    "RETRYING",
+    "CANCELLATION_REQUESTED",
+    "COMPLETED",
+    "COMPLETED_WITH_WARNINGS",
+    "PARTIALLY_COMPLETED",
+    "FAILED",
+    "CANCELLED",
+    "STALE",
+]
+
+
+class CreateBackupRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    backup_type: Literal["DATABASE_ONLY", "METADATA", "FULL_PROJECTS"]
+    include_original_files: StrictBool = False
+    include_exports: StrictBool = False
+    include_intermediate_files: StrictBool = False
+
+
+class CreateBackupData(BaseModel):
+    job_id: str
+    backup_id: None = None
+    status: BackupJobStatus
+
+
+class CreateBackupResponse(BaseModel):
+    data: CreateBackupData
+    meta: ResponseMeta
+
+
+@router.post(
+    "",
+    operation_id="create_backup",
+    response_model=CreateBackupResponse,
+    responses=_ERROR_RESPONSES,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+def create_backup(
+    payload: CreateBackupRequest,
+    request: Request,
+    idempotency_key: Annotated[
+        str,
+        Header(alias="Idempotency-Key", min_length=1, max_length=200),
+    ],
+) -> CreateBackupResponse:
+    try:
+        command = map_public_backup_request(payload)
+        result = JobDispatchService(_session_factory(request), _backup_queue(request)).dispatch(
+            job_type=JobType.BACKUP_DATABASE,
+            idempotency_key=idempotency_key,
+            command_payload=command.to_payload(),
+        )
+    except JobIdempotencyConflictError as exc:
+        raise TransLokaError(
+            code="IDEMPOTENCY_CONFLICT",
+            message="The idempotency key belongs to a different backup request.",
+            status_code=409,
+        ) from exc
+    except JobQueueUnavailableError as exc:
+        raise TransLokaError(
+            code="QUEUE_UNAVAILABLE",
+            message="The backup job could not be queued.",
+            status_code=503,
+            details={"job_id": exc.job_id},
+        ) from exc
+    except (InvalidJobDispatchError, BackupWorkerError) as exc:
+        raise TransLokaError(
+            code="VALIDATION_ERROR",
+            message=str(exc) or "The backup request contains invalid values.",
+            status_code=422,
+        ) from exc
+    return CreateBackupResponse(
+        data=CreateBackupData(
+            job_id=result.job_id,
+            backup_id=None,
+            status=cast(BackupJobStatus, result.status.value),
+        ),
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
+def _backup_queue(request: Request):  # type: ignore[no-untyped-def]
+    queue = getattr(request.app.state, "backup_queue", None)
+    if queue is None:
+        raise TransLokaError(
+            code="QUEUE_NOT_CONFIGURED",
+            message="The backup queue is not configured.",
+            status_code=503,
+        )
+    return queue
+
+
+def _request_id() -> str:
+    request_id = get_request_id()
+    if request_id is None:
+        raise RuntimeError("The request identifier is unavailable.")
+    return request_id
 
 
 class RestoreRequest(BaseModel):

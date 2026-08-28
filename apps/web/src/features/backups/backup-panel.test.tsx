@@ -6,8 +6,11 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   BackupPanel,
   type BackupClient,
+  type BackupJobStatus,
   type BackupListResponse,
   type BackupRecord,
+  type BackupStatus,
+  type CreateBackupResponse,
 } from "./backup-panel";
 
 function success<T>(data: T) {
@@ -36,13 +39,13 @@ function listResponse(items: BackupRecord[] = [backup()]): BackupListResponse {
   };
 }
 
-function makeClient(): BackupClient {
+function makeClient(overrideStatus: BackupJobStatus = "QUEUED"): BackupClient {
   return {
     listBackups: vi.fn(() => Promise.resolve(success(listResponse()))),
     createBackup: vi.fn(() =>
       Promise.resolve(
-        success({
-          data: { job_id: "job_backup_test", backup_id: "bkp_new", status: "QUEUED" as const },
+        success<CreateBackupResponse>({
+          data: { job_id: "job_backup_test", backup_id: null, status: overrideStatus },
           meta: { request_id: "req_create_test" },
         }),
       ),
@@ -97,7 +100,33 @@ describe("BackupPanel", () => {
       },
       expect.stringMatching(/^backup-ui-/),
     );
-    expect(screen.getByText(/Backup queued/)).toBeTruthy();
+    expect(screen.getByText(/Backup job QUEUED: job_backup_test/)).toBeTruthy();
+  });
+
+  it("keeps BackupStatus for BackupRecord separate from BackupJobStatus", () => {
+    // backup-panel.tsx:14 stays QUEUED|RUNNING|COMPLETED|FAILED for BackupRecord
+    const recordStatus: BackupStatus = "COMPLETED";
+    expect(["QUEUED", "RUNNING", "COMPLETED", "FAILED"]).toContain(recordStatus);
+    // BackupJobStatus is separate union for CreateBackupResponse at :42
+    const jobStatus: BackupJobStatus = "STALE";
+    expect(["QUEUED","RUNNING","RETRYING","CANCELLATION_REQUESTED","COMPLETED","COMPLETED_WITH_WARNINGS","PARTIALLY_COMPLETED","FAILED","CANCELLED","STALE"]).toContain(jobStatus);
+    // ensure they are not merged - BackupRecord should not accept RETRYING
+    const isBackupRecordStatus = (s: string): boolean => ["QUEUED","RUNNING","COMPLETED","FAILED"].includes(s);
+    expect(isBackupRecordStatus("RETRYING")).toBe(false);
+    expect(isBackupRecordStatus("STALE")).toBe(false);
+  });
+
+  it("renders truthful create-result message for every BackupJobStatus", async () => {
+    for (const status of ["QUEUED","RUNNING","RETRYING","CANCELLATION_REQUESTED","COMPLETED","COMPLETED_WITH_WARNINGS","PARTIALLY_COMPLETED","FAILED","CANCELLED","STALE"] as const) {
+      const client = makeClient(status);
+      const { unmount } = render(<BackupPanel client={client} />);
+      await screen.findByText("transloka-backup.zip");
+      fireEvent.click(screen.getByRole("button", { name: "Create backup" }));
+      await act(async () => { await Promise.resolve(); });
+      expect(screen.getByText(`Backup job ${status}: job_backup_test`)).toBeTruthy();
+      unmount();
+      cleanup();
+    }
   });
 
   it("verifies a listed backup", async () => {

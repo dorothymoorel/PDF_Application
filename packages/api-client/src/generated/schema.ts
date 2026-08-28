@@ -1,6 +1,23 @@
 // This file is generated. Do not edit manually.
 
 export interface paths {
+    "/api/v1/backups": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Backup */
+        post: operations["create_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/backups/{backup_id}/restore": {
         parameters: {
             query?: never;
@@ -1263,6 +1280,46 @@ export interface components {
              * @constant
              */
             status: "UNAVAILABLE";
+        };
+        /** CreateBackupData */
+        CreateBackupData: {
+            /** Backup Id */
+            backup_id?: null;
+            /** Job Id */
+            job_id: string;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "QUEUED" | "RUNNING" | "RETRYING" | "CANCELLATION_REQUESTED" | "COMPLETED" | "COMPLETED_WITH_WARNINGS" | "PARTIALLY_COMPLETED" | "FAILED" | "CANCELLED" | "STALE";
+        };
+        /** CreateBackupRequest */
+        CreateBackupRequest: {
+            /**
+             * Backup Type
+             * @enum {string}
+             */
+            backup_type: "DATABASE_ONLY" | "METADATA" | "FULL_PROJECTS";
+            /**
+             * Include Exports
+             * @default false
+             */
+            include_exports: boolean;
+            /**
+             * Include Intermediate Files
+             * @default false
+             */
+            include_intermediate_files: boolean;
+            /**
+             * Include Original Files
+             * @default false
+             */
+            include_original_files: boolean;
+        };
+        /** CreateBackupResponse */
+        CreateBackupResponse: {
+            data: components["schemas"]["CreateBackupData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** CreateGlossaryRequest */
         CreateGlossaryRequest: {
@@ -3036,6 +3093,77 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    create_backup: {
+        parameters: {
+            query?: never;
+            header: {
+                "Idempotency-Key": string;
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateBackupRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            202: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CreateBackupResponse"];
+                };
+            };
+            /** @description The backup was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore conflicts with existing state or maintenance. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore request or archive is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore could not be completed safely. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The application is in maintenance mode. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     restore_backup: {
         parameters: {
             query?: never;

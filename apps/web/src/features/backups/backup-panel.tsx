@@ -12,6 +12,17 @@ export const BACKUP_TYPES = [
 
 export type BackupType = (typeof BACKUP_TYPES)[number];
 export type BackupStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+export type BackupJobStatus =
+  | "QUEUED"
+  | "RUNNING"
+  | "RETRYING"
+  | "CANCELLATION_REQUESTED"
+  | "COMPLETED"
+  | "COMPLETED_WITH_WARNINGS"
+  | "PARTIALLY_COMPLETED"
+  | "FAILED"
+  | "CANCELLED"
+  | "STALE";
 
 export type BackupRecord = {
   id: string;
@@ -39,7 +50,7 @@ export type CreateBackupInput = {
 };
 
 export type CreateBackupResponse = {
-  data: { job_id: string; backup_id: string | null; status: "QUEUED" };
+  data: { job_id: string; backup_id: string | null; status: BackupJobStatus };
   meta: { request_id: string };
 };
 
@@ -154,7 +165,7 @@ export function BackupPanel({
       setError(resultError(result));
       return;
     }
-    setMessage(`Backup queued: ${result.data.data.job_id}`);
+    setMessage(`Backup job ${result.data.data.status}: ${result.data.data.job_id}`);
   };
 
   const verifyBackup = async (backupId: string) => {
