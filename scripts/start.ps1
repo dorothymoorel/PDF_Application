@@ -1,5 +1,6 @@
 param(
-    [switch]$CheckOnly
+    [switch]$CheckOnly,
+    [switch]$PrepareOnly
 )
 
 Set-StrictMode -Version Latest
@@ -108,6 +109,25 @@ Remove-Item -LiteralPath $stopFile -Force -ErrorAction SilentlyContinue
 
 $pnpmPath = Resolve-TransLokaExecutable "pnpm.cmd" "Install pnpm 11 and reopen PowerShell."
 $uvPath = Resolve-TransLokaExecutable "uv.exe" "Install uv and reopen PowerShell."
+
+Write-Host "[TransLoka] Applying database migrations..."
+Push-Location -LiteralPath $repositoryRoot
+try {
+    & $uvPath run --no-sync alembic upgrade head
+    if ($LASTEXITCODE -ne 0) {
+        throw "[TransLoka] Database migration failed. No application component was started."
+    }
+}
+finally {
+    Pop-Location
+}
+Write-Host "[TransLoka] Database schema is current."
+
+if ($PrepareOnly) {
+    Write-Host "[TransLoka] Preparation-only check completed."
+    return
+}
+
 $started = New-Object "System.Collections.Generic.List[object]"
 $exitCode = 0
 

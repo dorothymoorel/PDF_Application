@@ -1,6 +1,7 @@
 import os
 import re
 import shutil
+import sqlite3
 import subprocess
 from pathlib import Path
 
@@ -109,6 +110,8 @@ def test_start_script_uses_supported_local_entrypoints() -> None:
     assert 'Resolve-TransLokaExecutable "pnpm.cmd"' in contents
     assert 'Resolve-TransLokaExecutable "uv.exe"' in contents
     assert ").Source" not in contents
+    assert "alembic upgrade head" in contents
+    assert contents.index("alembic upgrade head") < contents.index("(Start-Component")
 
 
 @pytest.mark.parametrize(
@@ -176,6 +179,45 @@ def test_check_only_works_outside_repository(tmp_path: Path) -> None:
     assert result.returncode == 0, result.stderr
     assert "Development prerequisites are ready." in result.stdout
     assert "Validation-only check completed." in result.stdout
+
+
+def test_prepare_only_migrates_clean_data_root_idempotently(tmp_path: Path) -> None:
+    script = SCRIPTS_DIRECTORY / "start.ps1"
+    data_root = tmp_path / "TransLoka First Run"
+    environment = os.environ.copy()
+    environment["TRANSLOKA_DATA_DIR"] = str(data_root)
+
+    for _attempt in range(2):
+        result = subprocess.run(
+            [
+                _powershell(),
+                "-NoProfile",
+                "-NonInteractive",
+                "-File",
+                str(script),
+                "-PrepareOnly",
+            ],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+        assert result.returncode == 0, result.stdout + result.stderr
+        assert "Database schema is current." in result.stdout
+        assert "Preparation-only check completed." in result.stdout
+
+    database_path = data_root / "database" / "transloka.db"
+    assert database_path.is_file()
+    with sqlite3.connect(database_path) as connection:
+        revision = connection.execute("SELECT version_num FROM alembic_version").fetchone()
+        project_table = connection.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'projects'"
+        ).fetchone()
+
+    assert revision == ("0017_backups",)
+    assert project_table == ("projects",)
 
 
 def test_missing_prerequisite_returns_nonzero(tmp_path: Path) -> None:

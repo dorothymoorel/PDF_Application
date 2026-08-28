@@ -92,6 +92,24 @@ $env:TRANSLOKA_DATA_DIR = "C:\Users\<user>\TransLokaData"
 Jika environment diubah, hentikan dan start ulang API agar settings baru
 dibaca. Jangan memakai `F:\PDF_Application\transloka-data` sebagai data root.
 
+## Database belum siap atau migration gagal
+
+Hentikan stack TransLoka terlebih dahulu, lalu jalankan preparation-only pada
+PowerShell yang memiliki `TRANSLOKA_DATA_DIR` yang benar:
+
+```powershell
+.\scripts\stop.ps1
+.\scripts\start.ps1 -PrepareOnly
+uv run transloka db integrity-check
+```
+
+Hasil yang diharapkan adalah `Database schema is current` dan seluruh integrity
+check berstatus `PASS`. Mode normal menjalankan migration yang sama sebelum web,
+API, atau worker dimulai. Jika migration gagal, jangan menghapus
+`transloka.db`, jangan menjalankan `create_all`, dan jangan mengubah
+`alembic_version` secara manual. Simpan database serta backup yang ada, lalu
+catat pesan error sebelum melakukan recovery.
+
 ## Upload PDF ditolak
 
 Periksa hal berikut:

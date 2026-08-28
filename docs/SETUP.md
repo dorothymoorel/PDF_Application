@@ -91,11 +91,24 @@ Validasi tanpa menyalakan service:
 .\scripts\start.ps1 -CheckOnly
 ```
 
+Siapkan atau perbarui schema database tanpa menyalakan service:
+
+```powershell
+.\scripts\start.ps1 -PrepareOnly
+```
+
+`-PrepareOnly` menjalankan pemeriksaan prerequisite lalu `alembic upgrade head`
+pada data root yang aktif. Perintah ini aman diulang. Gunakan mode ini untuk
+memastikan schema siap sebelum trial, diagnosis, atau menjalankan stack penuh.
+
 Jalankan web, API, dan worker:
 
 ```powershell
 .\scripts\start.ps1
 ```
+
+Start normal selalu menjalankan migration sampai head sebelum menyalakan satu
+pun component. Jika migration gagal, web, API, dan worker tidak dijalankan.
 
 Script mencatat process ID milik TransLoka dan hanya mengelola process tersebut.
 Buka browser:
