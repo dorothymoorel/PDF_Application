@@ -13,6 +13,7 @@ import {
   type CreateProjectInput,
   type ProjectResource,
 } from "@transloka/api-client";
+import Link from "next/link";
 import { useState } from "react";
 import { useForm, type SubmitHandler } from "react-hook-form";
 import { z } from "zod";
@@ -367,14 +368,23 @@ function ProjectCard({
 
       <div className="mt-5 flex items-center justify-between gap-4 border-t border-slate-100 pt-4">
         <p className="text-xs text-slate-500">Updated {formattedTime(project.updated_at)}</p>
-        <button
-          className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={busy || project.status === "DELETION_QUEUED"}
-          onClick={() => onArchiveChange(project)}
-          type="button"
-        >
-          {busy ? "Updating…" : archived ? "Restore" : "Archive"}
-        </button>
+        <div className="flex items-center gap-2">
+          <Link
+            aria-label={`Open ${project.name}`}
+            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900"
+            href={`/projects/${project.id}`}
+          >
+            Open project
+          </Link>
+          <button
+            className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm font-medium text-slate-800 hover:bg-slate-100 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 disabled:cursor-not-allowed disabled:opacity-50"
+            disabled={busy || project.status === "DELETION_QUEUED"}
+            onClick={() => onArchiveChange(project)}
+            type="button"
+          >
+            {busy ? "Updating…" : archived ? "Restore" : "Archive"}
+          </button>
+        </div>
       </div>
     </article>
   );

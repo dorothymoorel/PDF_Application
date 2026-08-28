@@ -87,6 +87,9 @@ describe("project dashboard", () => {
     expect(screen.getByRole("status").textContent).toContain("Loading projects");
     expect(await screen.findByText("System Design Book")).toBeTruthy();
     expect(screen.getAllByText("25%")).toHaveLength(2);
+    expect(
+      screen.getByRole("link", { name: "Open System Design Book" }).getAttribute("href"),
+    ).toBe(`/projects/${project.id}`);
     expect(screen.getByRole("button", { name: "Archive" })).toBeTruthy();
   });
 
