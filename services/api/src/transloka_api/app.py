@@ -18,6 +18,7 @@ from transloka_core.backup.restore import (
 from transloka_core.database import create_session_factory, create_sqlite_engine
 from transloka_worker.queue import (
     create_ocr_producer,
+    create_reconstruction_producer,
     create_translation_producer,
     resolve_queue_configuration,
 )
@@ -116,6 +117,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
                 ocr_queue_owner = create_ocr_producer(
                     resolve_queue_configuration(effective_settings.data_directories.root)
                 )
+                try:
+                    reconstruction_queue_owner = create_reconstruction_producer(
+                        resolve_queue_configuration(effective_settings.data_directories.root)
+                    )
+                except Exception:
+                    ocr_queue_owner.close()
+                    raise
             except Exception:
                 translation_queue_owner.close()
                 raise
@@ -127,6 +135,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         application.state.translation_queue = translation_queue_owner.queue
         application.state.ocr_queue_owner = ocr_queue_owner
         application.state.ocr_queue = ocr_queue_owner.queue
+        application.state.reconstruction_queue_owner = reconstruction_queue_owner
+        application.state.reconstruction_queue = reconstruction_queue_owner.queue
         application.state.quick_benchmark_runner = ProductionQuickBenchmarkRunner(session_factory)
         application.state.full_benchmark_runner = ProductionFullBenchmarkRunner(session_factory)
 
@@ -156,6 +166,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         try:
             yield
         finally:
+            reconstruction_queue_owner.close()
             ocr_queue_owner.close()
             translation_queue_owner.close()
             engine.dispose()

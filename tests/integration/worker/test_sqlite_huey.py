@@ -8,10 +8,15 @@ from transloka_worker.queue import (
     create_consumer,
     create_huey,
     create_ocr_producer,
+    create_reconstruction_producer,
     create_translation_producer,
     resolve_queue_configuration,
 )
 from transloka_worker.tasks.ocr import OCR_TASK_NAME, register_ocr_task
+from transloka_worker.tasks.reconstruction import (
+    RECONSTRUCTION_TASK_NAME,
+    register_reconstruction_task,
+)
 from transloka_worker.tasks.translation import (
     TRANSLATION_TASK_NAME,
     register_translation_task,
@@ -124,6 +129,29 @@ def test_ocr_task_survives_producer_consumer_restart(tmp_path: Path) -> None:
         task = consumer_huey.dequeue()
         assert task is not None
         assert task.name == OCR_TASK_NAME == "transloka.ocr.execute"
+        assert task.data == ((JOB_ID,), {})
+        consumer_huey.execute(task)
+        assert received == [JOB_ID]
+    finally:
+        consumer_huey.storage.close()
+
+
+def test_reconstruction_task_survives_producer_consumer_restart(tmp_path: Path) -> None:
+    configuration = resolve_queue_configuration(tmp_path / "data")
+    producer = create_reconstruction_producer(configuration)
+    try:
+        producer.queue.enqueue(JOB_ID)
+        assert producer.huey.pending_count() == 1
+    finally:
+        producer.close()
+
+    received: list[str] = []
+    consumer_huey = create_huey(configuration)
+    try:
+        register_reconstruction_task(consumer_huey, lambda job_id: received.append(job_id))
+        task = consumer_huey.dequeue()
+        assert task is not None
+        assert task.name == RECONSTRUCTION_TASK_NAME == "transloka.reconstruction.execute"
         assert task.data == ((JOB_ID,), {})
         consumer_huey.execute(task)
         assert received == [JOB_ID]

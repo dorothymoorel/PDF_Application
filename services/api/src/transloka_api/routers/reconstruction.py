@@ -16,7 +16,13 @@ from transloka_api.schemas.projects import ResponseMeta
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.document_ir import DocumentBlock, DocumentSegment, SegmentStatus
 from transloka_core.database.models.documents import Document, DocumentStatus
-from transloka_core.database.models.jobs import ApplicationJob, JobStatus, JobType
+from transloka_core.database.models.jobs import (
+    ApplicationJob,
+    JobAttempt,
+    JobAttemptStatus,
+    JobStatus,
+    JobType,
+)
 from transloka_core.database.models.pages import DocumentPage
 from transloka_core.database.models.projects import Project, ReconstructionMode
 from transloka_core.database.models.reconstruction import (
@@ -47,6 +53,8 @@ from transloka_core.jobs.retry import (
     RetryIdempotencyConflictError,
     RetryJobNotFoundError,
 )
+from transloka_reconstruction.settings import ReconstructionSettings as EngineReconstructionSettings
+from transloka_worker.reconstruction import ReconstructionCommand, ReconstructionWorkerError
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     404: {"description": "The reconstruction resource was not found.", "model": ErrorResponse},
@@ -309,15 +317,18 @@ def start_reconstruction(
         existing_reconstruction = session.scalar(
             select(ReconstructionJob).where(ReconstructionJob.application_job_id == existing.id)
         )
+        requested_command = _reconstruction_command(project_id, document.id, payload)
         requested_settings = json.dumps(
-            payload.settings.model_dump(), sort_keys=True, separators=(",", ":")
+            cast(EngineReconstructionSettings, requested_command.settings).to_dict(),
+            sort_keys=True,
+            separators=(",", ":"),
         )
         stored_page_ids: tuple[str, ...] = ()
         try:
             stored_page_ids = tuple(json.loads(existing.payload_json).get("page_ids", ()))
         except (TypeError, ValueError, AttributeError):
             pass
-        if existing_reconstruction is not None and (
+        if existing_reconstruction is None or (
             existing_reconstruction.mode != payload.mode.value
             or existing_reconstruction.settings_json != requested_settings
             or stored_page_ids != tuple(payload.page_ids or ())
@@ -358,15 +369,31 @@ def start_reconstruction(
     page_ids = tuple(payload.page_ids or ())
     if page_ids:
         _validate_pages(session, document.id, page_ids)
+    command = _reconstruction_command(project_id, document.id, payload)
+    engine_settings = cast(EngineReconstructionSettings, command.settings)
+    settings_json = json.dumps(engine_settings.to_dict(), sort_keys=True, separators=(",", ":"))
+    reconstruction_hash = hashlib.sha256(
+        json.dumps(command.to_payload(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()
+    reconstruction_id = f"rcj_{uuid4()}"
+    queue = _ReconstructionDispatchQueue(
+        _session_factory(request),
+        _reconstruction_queue(request),
+        reconstruction_id=reconstruction_id,
+        project_id=project_id,
+        document_id=document.id,
+        mode=payload.mode.value,
+        settings_json=settings_json,
+        reconstruction_hash=reconstruction_hash,
+    )
     try:
-        dispatch = JobDispatchService(
-            _session_factory(request), _reconstruction_queue(request)
-        ).dispatch(
+        dispatch = JobDispatchService(_session_factory(request), queue).dispatch(
             job_type=JobType.RECONSTRUCT_DOCUMENT,
             idempotency_key=idempotency_key,
             project_id=project_id,
             document_id=document.id,
             page_ids=page_ids,
+            command_payload=command.to_payload(),
         )
     except JobIdempotencyConflictError as exc:
         raise TransLokaError(
@@ -388,43 +415,6 @@ def start_reconstruction(
             status_code=422,
         ) from exc
 
-    settings_json = json.dumps(payload.settings.model_dump(), sort_keys=True, separators=(",", ":"))
-    reconstruction_hash = hashlib.sha256(
-        json.dumps(
-            {
-                "mode": payload.mode.value,
-                "page_ids": page_ids,
-                "settings": payload.settings.model_dump(),
-            },
-            sort_keys=True,
-            separators=(",", ":"),
-        ).encode("utf-8")
-    ).hexdigest()
-    with transaction_scope(_session_factory(request)) as write_session:
-        write_session.add(
-            ReconstructionJob(
-                id=f"rcj_{uuid4()}",
-                project_id=project_id,
-                document_id=document.id,
-                application_job_id=dispatch.job_id,
-                mode=payload.mode.value,
-                settings_version="m10-t20",
-                settings_json=settings_json,
-                status=ReconstructionStatus.PREPARING.value,
-                progress=0.0,
-                reconstruction_hash=reconstruction_hash,
-                created_at=_utc_now(),
-                started_at=None,
-                completed_at=None,
-                error_code=None,
-            )
-        )
-        project_row = write_session.get(Project, project_id)
-        document_row = write_session.get(Document, document.id)
-        if project_row is not None:
-            project_row.status = "RECONSTRUCTING"
-        if document_row is not None:
-            document_row.status = DocumentStatus.RECONSTRUCTING.value
     return ReconstructionJobResponse(
         data=ReconstructionJobData(job_id=dispatch.job_id, status=dispatch.status),
         meta=_meta(),
@@ -558,6 +548,20 @@ def retry_reconstruction_page(
             message="The reconstruction job was not found.",
             status_code=404,
         )
+    queue = _reconstruction_queue(request)
+    stored_application_job = session.get(ApplicationJob, reconstruction_job.application_job_id)
+    if stored_application_job is None:
+        raise TransLokaError(
+            code="RECONSTRUCTION_JOB_NOT_FOUND",
+            message="The reconstruction job was not found.",
+            status_code=404,
+        )
+    retry_command = _retry_command(
+        stored_application_job,
+        source_page_id=page.source_page_id,
+        mode=payload.fallback_mode,
+        overrides=payload.override_settings,
+    )
     try:
         result = JobRetryService(_session_factory(request)).request(
             reconstruction_job.application_job_id,
@@ -591,10 +595,43 @@ def retry_reconstruction_page(
         ) from exc
     with transaction_scope(_session_factory(request)) as write_session:
         retry_page = write_session.get(ReconstructionPage, page.id)
+        retry_job = write_session.get(ApplicationJob, reconstruction_job.application_job_id)
+        retry_reconstruction = write_session.get(ReconstructionJob, reconstruction_job.id)
         if retry_page is not None:
             retry_page.status = ReconstructionStatus.PREPARING.value
-            retry_page.strategy = ReconstructionStrategy(payload.fallback_mode.value).value
+            retry_page.strategy = (
+                ReconstructionStrategy.RECONSTRUCT.value
+                if payload.fallback_mode is ReconstructionMode.HYBRID
+                else ReconstructionStrategy(payload.fallback_mode.value).value
+            )
             retry_page.updated_at = _utc_now()
+        if retry_job is not None and retry_reconstruction is not None and result.created:
+            _update_retry_command(
+                retry_job,
+                retry_reconstruction,
+                command=retry_command,
+            )
+            retry_job.status = JobStatus.QUEUED.value
+            retry_job.queued_at = _utc_now()
+            retry_job.error_code = None
+            retry_job.error_message = None
+            retry_reconstruction.status = ReconstructionStatus.PREPARING.value
+            retry_reconstruction.progress = 0.0
+            retry_reconstruction.completed_at = None
+            retry_reconstruction.error_code = None
+    if result.created:
+        try:
+            queue.enqueue(result.job_id)
+        except Exception as exc:
+            _mark_retry_dispatch_failed(
+                _session_factory(request), result.job_id, reconstruction_job.id
+            )
+            raise TransLokaError(
+                code="QUEUE_UNAVAILABLE",
+                message="The reconstruction retry could not be queued.",
+                status_code=503,
+                details={"job_id": result.job_id},
+            ) from exc
     return ReconstructionJobResponse(
         data=ReconstructionJobData(job_id=result.job_id, status=result.status),
         meta=_meta(),
@@ -671,6 +708,176 @@ def _reconstruction_queue(request: Request) -> Any:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
         )
     return queue
+
+
+class _ReconstructionDispatchQueue:
+    def __init__(
+        self,
+        session_factory: sessionmaker[Session],
+        queue: Any,
+        *,
+        reconstruction_id: str,
+        project_id: str,
+        document_id: str,
+        mode: str,
+        settings_json: str,
+        reconstruction_hash: str,
+    ) -> None:
+        self._session_factory = session_factory
+        self._queue = queue
+        self._reconstruction_id = reconstruction_id
+        self._project_id = project_id
+        self._document_id = document_id
+        self._mode = mode
+        self._settings_json = settings_json
+        self._reconstruction_hash = reconstruction_hash
+
+    @property
+    def name(self) -> str:
+        return cast(str, self._queue.name)
+
+    def enqueue(self, job_id: str) -> None:
+        now = _utc_now()
+        with transaction_scope(self._session_factory) as session:
+            session.add(
+                ReconstructionJob(
+                    id=self._reconstruction_id,
+                    project_id=self._project_id,
+                    document_id=self._document_id,
+                    application_job_id=job_id,
+                    mode=self._mode,
+                    settings_version="m11-rem-11",
+                    settings_json=self._settings_json,
+                    status=ReconstructionStatus.PREPARING.value,
+                    progress=0.0,
+                    reconstruction_hash=self._reconstruction_hash,
+                    created_at=now,
+                    started_at=None,
+                    completed_at=None,
+                    error_code=None,
+                )
+            )
+            project = session.get(Project, self._project_id)
+            document = session.get(Document, self._document_id)
+            if project is None or document is None:
+                raise RuntimeError("The reconstruction parents are unavailable.")
+            project.status = "RECONSTRUCTING"
+            document.status = DocumentStatus.RECONSTRUCTING.value
+        try:
+            self._queue.enqueue(job_id)
+        except Exception:
+            failed_at = _utc_now()
+            with transaction_scope(self._session_factory) as session:
+                reconstruction = session.get(ReconstructionJob, self._reconstruction_id)
+                if reconstruction is not None:
+                    reconstruction.status = ReconstructionStatus.FAILED.value
+                    reconstruction.error_code = "QUEUE_DISPATCH_FAILED"
+                    reconstruction.completed_at = failed_at
+            raise
+
+
+def _reconstruction_command(
+    project_id: str,
+    document_id: str,
+    payload: StartReconstructionRequest,
+) -> ReconstructionCommand:
+    values = payload.settings.model_dump()
+    values["mode"] = payload.mode.value
+    try:
+        settings = EngineReconstructionSettings.from_dict(values)
+        return ReconstructionCommand(
+            project_id=project_id,
+            document_id=document_id,
+            mode=payload.mode.value,
+            page_ids=tuple(payload.page_ids or ()),
+            settings=settings,
+        )
+    except (ValueError, ReconstructionWorkerError) as exc:
+        raise TransLokaError(
+            code="VALIDATION_ERROR",
+            message="The reconstruction request contains invalid settings.",
+            status_code=422,
+        ) from exc
+
+
+def _retry_command(
+    job: ApplicationJob,
+    *,
+    source_page_id: str,
+    mode: ReconstructionMode,
+    overrides: dict[str, object],
+) -> ReconstructionCommand | None:
+    try:
+        current = ReconstructionCommand.from_payload_json(job.payload_json)
+    except ReconstructionWorkerError:
+        # Rows created before M11-REM-11 remain API-retry compatible, but the
+        # production worker will fail them closed instead of guessing inputs.
+        return None
+    values = cast(EngineReconstructionSettings, current.settings).to_dict()
+    values.update(overrides)
+    values["mode"] = mode.value
+    try:
+        settings = EngineReconstructionSettings.from_dict(values)
+        return ReconstructionCommand(
+            project_id=current.project_id,
+            document_id=current.document_id,
+            mode=mode.value,
+            page_ids=(source_page_id,),
+            settings=settings,
+        )
+    except (TypeError, ValueError, ReconstructionWorkerError) as exc:
+        raise TransLokaError(
+            code="VALIDATION_ERROR",
+            message="The reconstruction retry contains invalid settings.",
+            status_code=422,
+        ) from exc
+
+
+def _update_retry_command(
+    job: ApplicationJob,
+    reconstruction: ReconstructionJob,
+    *,
+    command: ReconstructionCommand | None,
+) -> None:
+    if command is None:
+        return
+    settings = cast(EngineReconstructionSettings, command.settings)
+    job.payload_json = json.dumps(command.to_payload(), sort_keys=True, separators=(",", ":"))
+    reconstruction.mode = cast(ReconstructionMode, command.mode).value
+    reconstruction.settings_json = json.dumps(
+        settings.to_dict(), sort_keys=True, separators=(",", ":")
+    )
+
+
+def _mark_retry_dispatch_failed(
+    session_factory: sessionmaker[Session], job_id: str, reconstruction_job_id: str
+) -> None:
+    now = _utc_now()
+    with transaction_scope(session_factory) as session:
+        job = session.get(ApplicationJob, job_id)
+        reconstruction = session.get(ReconstructionJob, reconstruction_job_id)
+        if job is not None:
+            job.status = JobStatus.FAILED.value
+            job.current_stage = JobStatus.FAILED.value
+            job.error_code = "QUEUE_DISPATCH_FAILED"
+            job.error_message = "The reconstruction retry could not be queued."
+            job.queued_at = None
+            job.completed_at = now
+        if reconstruction is not None:
+            reconstruction.status = ReconstructionStatus.FAILED.value
+            reconstruction.error_code = "QUEUE_DISPATCH_FAILED"
+            reconstruction.completed_at = now
+        attempt = session.scalar(
+            select(JobAttempt)
+            .where(JobAttempt.job_id == job_id)
+            .order_by(JobAttempt.attempt_number.desc())
+            .limit(1)
+        )
+        if attempt is not None and attempt.status == JobAttemptStatus.RUNNING.value:
+            attempt.status = JobAttemptStatus.FAILED.value
+            attempt.completed_at = now
+            attempt.error_code = "QUEUE_DISPATCH_FAILED"
+            attempt.error_message = "The reconstruction retry could not be queued."
 
 
 def _project_document(session: Session, project_id: str) -> tuple[Project, Document]:

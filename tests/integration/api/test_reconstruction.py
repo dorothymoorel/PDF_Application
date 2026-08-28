@@ -1,3 +1,4 @@
+import json
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -63,6 +64,25 @@ class RecordingQueue:
 
     def enqueue(self, _job_id: str) -> None:
         pass
+
+
+class ReconstructionStateQueue:
+    name = "reconstruction"
+
+    def __init__(self, factory: sessionmaker[Session]) -> None:
+        self.factory = factory
+        self.job_ids: list[str] = []
+        self.reconstruction_exists_before_enqueue = False
+
+    def enqueue(self, job_id: str) -> None:
+        with self.factory() as session:
+            self.reconstruction_exists_before_enqueue = (
+                session.scalar(
+                    select(ReconstructionJob).where(ReconstructionJob.application_job_id == job_id)
+                )
+                is not None
+            )
+        self.job_ids.append(job_id)
 
 
 @pytest.fixture
@@ -205,6 +225,37 @@ def test_reconstruction_start_and_duplicate_are_idempotent(
     )
     assert repeated.status_code == 202
     assert repeated.json()["data"] == first.json()["data"]
+
+
+def test_reconstruction_start_persists_versioned_command_before_enqueue(
+    reconstruction_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = reconstruction_api
+    queue = ReconstructionStateQueue(factory)
+    application.state.reconstruction_queue = queue
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/reconstruction/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "reconstruction-command-v1"},
+        json={"mode": "OVERLAY", "page_ids": [PAGE_ID]},
+    )
+
+    assert response.status_code == 202, response.text
+    job_id = response.json()["data"]["job_id"]
+    assert queue.job_ids == [job_id]
+    assert queue.reconstruction_exists_before_enqueue is True
+    with factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        reconstruction = session.scalar(
+            select(ReconstructionJob).where(ReconstructionJob.application_job_id == job_id)
+        )
+        assert job is not None
+        assert reconstruction is not None
+        command_payload = json.loads(job.payload_json)
+        assert command_payload["schema"] == "transloka.reconstruction.command.v1"
+        assert command_payload["page_ids"] == [PAGE_ID]
+        assert command_payload["settings"]["mode"] == "OVERLAY"
+        assert reconstruction.settings_version == "m11-rem-11"
 
 
 def test_reconstruction_start_fails_closed_when_queue_is_not_configured(

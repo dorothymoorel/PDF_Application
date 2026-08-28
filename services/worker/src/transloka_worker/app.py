@@ -17,7 +17,12 @@ from transloka_documents.ocr.paddle import PaddleOCRProviderAdapter
 
 from transloka_worker.ocr import DatabaseOCRRequestLoader, OCRJobRunner
 from transloka_worker.queue import QueueConfiguration, create_consumer, resolve_queue_configuration
+from transloka_worker.reconstruction import (
+    DatabaseReconstructionRequestLoader,
+    ProductionReconstructionJobRunner,
+)
 from transloka_worker.tasks.ocr import register_ocr_task
+from transloka_worker.tasks.reconstruction import register_reconstruction_task
 from transloka_worker.tasks.translation import register_translation_task
 from transloka_worker.translation import (
     DatabaseTranslationOperationLoader,
@@ -116,10 +121,19 @@ def create_queue_worker(
         directories.temporary,
         worker_identifier=worker_identifier,
     )
+    reconstruction_loader = DatabaseReconstructionRequestLoader(session_factory, storage)
+    reconstruction_runner = ProductionReconstructionJobRunner(
+        reconstruction_loader,
+        session_factory,
+        storage,
+        directories.temporary,
+        worker_identifier=worker_identifier,
+    )
 
     def register_tasks(huey: object) -> None:
         register_translation_task(huey, runner.run)
         register_ocr_task(huey, ocr_runner.run)
+        register_reconstruction_task(huey, reconstruction_runner.run)
 
     try:
         consumer = cast(

@@ -765,6 +765,8 @@ dependencies = [
     { name = "transloka-core" },
     { name = "transloka-documents" },
     { name = "transloka-glossary" },
+    { name = "transloka-quality" },
+    { name = "transloka-reconstruction" },
     { name = "transloka-translation" },
 ]
 
@@ -774,6 +776,8 @@ requires-dist = [
     { name = "transloka-core", editable = "python/transloka-core" },
     { name = "transloka-documents", editable = "python/transloka-documents" },
     { name = "transloka-glossary", editable = "python/transloka-glossary" },
+    { name = "transloka-quality", editable = "python/transloka-quality" },
+    { name = "transloka-reconstruction", editable = "python/transloka-reconstruction" },
     { name = "transloka-translation", editable = "python/transloka-translation" },
 ]
 
