@@ -13,6 +13,7 @@ from transloka_worker.queue import (
     create_translation_producer,
     resolve_queue_configuration,
 )
+from transloka_worker.tasks.analysis import ANALYSIS_TASK_NAME
 from transloka_worker.tasks.backup import BACKUP_TASK_NAME, register_backup_task
 from transloka_worker.tasks.ocr import OCR_TASK_NAME, register_ocr_task
 from transloka_worker.tasks.reconstruction import (
@@ -271,7 +272,7 @@ def test_backup_task_survives_producer_consumer_restart(tmp_path: Path) -> None:
         consumer_huey.storage.close()
 
 
-def test_create_queue_worker_registers_translation_ocr_reconstruction_and_backup_together(
+def test_create_queue_worker_registers_analysis_and_existing_tasks_together(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     root = tmp_path / "queue-worker"
@@ -286,8 +287,9 @@ def test_create_queue_worker_registers_translation_ocr_reconstruction_and_backup
     try:
         # Access the underlying huey via consumer
         huey = worker._consumer.huey  # type: ignore[attr-defined]
-        # Check that all four tasks are registered (registry keys are module-prefixed)
+        # Registry keys are module-prefixed.
         for expected in [
+            ANALYSIS_TASK_NAME,
             TRANSLATION_TASK_NAME,
             OCR_TASK_NAME,
             RECONSTRUCTION_TASK_NAME,

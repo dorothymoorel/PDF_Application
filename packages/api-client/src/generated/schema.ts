@@ -1136,6 +1136,18 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** AnalysisJobData */
+        AnalysisJobData: {
+            /** Id */
+            id: string;
+            /**
+             * Job Type
+             * @default ANALYZE_DOCUMENT
+             * @constant
+             */
+            job_type: "ANALYZE_DOCUMENT";
+            status: components["schemas"]["JobStatus"];
+        };
         /** ApproveSegmentRequest */
         ApproveSegmentRequest: {
             /** Expected Revision */
@@ -1448,6 +1460,16 @@ export interface components {
             data: components["schemas"]["DetectedLocalModel"][];
             meta: components["schemas"]["ModelResponseMeta"];
         };
+        /** DocumentImportData */
+        DocumentImportData: {
+            document: components["schemas"]["ImportedDocumentData"];
+            job: components["schemas"]["AnalysisJobData"];
+        };
+        /** DocumentImportResponse */
+        DocumentImportResponse: {
+            data: components["schemas"]["DocumentImportData"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
         /**
          * DocumentStatus
          * @enum {string}
@@ -1636,6 +1658,26 @@ export interface components {
              * @default 0.1.0
              */
             version: string;
+        };
+        /** ImportedDocumentData */
+        ImportedDocumentData: {
+            /** Checksum Sha256 */
+            checksum_sha256: string;
+            /** Id */
+            id: string;
+            /** Original File Id */
+            original_file_id: string;
+            /** Original Filename */
+            original_filename: string;
+            /** Page Count */
+            page_count: number;
+            /** Project Id */
+            project_id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            status: components["schemas"]["DocumentStatus"];
+            /** Title */
+            title: string | null;
         };
         /** JobAttemptErrorResponse */
         JobAttemptErrorResponse: {
@@ -2979,34 +3021,6 @@ export interface components {
             settings: {
                 [key: string]: unknown;
             };
-        };
-        /** ValidatedUploadData */
-        ValidatedUploadData: {
-            /** Checksum Sha256 */
-            checksum_sha256: string;
-            /** Original File Id */
-            original_file_id: string;
-            /** Original Filename */
-            original_filename: string;
-            /** Page Count */
-            page_count: number;
-            /** Project Id */
-            project_id: string;
-            /** Set As Active */
-            set_as_active: boolean;
-            /** Size Bytes */
-            size_bytes: number;
-            /**
-             * Status
-             * @default VALIDATED
-             * @constant
-             */
-            status: "VALIDATED";
-        };
-        /** ValidatedUploadResponse */
-        ValidatedUploadResponse: {
-            data: components["schemas"]["ValidatedUploadData"];
-            meta: components["schemas"]["ResponseMeta"];
         };
         /** WarningDataResponse */
         WarningDataResponse: {
@@ -5766,7 +5780,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ValidatedUploadResponse"];
+                    "application/json": components["schemas"]["DocumentImportResponse"];
                 };
             };
             /** @description The upload stream was interrupted. */
@@ -5834,6 +5848,15 @@ export interface operations {
             };
             /** @description An unexpected server error was normalized. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The analysis job could not be queued. */
+            503: {
                 headers: {
                     [name: string]: unknown;
                 };

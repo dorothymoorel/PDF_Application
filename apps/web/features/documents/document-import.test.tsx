@@ -138,7 +138,7 @@ describe("document import", () => {
     expect(screen.getByText("Page 2")).toBeTruthy();
   });
 
-  it("accepts the validated immutable-import response", async () => {
+  it("accepts the persisted document and queued analysis response", async () => {
     vi.stubGlobal("XMLHttpRequest", SuccessfulXMLHttpRequest);
     const progress = vi.fn();
 
@@ -149,7 +149,7 @@ describe("document import", () => {
       sizeBytes: 612,
       title: null,
       pageCount: 1,
-      analysisStatus: "VALIDATED",
+      analysisStatus: "QUEUED",
       thumbnails: [],
     });
     expect(progress).toHaveBeenLastCalledWith(100);
@@ -159,14 +159,22 @@ describe("document import", () => {
 class SuccessfulXMLHttpRequest {
   response = {
     data: {
-      checksum_sha256: "0".repeat(64),
-      original_file_id: "fil_00000000-0000-4000-8000-000000000001",
-      original_filename: "guide.pdf",
-      page_count: 1,
-      project_id: PROJECT_ID,
-      set_as_active: true,
-      size_bytes: 612,
-      status: "VALIDATED",
+      document: {
+        checksum_sha256: "0".repeat(64),
+        id: "doc_00000000-0000-4000-8000-000000000001",
+        original_file_id: "fil_00000000-0000-4000-8000-000000000001",
+        original_filename: "guide.pdf",
+        page_count: 1,
+        project_id: PROJECT_ID,
+        size_bytes: 612,
+        status: "CREATED",
+        title: null,
+      },
+      job: {
+        id: "job_00000000-0000-4000-8000-000000000001",
+        job_type: "ANALYZE_DOCUMENT",
+        status: "QUEUED",
+      },
     },
     meta: { request_id: "request-1" },
   };

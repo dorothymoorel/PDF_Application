@@ -13,6 +13,7 @@ from transloka_core.storage import (
 )
 
 from transloka_worker.maintenance import MaintenanceGate
+from transloka_worker.tasks.analysis import register_analysis_task
 from transloka_worker.tasks.backup import register_backup_task
 from transloka_worker.tasks.ocr import register_ocr_task
 from transloka_worker.tasks.reconstruction import register_reconstruction_task
@@ -54,6 +55,15 @@ class QueueConfiguration:
     @property
     def database_path(self) -> Path:
         return self.directories.database / QUEUE_DATABASE_FILENAME
+
+
+@dataclass(slots=True)
+class AnalysisQueueProducer:
+    queue: HueyJobQueue
+    huey: Any
+
+    def close(self) -> None:
+        self.huey.storage.close()
 
 
 @dataclass(slots=True)
@@ -143,6 +153,18 @@ def create_translation_producer(
 
     task = register_translation_task(huey, producer_only)
     return TranslationQueueProducer(HueyJobQueue(task), huey)
+
+
+def create_analysis_producer(
+    configuration: QueueConfiguration | None = None,
+) -> AnalysisQueueProducer:
+    huey = create_huey(configuration)
+
+    def producer_only(_job_id: str) -> Never:
+        raise RuntimeError("The API analysis producer cannot execute tasks.")
+
+    task = register_analysis_task(huey, producer_only)
+    return AnalysisQueueProducer(HueyJobQueue(task), huey)
 
 
 def create_ocr_producer(

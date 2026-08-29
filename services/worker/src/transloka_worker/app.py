@@ -15,6 +15,7 @@ from transloka_documents.ocr import OCRProvider
 from transloka_documents.ocr.orchestration import OCRPageOrchestrator, OCRRawOutputStore
 from transloka_documents.ocr.paddle import PaddleOCRProviderAdapter
 
+from transloka_worker.analysis import DatabaseAnalysisJobRunner
 from transloka_worker.backup import DatabaseBackupRequestLoader, ProductionBackupJobRunner
 from transloka_worker.ocr import DatabaseOCRRequestLoader, OCRJobRunner
 from transloka_worker.queue import QueueConfiguration, create_consumer, resolve_queue_configuration
@@ -22,6 +23,7 @@ from transloka_worker.reconstruction import (
     DatabaseReconstructionRequestLoader,
     ProductionReconstructionJobRunner,
 )
+from transloka_worker.tasks.analysis import register_analysis_task
 from transloka_worker.tasks.backup import register_backup_task
 from transloka_worker.tasks.ocr import register_ocr_task
 from transloka_worker.tasks.reconstruction import register_reconstruction_task
@@ -98,6 +100,11 @@ def create_queue_worker(
     engine = create_sqlite_engine(directories)
     session_factory = create_session_factory(engine)
     storage = LocalFileStorage(directories)
+    analysis_runner = DatabaseAnalysisJobRunner(
+        session_factory,
+        storage,
+        worker_identifier=worker_identifier,
+    )
     loader = DatabaseTranslationOperationLoader(
         session_factory,
         storage,
@@ -143,6 +150,7 @@ def create_queue_worker(
     )
 
     def register_tasks(huey: object) -> None:
+        register_analysis_task(huey, analysis_runner.run)
         register_translation_task(huey, runner.run)
         register_ocr_task(huey, ocr_runner.run)
         register_reconstruction_task(huey, reconstruction_runner.run)

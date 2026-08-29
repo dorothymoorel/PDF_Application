@@ -32,6 +32,18 @@ export type UploadDocument = (
 ) => Promise<DocumentOverview>;
 
 const PDF_MIME_TYPE = "application/pdf";
+const JOB_STATUSES = new Set([
+  "QUEUED",
+  "RUNNING",
+  "RETRYING",
+  "CANCELLATION_REQUESTED",
+  "COMPLETED",
+  "COMPLETED_WITH_WARNINGS",
+  "PARTIALLY_COMPLETED",
+  "FAILED",
+  "CANCELLED",
+  "STALE",
+]);
 const SAFE_PROJECT_ID =
   /^prj_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 
@@ -75,34 +87,52 @@ function uploadErrorMessage(xhr: XMLHttpRequest): string {
   return "The local API rejected the PDF. Check the file and try again.";
 }
 
-function isValidatedUpload(value: unknown): value is {
+function isDocumentImport(value: unknown): value is {
   data: {
-    original_filename: string;
-    page_count: number;
-    size_bytes: number;
-    status: "VALIDATED";
+    document: {
+      original_filename: string;
+      page_count: number;
+      size_bytes: number;
+      title: string | null;
+    };
+    job: { status: string };
   };
 } {
   if (typeof value !== "object" || value === null || !("data" in value)) {
     return false;
   }
   const data = value.data;
+  if (
+    typeof data !== "object" ||
+    data === null ||
+    !("document" in data) ||
+    !("job" in data)
+  ) {
+    return false;
+  }
+  const document = data.document;
+  const job = data.job;
   return (
-    typeof data === "object" &&
-    data !== null &&
-    "status" in data &&
-    data.status === "VALIDATED" &&
-    "original_filename" in data &&
-    typeof data.original_filename === "string" &&
-    data.original_filename.length > 0 &&
-    "page_count" in data &&
-    typeof data.page_count === "number" &&
-    Number.isSafeInteger(data.page_count) &&
-    data.page_count >= 0 &&
-    "size_bytes" in data &&
-    typeof data.size_bytes === "number" &&
-    Number.isSafeInteger(data.size_bytes) &&
-    data.size_bytes >= 0
+    typeof document === "object" &&
+    document !== null &&
+    "original_filename" in document &&
+    typeof document.original_filename === "string" &&
+    document.original_filename.length > 0 &&
+    "page_count" in document &&
+    typeof document.page_count === "number" &&
+    Number.isSafeInteger(document.page_count) &&
+    document.page_count >= 0 &&
+    "size_bytes" in document &&
+    typeof document.size_bytes === "number" &&
+    Number.isSafeInteger(document.size_bytes) &&
+    document.size_bytes >= 0 &&
+    "title" in document &&
+    (document.title === null || typeof document.title === "string") &&
+    typeof job === "object" &&
+    job !== null &&
+    "status" in job &&
+    typeof job.status === "string" &&
+    JOB_STATUSES.has(job.status)
   );
 }
 
@@ -136,17 +166,17 @@ export const uploadDocument: UploadDocument = (projectId, file, onProgress) => {
         reject(new Error(uploadErrorMessage(request)));
         return;
       }
-      if (!isValidatedUpload(request.response)) {
+      if (!isDocumentImport(request.response)) {
         reject(new Error("The local API returned an invalid upload response."));
         return;
       }
       onProgress(100);
       resolve({
-        originalFilename: request.response.data.original_filename,
-        sizeBytes: request.response.data.size_bytes,
-        title: null,
-        pageCount: request.response.data.page_count,
-        analysisStatus: "VALIDATED",
+        originalFilename: request.response.data.document.original_filename,
+        sizeBytes: request.response.data.document.size_bytes,
+        title: request.response.data.document.title,
+        pageCount: request.response.data.document.page_count,
+        analysisStatus: request.response.data.job.status,
         thumbnails: [],
       });
     };

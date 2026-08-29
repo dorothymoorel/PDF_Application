@@ -17,6 +17,7 @@ from transloka_core.backup.restore import (
 )
 from transloka_core.database import create_session_factory, create_sqlite_engine
 from transloka_worker.queue import (
+    create_analysis_producer,
     create_backup_producer,
     create_ocr_producer,
     create_reconstruction_producer,
@@ -111,34 +112,45 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         engine = create_sqlite_engine(effective_settings.data_directories)
         session_factory = create_session_factory(engine)
         try:
-            translation_queue_owner = create_translation_producer(
+            analysis_queue_owner = create_analysis_producer(
                 resolve_queue_configuration(effective_settings.data_directories.root)
             )
             try:
-                ocr_queue_owner = create_ocr_producer(
+                translation_queue_owner = create_translation_producer(
                     resolve_queue_configuration(effective_settings.data_directories.root)
                 )
                 try:
-                    reconstruction_queue_owner = create_reconstruction_producer(
+                    ocr_queue_owner = create_ocr_producer(
                         resolve_queue_configuration(effective_settings.data_directories.root)
                     )
                     try:
-                        backup_queue_owner = create_backup_producer(
+                        reconstruction_queue_owner = create_reconstruction_producer(
                             resolve_queue_configuration(effective_settings.data_directories.root)
                         )
+                        try:
+                            backup_queue_owner = create_backup_producer(
+                                resolve_queue_configuration(
+                                    effective_settings.data_directories.root
+                                )
+                            )
+                        except Exception:
+                            reconstruction_queue_owner.close()
+                            raise
                     except Exception:
-                        reconstruction_queue_owner.close()
+                        ocr_queue_owner.close()
                         raise
                 except Exception:
-                    ocr_queue_owner.close()
+                    translation_queue_owner.close()
                     raise
             except Exception:
-                translation_queue_owner.close()
+                analysis_queue_owner.close()
                 raise
         except Exception:
             engine.dispose()
             raise
         application.state.session_factory = session_factory
+        application.state.analysis_queue_owner = analysis_queue_owner
+        application.state.analysis_queue = analysis_queue_owner.queue
         application.state.translation_queue_owner = translation_queue_owner
         application.state.translation_queue = translation_queue_owner.queue
         application.state.ocr_queue_owner = ocr_queue_owner
@@ -180,6 +192,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             reconstruction_queue_owner.close()
             ocr_queue_owner.close()
             translation_queue_owner.close()
+            analysis_queue_owner.close()
             engine.dispose()
 
     application = FastAPI(

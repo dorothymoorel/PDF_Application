@@ -23,6 +23,8 @@ from transloka_api.services.imports import (
     UploadInterruptedError,
     UploadTooLargeError,
 )
+from transloka_core.database.models.documents import DocumentStatus
+from transloka_core.database.models.jobs import JobStatus, JobType
 from transloka_core.storage import resolve_local_data_directories
 from transloka_core.storage.local import LocalFileStorage
 
@@ -80,17 +82,28 @@ def test_valid_upload_is_validated_and_committed_as_immutable_original(
     )
 
     assert response.status_code == 202
-    assert response.json()["data"] == {
-        "original_file_id": response.json()["data"]["original_file_id"],
+    payload = response.json()["data"]
+    document = payload["document"]
+    job = payload["job"]
+    assert document == {
+        "id": document["id"],
         "project_id": project_id,
-        "status": "VALIDATED",
+        "original_file_id": document["original_file_id"],
+        "status": DocumentStatus.CREATED.value,
         "original_filename": "system-design.pdf",
         "size_bytes": len(content),
         "checksum_sha256": hashlib.sha256(content).hexdigest(),
         "page_count": 1,
-        "set_as_active": True,
+        "title": None,
     }
-    original_file_id = response.json()["data"]["original_file_id"]
+    assert job == {
+        "id": job["id"],
+        "job_type": JobType.ANALYZE_DOCUMENT.value,
+        "status": JobStatus.QUEUED.value,
+    }
+    assert document["id"].startswith("doc_")
+    assert job["id"].startswith("job_")
+    original_file_id = document["original_file_id"]
     assert original_file_id.startswith("fil_")
     assert list((root / "temp").iterdir()) == []
     originals = list((root / "projects" / project_id / "original").glob("*.pdf"))
@@ -102,6 +115,20 @@ def test_valid_upload_is_validated_and_committed_as_immutable_original(
             "FROM stored_files WHERE id = ?",
             (original_file_id,),
         ).fetchone()
+        persisted_document = connection.execute(
+            "SELECT id, project_id, original_file_id, status, page_count "
+            "FROM documents WHERE id = ?",
+            (document["id"],),
+        ).fetchone()
+        persisted_job = connection.execute(
+            "SELECT id, project_id, document_id, job_type, status "
+            "FROM application_jobs WHERE id = ?",
+            (job["id"],),
+        ).fetchone()
+        project = connection.execute(
+            "SELECT active_document_id, status FROM projects WHERE id = ?",
+            (project_id,),
+        ).fetchone()
     assert stored == (
         original_file_id,
         "ORIGINAL",
@@ -109,6 +136,21 @@ def test_valid_upload_is_validated_and_committed_as_immutable_original(
         1,
         "VALIDATED",
     )
+    assert persisted_document == (
+        document["id"],
+        project_id,
+        original_file_id,
+        DocumentStatus.CREATED.value,
+        1,
+    )
+    assert persisted_job == (
+        job["id"],
+        project_id,
+        document["id"],
+        JobType.ANALYZE_DOCUMENT.value,
+        JobStatus.QUEUED.value,
+    )
+    assert project == (document["id"], "ANALYZING")
     assert str(root) not in response.text
 
 
@@ -141,7 +183,7 @@ def test_unicode_filename_is_preserved(document_api: tuple[TestClient, Path]) ->
     )
 
     assert response.status_code == 202
-    assert response.json()["data"]["original_filename"] == filename
+    assert response.json()["data"]["document"]["original_filename"] == filename
 
 
 def test_arbitrary_path_filename_is_reduced_to_safe_metadata(
@@ -158,7 +200,7 @@ def test_arbitrary_path_filename_is_reduced_to_safe_metadata(
     )
 
     assert response.status_code == 202
-    assert response.json()["data"]["original_filename"] == "secret.pdf"
+    assert response.json()["data"]["document"]["original_filename"] == "secret.pdf"
     assert filename not in response.text
     assert list((root / "temp").glob("*")) == []
 
@@ -308,7 +350,7 @@ def test_upload_openapi_contract_is_registered() -> None:
 
     assert operation["operationId"] == "import_document"
     assert "multipart/form-data" in operation["requestBody"]["content"]
-    for status_code in ("400", "403", "404", "409", "413", "415", "422", "500"):
+    for status_code in ("400", "403", "404", "409", "413", "415", "422", "500", "503"):
         schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
         assert schema["$ref"] == "#/components/schemas/ErrorResponse"
 
