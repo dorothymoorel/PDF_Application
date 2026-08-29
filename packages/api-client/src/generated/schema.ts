@@ -35,6 +35,23 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/v1/documents/{document_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Document */
+        get: operations["get_document"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/v1/documents/{document_id}/ocr/start": {
         parameters: {
             query?: never;
@@ -1459,6 +1476,31 @@ export interface components {
             /** Data */
             data: components["schemas"]["DetectedLocalModel"][];
             meta: components["schemas"]["ModelResponseMeta"];
+        };
+        /** DocumentDetailData */
+        DocumentDetailData: {
+            /** Checksum Sha256 */
+            checksum_sha256: string;
+            /** Id */
+            id: string;
+            /** Original File Id */
+            original_file_id: string;
+            /** Original Filename */
+            original_filename: string;
+            /** Page Count */
+            page_count: number;
+            /** Project Id */
+            project_id: string;
+            /** Size Bytes */
+            size_bytes: number;
+            status: components["schemas"]["DocumentStatus"];
+            /** Title */
+            title: string | null;
+        };
+        /** DocumentDetailResponse */
+        DocumentDetailResponse: {
+            data: components["schemas"]["DocumentDetailData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** DocumentImportData */
         DocumentImportData: {
@@ -3246,6 +3288,64 @@ export interface operations {
             };
             /** @description The application is in maintenance mode. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    get_document: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentDetailResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The document was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
                 headers: {
                     [name: string]: unknown;
                 };

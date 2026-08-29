@@ -8,6 +8,8 @@ export {
   type CancelTranslationInput,
   type CancelJobInput,
   type CreateProjectInput,
+  type DocumentDetailResponse,
+  type DocumentResource,
   type JobAttemptResource,
   type JobListOptions,
   type JobResource,

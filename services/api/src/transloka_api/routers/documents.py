@@ -31,6 +31,7 @@ from transloka_api.services.imports import (
 )
 from transloka_api.services.projects import ProjectService
 from transloka_core.database.models.documents import Document, DocumentClass, DocumentStatus
+from transloka_core.database.models.files import StoredFile
 from transloka_core.database.models.jobs import JobStatus, JobType
 from transloka_core.database.models.projects import Project, ProjectStatus
 from transloka_core.jobs.dispatch import (
@@ -61,7 +62,18 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     503: {"description": "The analysis job could not be queued.", "model": ErrorResponse},
 }
 
+_DOCUMENT_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
+    403: {
+        "description": "The request was rejected by the local security policy.",
+        "model": ErrorResponse,
+    },
+    404: {"description": "The document was not found.", "model": ErrorResponse},
+    422: {"description": "The request contains invalid values.", "model": ErrorResponse},
+    500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
+}
+
 router = APIRouter(prefix="/api/v1/projects", tags=["Documents"])
+document_router = APIRouter(prefix="/api/v1/documents", tags=["Documents"])
 
 
 class ImportedDocumentData(BaseModel):
@@ -89,6 +101,23 @@ class DocumentImportData(BaseModel):
 
 class DocumentImportResponse(BaseModel):
     data: DocumentImportData
+    meta: ResponseMeta
+
+
+class DocumentDetailData(BaseModel):
+    id: str
+    project_id: str
+    original_file_id: str
+    status: DocumentStatus
+    original_filename: str
+    size_bytes: int
+    checksum_sha256: str
+    page_count: int
+    title: str | None
+
+
+class DocumentDetailResponse(BaseModel):
+    data: DocumentDetailData
     meta: ResponseMeta
 
 
@@ -296,6 +325,51 @@ def import_document(
                 id=dispatch.job_id,
                 status=dispatch.status,
             ),
+        ),
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
+@document_router.get(
+    "/{document_id}",
+    operation_id="get_document",
+    response_model=DocumentDetailResponse,
+    responses=_DOCUMENT_ERROR_RESPONSES,
+)
+def get_document(document_id: str, session: ProjectSession) -> DocumentDetailResponse:
+    document = session.get(Document, document_id)
+    if document is None:
+        raise TransLokaError(
+            code="DOCUMENT_NOT_FOUND",
+            message="The requested document was not found.",
+            status_code=404,
+        )
+    stored = session.get(StoredFile, document.original_file_id)
+    if stored is None:
+        raise TransLokaError(
+            code="DOCUMENT_NOT_FOUND",
+            message="The requested document was not found.",
+            status_code=404,
+        )
+    original_filename = stored.original_filename or stored.safe_filename
+    # Ensure we never expose filesystem paths
+    if (
+        "/" in original_filename
+        or "\\" in original_filename
+        or original_filename != original_filename.strip()
+    ):
+        original_filename = stored.safe_filename
+    return DocumentDetailResponse(
+        data=DocumentDetailData(
+            id=document.id,
+            project_id=document.project_id,
+            original_file_id=document.original_file_id,
+            status=DocumentStatus(document.status),
+            original_filename=original_filename,
+            size_bytes=stored.size_bytes,
+            checksum_sha256=stored.checksum_sha256,
+            page_count=document.page_count,
+            title=document.title,
         ),
         meta=ResponseMeta(request_id=_request_id()),
     )

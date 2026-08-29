@@ -58,6 +58,18 @@ const project = {
   updated_at: "2026-07-28T10:00:00.000Z",
 } satisfies ProjectResource;
 
+const document = {
+  id: "doc_00000000-0000-4000-8000-000000000002",
+  project_id: project.id,
+  original_file_id: "fil_00000000-0000-4000-8000-000000000003",
+  status: "CREATED",
+  original_filename: "system-design.pdf",
+  size_bytes: 612,
+  checksum_sha256: "0".repeat(64),
+  page_count: 1,
+  title: null,
+} satisfies components["schemas"]["DocumentDetailData"];
+
 const createProjectInput = {
   name: project.name,
   description: null,
@@ -426,6 +438,68 @@ describe("project client", () => {
       error: { kind: "invalid-response" },
     });
     expect(() => client.archiveProject("../../private")).toThrow(TypeError);
+  });
+
+  it("gets persisted project and document resources from canonical paths", async () => {
+    const payloads = [
+      { data: project, meta: { request_id: "project-get" } },
+      { data: document, meta: { request_id: "document-get" } },
+    ];
+    const fetchImplementation = vi.fn((input: string | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(jsonResponse(payloads.shift()));
+    });
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+
+    await expect(client.getProject(project.id)).resolves.toMatchObject({ ok: true });
+    await expect(client.getDocument(document.id)).resolves.toMatchObject({ ok: true });
+
+    expect(fetchImplementation.mock.calls.map(([url]) => url)).toEqual([
+      `http://127.0.0.1:8000/api/v1/projects/${project.id}`,
+      `http://127.0.0.1:8000/api/v1/documents/${document.id}`,
+    ]);
+  });
+
+  it("rejects document states outside the generated contract", async () => {
+    const invalidStatusClient = createTransLokaClient({
+      fetch: () =>
+        Promise.resolve(
+          jsonResponse({
+            data: { ...document, status: "BOGUS" },
+            meta: { request_id: "invalid-document-status" },
+          }),
+        ),
+    });
+
+    await expect(invalidStatusClient.getDocument(document.id)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+    });
+  });
+
+  it("rejects path-like document filenames", async () => {
+    const unsafeFilenameClient = createTransLokaClient({
+      fetch: () =>
+        Promise.resolve(
+          jsonResponse({
+            data: { ...document, original_filename: "C:\\private\\source.pdf" },
+            meta: { request_id: "unsafe-document-filename" },
+          }),
+        ),
+    });
+
+    await expect(unsafeFilenameClient.getDocument(document.id)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+    });
+  });
+
+  it("rejects non-canonical project and document identifiers", () => {
+    const client = createTransLokaClient({ fetch: vi.fn() });
+
+    expect(() => client.getProject("../../private")).toThrow(TypeError);
+    expect(() => client.getDocument("../../private")).toThrow(TypeError);
   });
 });
 

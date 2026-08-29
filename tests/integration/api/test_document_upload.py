@@ -154,6 +154,87 @@ def test_valid_upload_is_validated_and_committed_as_immutable_original(
     assert str(root) not in response.text
 
 
+def test_document_detail_returns_persisted_safe_metadata(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, root = document_api
+    project_id = _create_project(client)
+    content = _pdf_bytes()
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("document-detail"),
+        files={"file": ("system-design.pdf", content, "application/pdf")},
+    ).json()["data"]["document"]
+
+    response = client.get(f"/api/v1/documents/{imported['id']}")
+
+    assert response.status_code == 200
+    assert response.json()["data"] == imported
+    assert "storage_key" not in response.text
+    assert str(root) not in response.text
+
+
+def test_document_detail_returns_normalized_not_found(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, _root = document_api
+
+    response = client.get("/api/v1/documents/doc_00000000-0000-4000-8000-000000000099")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
+
+
+def test_document_detail_hides_orphaned_file_metadata(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, root = document_api
+    project_id = _create_project(client)
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("document-detail-orphan"),
+        files={"file": ("system-design.pdf", _pdf_bytes(), "application/pdf")},
+    ).json()["data"]["document"]
+    with sqlite3.connect(root / "database" / "transloka.db") as connection:
+        connection.execute("PRAGMA foreign_keys = OFF")
+        connection.execute(
+            "DELETE FROM stored_files WHERE id = ?",
+            (imported["original_file_id"],),
+        )
+
+    response = client.get(f"/api/v1/documents/{imported['id']}")
+
+    assert response.status_code == 404
+    assert response.json()["error"]["code"] == "DOCUMENT_NOT_FOUND"
+
+
+def test_document_detail_reduces_path_like_filename_to_safe_metadata(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, root = document_api
+    project_id = _create_project(client)
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("document-detail-path"),
+        files={"file": ("system-design.pdf", _pdf_bytes(), "application/pdf")},
+    ).json()["data"]["document"]
+    unsafe_filename = "C:\\private\\source.pdf"
+    with sqlite3.connect(root / "database" / "transloka.db") as connection:
+        connection.execute(
+            "UPDATE stored_files SET original_filename = ? WHERE id = ?",
+            (unsafe_filename, imported["original_file_id"]),
+        )
+
+    response = client.get(f"/api/v1/documents/{imported['id']}")
+
+    assert response.status_code == 200
+    returned_filename = response.json()["data"]["original_filename"]
+    assert returned_filename.endswith(".pdf")
+    assert "/" not in returned_filename
+    assert "\\" not in returned_filename
+    assert unsafe_filename not in response.text
+
+
 def test_empty_upload_is_rejected_and_cleaned(
     document_api: tuple[TestClient, Path],
 ) -> None:

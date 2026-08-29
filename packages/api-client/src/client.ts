@@ -33,6 +33,8 @@ export type JobAttemptResource = components["schemas"]["JobAttemptResponse"];
 export type JobResource = components["schemas"]["JobResponse"];
 export type ProjectResource = components["schemas"]["ProjectResponse"];
 export type RetryJobInput = components["schemas"]["RetryJobRequest"];
+export type DocumentResource = components["schemas"]["DocumentDetailData"];
+export type DocumentDetailResponse = components["schemas"]["DocumentDetailResponse"];
 export type CancelTranslationInput = components["schemas"]["CancelTranslationRequest"];
 export type RetryTranslationInput = components["schemas"]["RetryTranslationRequest"];
 export type StartTranslationInput = components["schemas"]["StartTranslationRequest"];
@@ -236,6 +238,28 @@ const JOB_ATTEMPT_STATUSES = new Set<JobAttemptResource["status"]>([
   "FAILED",
   "CANCELLED",
   "STALE",
+]);
+const DOCUMENT_STATUSES = new Set<DocumentResource["status"]>([
+  "CREATED",
+  "ANALYZED",
+  "EXTRACTED",
+  "OCR_PARTIAL",
+  "OCR_COMPLETE",
+  "STRUCTURED",
+  "TERMS_DETECTED",
+  "READY_FOR_TRANSLATION",
+  "TRANSLATING",
+  "TRANSLATED",
+  "PARTIALLY_TRANSLATED",
+  "REVIEWING",
+  "REVIEWED",
+  "RECONSTRUCTING",
+  "RECONSTRUCTED",
+  "QUALITY_CHECKED",
+  "READY_FOR_EXPORT",
+  "EXPORTED",
+  "FAILED",
+  "ARCHIVED",
 ]);
 const DOCUMENT_TYPES = new Set<ProjectResource["document_type"]>([
   "ACADEMIC_PAPER",
@@ -803,11 +827,61 @@ function isProjectListResponse(value: unknown): value is ProjectListResponse {
   );
 }
 
+function isDocumentResource(value: unknown): value is DocumentResource {
+  if (!isRecord(value)) {
+    return false;
+  }
+  return (
+    typeof value.id === "string" &&
+    DOCUMENT_ID_PATTERN.test(value.id) &&
+    typeof value.project_id === "string" &&
+    PROJECT_ID_PATTERN.test(value.project_id) &&
+    typeof value.original_file_id === "string" &&
+    /^fil_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(
+      value.original_file_id,
+    ) &&
+    typeof value.status === "string" &&
+    DOCUMENT_STATUSES.has(value.status as DocumentResource["status"]) &&
+    typeof value.original_filename === "string" &&
+    value.original_filename.length > 0 &&
+    value.original_filename.length <= 255 &&
+    value.original_filename === value.original_filename.trim() &&
+    !/[\\/\u0000-\u001f\u007f]/u.test(value.original_filename) &&
+    typeof value.size_bytes === "number" &&
+    Number.isInteger(value.size_bytes) &&
+    value.size_bytes >= 0 &&
+    typeof value.checksum_sha256 === "string" &&
+    /^[0-9a-f]{64}$/.test(value.checksum_sha256) &&
+    typeof value.page_count === "number" &&
+    Number.isInteger(value.page_count) &&
+    value.page_count >= 0 &&
+    (value.title === null || typeof value.title === "string")
+  );
+}
+
+function isDocumentDetailResponse(value: unknown): value is DocumentDetailResponse {
+  return isRecord(value) && isDocumentResource(value.data) && isResponseMeta(value.meta);
+}
+
 function projectPath(projectId: string, action: "archive" | "unarchive"): string {
   if (!PROJECT_ID_PATTERN.test(projectId)) {
     throw new TypeError("Project ID must use the canonical prefixed UUID format.");
   }
   return `/api/v1/projects/${projectId}/${action}`;
+}
+
+function projectDetailPath(projectId: string): string {
+  if (!PROJECT_ID_PATTERN.test(projectId)) {
+    throw new TypeError("Project ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/projects/${projectId}`;
+}
+
+function documentPath(documentId: string): string {
+  if (!DOCUMENT_ID_PATTERN.test(documentId)) {
+    throw new TypeError("Document ID must use the canonical prefixed UUID format.");
+  }
+  return `/api/v1/documents/${documentId}`;
 }
 
 function jobPath(jobId: string, suffix = ""): string {
@@ -1349,6 +1423,38 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           method: "POST",
           path: reconstructionPath(projectId, "/cancel"),
           validate: isReconstructionStatusResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getProject(
+      projectId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<ProjectDataResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated project contract.",
+          method: "GET",
+          path: projectDetailPath(projectId),
+          validate: isProjectDataResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getDocument(
+      documentId: string,
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<DocumentDetailResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated document contract.",
+          method: "GET",
+          path: documentPath(documentId),
+          validate: isDocumentDetailResponse,
         },
         requestOptions,
       );
