@@ -7,6 +7,7 @@ import {
   DocumentImport,
   type DocumentOverview,
   type UploadDocument,
+  uploadDocument,
 } from "./document-import";
 
 const PROJECT_ID = "prj_00000000-0000-4000-8000-000000000001";
@@ -44,6 +45,7 @@ function uploadButton(): HTMLButtonElement {
 
 afterEach(() => {
   cleanup();
+  vi.unstubAllGlobals();
 });
 
 describe("document import", () => {
@@ -135,4 +137,53 @@ describe("document import", () => {
     expect(screen.getByText("Page 1")).toBeTruthy();
     expect(screen.getByText("Page 2")).toBeTruthy();
   });
+
+  it("accepts the validated immutable-import response", async () => {
+    vi.stubGlobal("XMLHttpRequest", SuccessfulXMLHttpRequest);
+    const progress = vi.fn();
+
+    const result = await uploadDocument(PROJECT_ID, pdfFile(), progress);
+
+    expect(result).toEqual({
+      originalFilename: "guide.pdf",
+      sizeBytes: 612,
+      title: null,
+      pageCount: 1,
+      analysisStatus: "VALIDATED",
+      thumbnails: [],
+    });
+    expect(progress).toHaveBeenLastCalledWith(100);
+  });
 });
+
+class SuccessfulXMLHttpRequest {
+  response = {
+    data: {
+      checksum_sha256: "0".repeat(64),
+      original_file_id: "fil_00000000-0000-4000-8000-000000000001",
+      original_filename: "guide.pdf",
+      page_count: 1,
+      project_id: PROJECT_ID,
+      set_as_active: true,
+      size_bytes: 612,
+      status: "VALIDATED",
+    },
+    meta: { request_id: "request-1" },
+  };
+  responseType = "";
+  status = 202;
+  timeout = 0;
+  upload = { onprogress: null };
+  onabort: (() => void) | null = null;
+  onerror: (() => void) | null = null;
+  onload: (() => void) | null = null;
+  ontimeout: (() => void) | null = null;
+
+  open(): void {}
+
+  send(): void {
+    this.onload?.();
+  }
+
+  setRequestHeader(): void {}
+}

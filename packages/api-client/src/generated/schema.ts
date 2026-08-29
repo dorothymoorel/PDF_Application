@@ -2684,30 +2684,6 @@ export interface components {
             /** Warning Count */
             warning_count: number;
         };
-        /** StagedUploadData */
-        StagedUploadData: {
-            /** Original Filename */
-            original_filename: string;
-            /** Project Id */
-            project_id: string;
-            /** Set As Active */
-            set_as_active: boolean;
-            /** Size Bytes */
-            size_bytes: number;
-            /**
-             * Status
-             * @default STAGED
-             * @constant
-             */
-            status: "STAGED";
-            /** Upload Id */
-            upload_id: string;
-        };
-        /** StagedUploadResponse */
-        StagedUploadResponse: {
-            data: components["schemas"]["StagedUploadData"];
-            meta: components["schemas"]["ResponseMeta"];
-        };
         /** StartOCRRequest */
         StartOCRRequest: {
             /**
@@ -3003,6 +2979,34 @@ export interface components {
             settings: {
                 [key: string]: unknown;
             };
+        };
+        /** ValidatedUploadData */
+        ValidatedUploadData: {
+            /** Checksum Sha256 */
+            checksum_sha256: string;
+            /** Original File Id */
+            original_file_id: string;
+            /** Original Filename */
+            original_filename: string;
+            /** Page Count */
+            page_count: number;
+            /** Project Id */
+            project_id: string;
+            /** Set As Active */
+            set_as_active: boolean;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Status
+             * @default VALIDATED
+             * @constant
+             */
+            status: "VALIDATED";
+        };
+        /** ValidatedUploadResponse */
+        ValidatedUploadResponse: {
+            data: components["schemas"]["ValidatedUploadData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** WarningDataResponse */
         WarningDataResponse: {
@@ -5762,7 +5766,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["StagedUploadResponse"];
+                    "application/json": components["schemas"]["ValidatedUploadResponse"];
                 };
             };
             /** @description The upload stream was interrupted. */
@@ -5785,6 +5789,15 @@ export interface operations {
             };
             /** @description The project was not found. */
             404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The idempotent import conflicts. */
+            409: {
                 headers: {
                     [name: string]: unknown;
                 };

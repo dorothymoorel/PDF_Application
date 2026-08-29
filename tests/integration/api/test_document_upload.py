@@ -1,3 +1,5 @@
+import hashlib
+import sqlite3
 from collections.abc import Iterator
 from io import BytesIO
 from pathlib import Path
@@ -7,6 +9,7 @@ import pytest
 from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
+from pypdf import PdfWriter
 from transloka_api.app import create_app
 from transloka_api.config import Settings
 from transloka_api.middleware import (
@@ -62,12 +65,12 @@ def _upload_headers(key: str = "import-document-1") -> dict[str, str]:
     return {**CLIENT_HEADERS, "Idempotency-Key": key}
 
 
-def test_valid_upload_is_streamed_to_controlled_temporary_storage(
+def test_valid_upload_is_validated_and_committed_as_immutable_original(
     document_api: tuple[TestClient, Path],
 ) -> None:
     client, root = document_api
     project_id = _create_project(client)
-    content = b"%PDF-1.7\nstaging only"
+    content = _pdf_bytes()
 
     response = client.post(
         f"/api/v1/projects/{project_id}/documents/import",
@@ -78,17 +81,34 @@ def test_valid_upload_is_streamed_to_controlled_temporary_storage(
 
     assert response.status_code == 202
     assert response.json()["data"] == {
-        "upload_id": response.json()["data"]["upload_id"],
+        "original_file_id": response.json()["data"]["original_file_id"],
         "project_id": project_id,
-        "status": "STAGED",
+        "status": "VALIDATED",
         "original_filename": "system-design.pdf",
         "size_bytes": len(content),
+        "checksum_sha256": hashlib.sha256(content).hexdigest(),
+        "page_count": 1,
         "set_as_active": True,
     }
-    assert response.json()["data"]["upload_id"].startswith("upl_")
-    temporary_files = list((root / "temp").iterdir())
-    assert len(temporary_files) == 1
-    assert temporary_files[0].read_bytes() == content
+    original_file_id = response.json()["data"]["original_file_id"]
+    assert original_file_id.startswith("fil_")
+    assert list((root / "temp").iterdir()) == []
+    originals = list((root / "projects" / project_id / "original").glob("*.pdf"))
+    assert len(originals) == 1
+    assert originals[0].read_bytes() == content
+    with sqlite3.connect(root / "database" / "transloka.db") as connection:
+        stored = connection.execute(
+            "SELECT id, file_role, checksum_sha256, is_immutable, status "
+            "FROM stored_files WHERE id = ?",
+            (original_file_id,),
+        ).fetchone()
+    assert stored == (
+        original_file_id,
+        "ORIGINAL",
+        hashlib.sha256(content).hexdigest(),
+        1,
+        "VALIDATED",
+    )
     assert str(root) not in response.text
 
 
@@ -117,7 +137,7 @@ def test_unicode_filename_is_preserved(document_api: tuple[TestClient, Path]) ->
     response = client.post(
         f"/api/v1/projects/{project_id}/documents/import",
         headers=_upload_headers("unicode-filename"),
-        files={"file": (filename, b"not validated until M3-T04", "application/pdf")},
+        files={"file": (filename, _pdf_bytes(), "application/pdf")},
     )
 
     assert response.status_code == 202
@@ -134,15 +154,82 @@ def test_arbitrary_path_filename_is_reduced_to_safe_metadata(
     response = client.post(
         f"/api/v1/projects/{project_id}/documents/import",
         headers=_upload_headers("path-filename"),
-        files={"file": (filename, b"content", "application/pdf")},
+        files={"file": (filename, _pdf_bytes(), "application/pdf")},
     )
 
     assert response.status_code == 202
     assert response.json()["data"]["original_filename"] == "secret.pdf"
     assert filename not in response.text
-    temporary_files = list((root / "temp").glob("*"))
-    assert len(temporary_files) == 1
-    assert temporary_files[0].read_bytes() == b"content"
+    assert list((root / "temp").glob("*")) == []
+
+
+def test_invalid_pdf_is_rejected_before_original_storage(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, root = document_api
+    project_id = _create_project(client)
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("invalid-pdf"),
+        files={"file": ("invalid.pdf", b"not a pdf", "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "INVALID_PDF_MAGIC"
+    assert list((root / "temp").iterdir()) == []
+    assert list((root / "projects" / project_id / "original").glob("*.pdf")) == []
+
+
+def test_idempotent_retry_returns_same_original_without_duplicate(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, root = document_api
+    project_id = _create_project(client)
+    content = _pdf_bytes()
+
+    first = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("same-import"),
+        files={"file": ("same.pdf", content, "application/pdf")},
+    )
+    second = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("same-import"),
+        files={"file": ("same.pdf", content, "application/pdf")},
+    )
+
+    assert first.status_code == second.status_code == 202
+    assert first.json()["data"] == second.json()["data"]
+    assert list((root / "temp").iterdir()) == []
+    assert len(list((root / "projects" / project_id / "original").glob("*.pdf"))) == 1
+
+
+def test_idempotency_key_cannot_replace_an_existing_original(
+    document_api: tuple[TestClient, Path],
+) -> None:
+    client, root = document_api
+    project_id = _create_project(client)
+    original = _pdf_bytes()
+
+    first = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("conflicting-import"),
+        files={"file": ("source.pdf", original, "application/pdf")},
+    )
+    conflict = client.post(
+        f"/api/v1/projects/{project_id}/documents/import",
+        headers=_upload_headers("conflicting-import"),
+        files={"file": ("source.pdf", _pdf_bytes(page_count=2), "application/pdf")},
+    )
+
+    assert first.status_code == 202
+    assert conflict.status_code == 409
+    assert conflict.json()["error"]["code"] == "IMPORT_CONFLICT"
+    assert list((root / "temp").iterdir()) == []
+    originals = list((root / "projects" / project_id / "original").glob("*.pdf"))
+    assert len(originals) == 1
+    assert originals[0].read_bytes() == original
 
 
 def test_unexpected_content_type_is_rejected(document_api: tuple[TestClient, Path]) -> None:
@@ -221,7 +308,7 @@ def test_upload_openapi_contract_is_registered() -> None:
 
     assert operation["operationId"] == "import_document"
     assert "multipart/form-data" in operation["requestBody"]["content"]
-    for status_code in ("400", "403", "404", "413", "415", "422", "500"):
+    for status_code in ("400", "403", "404", "409", "413", "415", "422", "500"):
         schema = operation["responses"][status_code]["content"]["application/json"]["schema"]
         assert schema["$ref"] == "#/components/schemas/ErrorResponse"
 
@@ -236,3 +323,12 @@ class _InterruptedStream(BytesIO):
         if self._reads > 1:
             raise OSError("simulated interruption")
         return super().read(min(size if size is not None else -1, 3))
+
+
+def _pdf_bytes(*, page_count: int = 1) -> bytes:
+    destination = BytesIO()
+    writer = PdfWriter()
+    for _ in range(page_count):
+        writer.add_blank_page(width=612, height=792)
+    writer.write(destination)
+    return destination.getvalue()

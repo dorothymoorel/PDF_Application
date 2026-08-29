@@ -15,6 +15,8 @@ DEFAULT_WEB_ORIGINS = (
     "http://localhost:3000",
 )
 DEFAULT_MAX_UPLOAD_BYTES = 200 * 1024 * 1024
+DEFAULT_MAX_PDF_PAGES = 2_000
+DEFAULT_MAX_PDF_OBJECTS = 500_000
 
 
 def validate_api_host(value: str) -> str:

@@ -75,8 +75,13 @@ function uploadErrorMessage(xhr: XMLHttpRequest): string {
   return "The local API rejected the PDF. Check the file and try again.";
 }
 
-function isStagedUpload(value: unknown): value is {
-  data: { size_bytes: number; status: "STAGED" };
+function isValidatedUpload(value: unknown): value is {
+  data: {
+    original_filename: string;
+    page_count: number;
+    size_bytes: number;
+    status: "VALIDATED";
+  };
 } {
   if (typeof value !== "object" || value === null || !("data" in value)) {
     return false;
@@ -86,7 +91,14 @@ function isStagedUpload(value: unknown): value is {
     typeof data === "object" &&
     data !== null &&
     "status" in data &&
-    data.status === "STAGED" &&
+    data.status === "VALIDATED" &&
+    "original_filename" in data &&
+    typeof data.original_filename === "string" &&
+    data.original_filename.length > 0 &&
+    "page_count" in data &&
+    typeof data.page_count === "number" &&
+    Number.isSafeInteger(data.page_count) &&
+    data.page_count >= 0 &&
     "size_bytes" in data &&
     typeof data.size_bytes === "number" &&
     Number.isSafeInteger(data.size_bytes) &&
@@ -124,17 +136,17 @@ export const uploadDocument: UploadDocument = (projectId, file, onProgress) => {
         reject(new Error(uploadErrorMessage(request)));
         return;
       }
-      if (!isStagedUpload(request.response)) {
+      if (!isValidatedUpload(request.response)) {
         reject(new Error("The local API returned an invalid upload response."));
         return;
       }
       onProgress(100);
       resolve({
-        originalFilename: file.name,
+        originalFilename: request.response.data.original_filename,
         sizeBytes: request.response.data.size_bytes,
         title: null,
-        pageCount: null,
-        analysisStatus: "STAGED",
+        pageCount: request.response.data.page_count,
+        analysisStatus: "VALIDATED",
         thumbnails: [],
       });
     };
