@@ -1,6 +1,9 @@
-import { createElement } from "react";
+// @vitest-environment jsdom
+
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { StrictMode, createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import SystemHealthPage from "../app/settings/system/page";
 import {
@@ -28,6 +31,11 @@ function renderState(state: HealthViewState): string {
   return renderToStaticMarkup(createElement(HealthStatusView, { state }));
 }
 
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
+
 describe("system health page", () => {
   it("renders its heading and initial loading state without contacting the API", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
@@ -47,6 +55,29 @@ describe("system health page", () => {
     expect(component).toContain('aria-live="polite"');
     expect(component).toContain("<button");
     expect(component).toContain("Checking");
+  });
+
+  it("restarts the health request after a Strict Mode development remount", async () => {
+    const fetchHealth = vi.fn((_input: string | URL | Request, init?: RequestInit) => {
+      if (fetchHealth.mock.calls.length === 1) {
+        return new Promise<Response>((_resolve, reject) => {
+          init?.signal?.addEventListener(
+            "abort",
+            () => reject(new DOMException("development remount", "AbortError")),
+            { once: true },
+          );
+        });
+      }
+      return Promise.resolve(jsonResponse(healthyResponse));
+    });
+    vi.stubGlobal("fetch", fetchHealth);
+
+    render(createElement(StrictMode, null, createElement(SystemHealth)));
+
+    await waitFor(() => {
+      expect(screen.getByText("FastAPI 0.1.0 is responding.")).toBeTruthy();
+    });
+    expect(fetchHealth).toHaveBeenCalledTimes(2);
   });
 
   it("accepts only the expected healthy API contract", async () => {

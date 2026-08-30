@@ -96,17 +96,25 @@ export async function checkApiHealth(
 }
 
 export function createHealthRequest(fetchHealth: FetchHealth = fetch) {
-  let activeRequest: Promise<HealthCheckResult> | null = null;
+  let activeRequest: {
+    promise: Promise<HealthCheckResult>;
+    signal: AbortSignal | undefined;
+  } | null = null;
 
   return (signal?: AbortSignal): Promise<HealthCheckResult> => {
-    if (activeRequest !== null) {
-      return activeRequest;
+    if (activeRequest !== null && !activeRequest.signal?.aborted) {
+      return activeRequest.promise;
     }
 
-    activeRequest = checkApiHealth(fetchHealth, signal).finally(() => {
-      activeRequest = null;
-    });
-    return activeRequest;
+    const request = checkApiHealth(fetchHealth, signal);
+    const clearRequest = () => {
+      if (activeRequest?.promise === request) {
+        activeRequest = null;
+      }
+    };
+    activeRequest = { promise: request, signal };
+    void request.then(clearRequest, clearRequest);
+    return request;
   };
 }
 
@@ -247,7 +255,11 @@ export function SystemHealth() {
   useEffect(() => {
     void runCheck();
     return () => {
-      activeController.current?.abort();
+      const controller = activeController.current;
+      controller?.abort();
+      if (activeController.current === controller) {
+        activeController.current = null;
+      }
     };
   }, [runCheck]);
 
