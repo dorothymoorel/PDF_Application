@@ -1,23 +1,30 @@
-export type ExportProfile = "STANDARD" | "HIGH_QUALITY" | "ARCHIVE";
+export type ExportProfile = "STANDARD" | "HIGH_QUALITY" | "ARCHIVAL";
 
 export const EXPORT_PROFILES: readonly ExportProfile[] = [
   "STANDARD",
   "HIGH_QUALITY",
-  "ARCHIVE",
+  "ARCHIVAL",
 ];
 
 export type ExportRecord = {
   id: string;
+  output_profile: string;
+  version_number: number;
   filename: string;
-  status: "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
-  download_url?: string | null;
+  status:
+    | "CREATED"
+    | "RUNNING"
+    | "COMPLETED"
+    | "COMPLETED_WITH_WARNINGS"
+    | "PARTIALLY_COMPLETED"
+    | "FAILED"
+    | "CANCELLED";
+  checksum_sha256: string | null;
+  size_bytes?: number | null;
 };
 
 export type ExportClient = {
-  createExport: (input: {
-    profile: ExportProfile;
-    projectId: string;
-  }) => Promise<ExportRecord>;
+  listExports: (projectId: string) => Promise<ExportRecord[]>;
   downloadExport: (exportId: string) => Promise<Blob>;
 };
 

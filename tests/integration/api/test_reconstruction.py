@@ -1,5 +1,6 @@
 import json
 from collections.abc import Iterator
+from io import BytesIO
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -20,6 +21,7 @@ from transloka_api.middleware import (
 )
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.documents import Document, DocumentClass, DocumentStatus
+from transloka_core.database.models.exports import Export, ExportProfile, ExportStatus, ExportType
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.jobs import ApplicationJob, JobStatus, JobType
 from transloka_core.database.models.pages import DocumentPage, PageType
@@ -31,6 +33,7 @@ from transloka_core.database.models.reconstruction import (
     ReconstructionStrategy,
 )
 from transloka_core.database.models.warnings import Warning, WarningSeverity, WarningStatus
+from transloka_core.storage.local import LocalFileStorage
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
@@ -178,6 +181,88 @@ def _seed_document(factory: sessionmaker[Session], project_id: str) -> None:
         project = session.get(Project, project_id)
         assert project is not None
         project.active_document_id = DOCUMENT_ID
+
+
+def test_completed_export_can_be_listed_and_checksum_verified_before_download(
+    reconstruction_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = reconstruction_api
+    export_id = _id("exp_", 510)
+    export_file_id = _id("fil_", 511)
+    filename = "translated-standard.pdf"
+    storage_key = f"projects/{project_id}/exports/{filename}"
+    storage = LocalFileStorage(application.state.settings.data_directories)
+    temporary = storage.write_temporary(BytesIO(b"%PDF-1.7\nTransLoka export\n%%EOF"))
+    artifact = storage.commit(temporary, storage_key, immutable=True)
+
+    with transaction_scope(factory) as session:
+        session.add(
+            StoredFile(
+                id=export_file_id,
+                project_id=project_id,
+                document_id=DOCUMENT_ID,
+                file_role=FileRole.EXPORT.value,
+                storage_key=artifact.storage_key,
+                original_filename=None,
+                safe_filename=filename,
+                mime_type="application/pdf",
+                size_bytes=artifact.size_bytes,
+                checksum_sha256=artifact.checksum_sha256,
+                is_immutable=1,
+                status=FileStatus.VALIDATED.value,
+                metadata_json=None,
+                created_at=CREATED_AT,
+                deleted_at=None,
+            )
+        )
+        session.flush()
+        session.add(
+            Export(
+                id=export_id,
+                project_id=project_id,
+                document_id=DOCUMENT_ID,
+                reconstruction_job_id=None,
+                file_id=export_file_id,
+                export_type=ExportType.TRANSLATED_PDF.value,
+                output_profile=ExportProfile.STANDARD.value,
+                version_number=1,
+                status=ExportStatus.COMPLETED.value,
+                page_count=1,
+                size_bytes=artifact.size_bytes,
+                checksum_sha256=artifact.checksum_sha256,
+                validation_report_id=None,
+                settings_json="{}",
+                created_at=CREATED_AT,
+                completed_at=CREATED_AT,
+                error_code=None,
+            )
+        )
+
+    listed = client.get(f"/api/v1/projects/{project_id}/exports", headers=CLIENT_HEADERS)
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["data"] == [
+        {
+            "id": export_id,
+            "project_id": project_id,
+            "document_id": DOCUMENT_ID,
+            "reconstruction_job_id": None,
+            "export_type": "TRANSLATED_PDF",
+            "output_profile": "STANDARD",
+            "version_number": 1,
+            "status": "COMPLETED",
+            "filename": filename,
+            "page_count": 1,
+            "size_bytes": artifact.size_bytes,
+            "checksum_sha256": artifact.checksum_sha256,
+            "created_at": CREATED_AT,
+            "completed_at": CREATED_AT,
+        }
+    ]
+
+    downloaded = client.get(f"/api/v1/exports/{export_id}/download", headers=CLIENT_HEADERS)
+    assert downloaded.status_code == 200, downloaded.text
+    assert downloaded.headers["content-type"] == "application/pdf"
+    assert downloaded.content == b"%PDF-1.7\nTransLoka export\n%%EOF"
 
 
 def test_reconstruction_readiness_and_preview(

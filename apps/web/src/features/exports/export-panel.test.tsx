@@ -9,31 +9,33 @@ import type { ExportClient } from "./types";
 afterEach(() => cleanup());
 
 describe("export panel", () => {
-  it("creates an export and downloads the completed PDF", async () => {
+  it("loads a validated export, shows its checksum, and downloads the PDF", async () => {
     const anchorClick = vi.spyOn(HTMLAnchorElement.prototype, "click").mockImplementation(() => undefined);
     const createObjectUrl = vi.spyOn(URL, "createObjectURL").mockReturnValue("blob:export");
     const client: ExportClient = {
-      createExport: vi.fn().mockResolvedValue({
-        id: "exp_1",
+      listExports: vi.fn().mockResolvedValue([{
+        id: "exp_00000000-0000-4000-8000-000000000001",
+        output_profile: "STANDARD",
+        version_number: 1,
         filename: "translated.pdf",
         status: "COMPLETED",
-      }),
+        checksum_sha256: "a".repeat(64),
+      }]),
       downloadExport: vi.fn().mockResolvedValue(new Blob(["pdf"], { type: "application/pdf" })),
     };
     render(<ExportPanel client={client} projectId="prj_1" />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Create export" }));
-    await act(async () => {
-      await Promise.resolve();
-    });
-    expect(client.createExport).toHaveBeenCalledWith({ profile: "STANDARD", projectId: "prj_1" });
-    expect(screen.getByText("translated.pdf · Completed")).toBeTruthy();
+    expect(await screen.findByText(/translated.pdf · Completed · version 1/)).toBeTruthy();
+    expect(client.listExports).toHaveBeenCalledWith("prj_1");
+    expect(screen.getByText(`SHA-256: ${"a".repeat(64)}`)).toBeTruthy();
 
     fireEvent.click(screen.getByRole("button", { name: "Download PDF" }));
     await act(async () => {
       await Promise.resolve();
     });
-    expect(client.downloadExport).toHaveBeenCalledWith("exp_1");
+    expect(client.downloadExport).toHaveBeenCalledWith(
+      "exp_00000000-0000-4000-8000-000000000001",
+    );
     expect(createObjectUrl).toHaveBeenCalled();
     expect(anchorClick).toHaveBeenCalled();
     anchorClick.mockRestore();

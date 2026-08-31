@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import cast
 from uuid import UUID
@@ -337,8 +338,13 @@ def _seed_translation_inputs(
 
 
 def _database_artifacts() -> frozenset[Path]:
-    return frozenset(
-        path
-        for path in REPOSITORY_ROOT.rglob("*")
-        if path.is_file() and path.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
-    )
+    artifacts: set[Path] = set()
+    ignored = {".git", ".next", ".venv", "node_modules", "test-results"}
+    for current, directories, filenames in os.walk(REPOSITORY_ROOT):
+        directories[:] = [name for name in directories if name not in ignored]
+        artifacts.update(
+            Path(current) / filename
+            for filename in filenames
+            if Path(filename).suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
+        )
+    return frozenset(artifacts)

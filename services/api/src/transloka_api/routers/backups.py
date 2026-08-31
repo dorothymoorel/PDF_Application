@@ -23,6 +23,7 @@ from transloka_core.backup.restore import (
     RestoreValidationError,
     RestoreWorkflow,
 )
+from transloka_core.backup.verification import BackupVerificationError, verify_backup_archive
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.backups import Backup, BackupStatus
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
@@ -82,6 +83,103 @@ class CreateBackupData(BaseModel):
 class CreateBackupResponse(BaseModel):
     data: CreateBackupData
     meta: ResponseMeta
+
+
+class BackupData(BaseModel):
+    id: str
+    backup_type: BackupType
+    filename: str
+    size_bytes: int | None
+    checksum_sha256: str | None
+    application_version: str
+    database_schema_version: str
+    status: BackupStatus
+    created_at: str
+    completed_at: str | None
+
+
+class BackupListResponse(BaseModel):
+    data: list[BackupData]
+    meta: ResponseMeta
+
+
+class VerifyBackupData(BaseModel):
+    backup_id: str
+    status: Literal["VERIFIED"] = "VERIFIED"
+    message: str = "Backup verification completed successfully."
+
+
+class VerifyBackupResponse(BaseModel):
+    data: VerifyBackupData
+    meta: ResponseMeta
+
+
+@router.get(
+    "",
+    operation_id="list_backups",
+    response_model=BackupListResponse,
+    responses=_ERROR_RESPONSES,
+)
+def list_backups(request: Request) -> BackupListResponse:
+    with _session_factory(request)() as session:
+        rows = list(
+            session.execute(
+                select(Backup, StoredFile)
+                .outerjoin(StoredFile, Backup.file_id == StoredFile.id)
+                .order_by(Backup.created_at.desc(), Backup.id.desc())
+            )
+        )
+    return BackupListResponse(
+        data=[_backup_data(backup, stored) for backup, stored in rows],
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
+@router.post(
+    "/{backup_id}/verify",
+    operation_id="verify_backup",
+    response_model=VerifyBackupResponse,
+    responses=_ERROR_RESPONSES,
+)
+def verify_backup(backup_id: str, request: Request) -> VerifyBackupResponse:
+    with _session_factory(request)() as session:
+        row = session.execute(
+            select(Backup, StoredFile)
+            .join(StoredFile, Backup.file_id == StoredFile.id)
+            .where(Backup.id == backup_id)
+        ).one_or_none()
+    if row is None:
+        raise TransLokaError(
+            code="BACKUP_NOT_FOUND",
+            message="The requested backup was not found.",
+            status_code=404,
+        )
+    backup, stored = row
+    if backup.status != BackupStatus.COMPLETED.value or backup.checksum_sha256 is None:
+        raise TransLokaError(
+            code="BACKUP_STATE_INVALID",
+            message="The backup is not ready for verification.",
+            status_code=409,
+        )
+    settings = request.app.state.settings
+    storage = settings.data_directories.root
+    archive_path = storage.joinpath(*stored.storage_key.split("/"))
+    try:
+        verify_backup_archive(
+            archive_path,
+            expected_checksum_sha256=backup.checksum_sha256,
+            data_root=storage,
+        )
+    except BackupVerificationError as exc:
+        raise TransLokaError(
+            code="BACKUP_VERIFICATION_FAILED",
+            message="The backup archive failed verification.",
+            status_code=422,
+        ) from exc
+    return VerifyBackupResponse(
+        data=VerifyBackupData(backup_id=backup.id),
+        meta=ResponseMeta(request_id=_request_id()),
+    )
 
 
 @router.post(
@@ -171,6 +269,7 @@ class RestoreData(BaseModel):
 
 class RestoreResponse(BaseModel):
     data: RestoreData
+    meta: ResponseMeta
 
 
 @router.post(
@@ -261,7 +360,10 @@ def restore_backup(
 
     if response_data is None:
         raise RuntimeError("The restore completion result was not persisted.")
-    return RestoreResponse(data=response_data)
+    return RestoreResponse(
+        data=response_data,
+        meta=ResponseMeta(request_id=_request_id()),
+    )
 
 
 def _restore_workflow(request: Request) -> RestoreWorkflow:
@@ -310,6 +412,26 @@ def _backup_storage_key(request: Request, backup_id: str) -> str:
     return cast(str, stored_file.storage_key)
 
 
+def _backup_data(backup: Backup, stored_file: StoredFile | None) -> BackupData:
+    filename = f"backup-{backup.id[4:12]}.zip"
+    if stored_file is not None:
+        candidate = stored_file.safe_filename
+        if candidate and not any(character in candidate for character in '\\/:"'):
+            filename = candidate
+    return BackupData(
+        id=backup.id,
+        backup_type=BackupType(backup.backup_type),
+        filename=filename,
+        size_bytes=backup.size_bytes,
+        checksum_sha256=backup.checksum_sha256,
+        application_version=backup.application_version,
+        database_schema_version=backup.database_schema_version,
+        status=BackupStatus(backup.status),
+        created_at=backup.created_at,
+        completed_at=backup.completed_at,
+    )
+
+
 def _existing_restore_response(
     request: Request,
     idempotency_key: str,
@@ -330,7 +452,10 @@ def _existing_restore_response(
             status_code=409,
         )
     try:
-        return RestoreResponse(data=RestoreData.model_validate_json(row.result_json))
+        return RestoreResponse(
+            data=RestoreData.model_validate_json(row.result_json),
+            meta=ResponseMeta(request_id=_request_id()),
+        )
     except ValueError as exc:
         raise RuntimeError("The stored restore result is invalid.") from exc
 

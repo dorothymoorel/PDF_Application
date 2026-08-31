@@ -1,6 +1,6 @@
 import Link from "next/link";
 
-import { DocumentImport } from "../../../features/documents/document-import";
+import { ProjectWorkspace } from "../../../features/workspace/project-workspace";
 
 const PROJECT_ID_PATTERN =
   /^prj_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
@@ -35,13 +35,13 @@ export default async function ProjectDocumentsPage({
         Document workspace
       </p>
       <h1 className="mt-3 text-4xl font-semibold tracking-tight text-slate-950">
-        Import and analyze PDF
+        Translation workspace
       </h1>
       <p className="mt-4 max-w-2xl text-lg leading-8 text-slate-600">
-        Upload a source document, review validation feedback, and follow local analysis
-        progress.
+        Move from immutable PDF import through OCR, local translation, review,
+        reconstruction, export, and verified backup.
       </p>
-      <DocumentImport projectId={projectId} />
+      <ProjectWorkspace projectId={projectId} />
     </main>
   );
 }

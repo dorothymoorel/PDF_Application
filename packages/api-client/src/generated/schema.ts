@@ -8,7 +8,8 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        get?: never;
+        /** List Backups */
+        get: operations["list_backups"];
         put?: never;
         /** Create Backup */
         post: operations["create_backup"];
@@ -29,6 +30,23 @@ export interface paths {
         put?: never;
         /** Restore Backup */
         post: operations["restore_backup"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/backups/{backup_id}/verify": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Verify Backup */
+        post: operations["verify_backup"];
         delete?: never;
         options?: never;
         head?: never;
@@ -78,6 +96,57 @@ export interface paths {
         };
         /** Get Document Ocr Status */
         get: operations["get_document_ocr_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/pages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Document Pages */
+        get: operations["list_document_pages"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/documents/{document_id}/source": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Document Source */
+        get: operations["download_document_source"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/exports/{export_id}/download": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Download Export */
+        get: operations["download_export"];
         put?: never;
         post?: never;
         delete?: never;
@@ -581,6 +650,23 @@ export interface paths {
         put?: never;
         /** Import Document */
         post: operations["import_document"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/v1/projects/{project_id}/exports": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Project Exports */
+        get: operations["list_project_exports"];
+        put?: never;
+        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1175,6 +1261,39 @@ export interface components {
              */
             lock_after_approval: boolean;
         };
+        /** BackupData */
+        BackupData: {
+            /** Application Version */
+            application_version: string;
+            backup_type: components["schemas"]["BackupType"];
+            /** Checksum Sha256 */
+            checksum_sha256: string | null;
+            /** Completed At */
+            completed_at: string | null;
+            /** Created At */
+            created_at: string;
+            /** Database Schema Version */
+            database_schema_version: string;
+            /** Filename */
+            filename: string;
+            /** Id */
+            id: string;
+            /** Size Bytes */
+            size_bytes: number | null;
+            status: components["schemas"]["BackupStatus"];
+        };
+        /** BackupListResponse */
+        BackupListResponse: {
+            /** Data */
+            data: components["schemas"]["BackupData"][];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /**
+         * BackupStatus
+         * @description Lifecycle states persisted for a backup operation.
+         * @enum {string}
+         */
+        BackupStatus: "CREATED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
         /**
          * BackupType
          * @description Supported backup scopes.
@@ -1512,6 +1631,12 @@ export interface components {
             data: components["schemas"]["DocumentImportData"];
             meta: components["schemas"]["ResponseMeta"];
         };
+        /** DocumentPageListResponse */
+        DocumentPageListResponse: {
+            /** Data */
+            data: components["schemas"]["PageEditorPageResponse"][];
+            meta: components["schemas"]["ResponseMeta"];
+        };
         /**
          * DocumentStatus
          * @enum {string}
@@ -1548,6 +1673,53 @@ export interface components {
         ErrorResponse: {
             error: components["schemas"]["ErrorBody"];
         };
+        /** ExportData */
+        ExportData: {
+            /** Checksum Sha256 */
+            checksum_sha256: string | null;
+            /** Completed At */
+            completed_at: string | null;
+            /** Created At */
+            created_at: string;
+            /** Document Id */
+            document_id: string;
+            export_type: components["schemas"]["ExportType"];
+            /** Filename */
+            filename: string;
+            /** Id */
+            id: string;
+            /** Output Profile */
+            output_profile: string;
+            /** Page Count */
+            page_count: number | null;
+            /** Project Id */
+            project_id: string;
+            /** Reconstruction Job Id */
+            reconstruction_job_id: string | null;
+            /** Size Bytes */
+            size_bytes: number | null;
+            status: components["schemas"]["ExportStatus"];
+            /** Version Number */
+            version_number: number;
+        };
+        /** ExportListResponse */
+        ExportListResponse: {
+            /** Data */
+            data: components["schemas"]["ExportData"][];
+            meta: components["schemas"]["ResponseMeta"];
+        };
+        /**
+         * ExportStatus
+         * @description Lifecycle states persisted for one export version.
+         * @enum {string}
+         */
+        ExportStatus: "CREATED" | "RUNNING" | "COMPLETED" | "COMPLETED_WITH_WARNINGS" | "PARTIALLY_COMPLETED" | "FAILED" | "CANCELLED";
+        /**
+         * ExportType
+         * @description Artifacts that can be produced by an export job.
+         * @enum {string}
+         */
+        ExportType: "TRANSLATED_PDF" | "BILINGUAL_PDF" | "QUALITY_REPORT" | "GLOSSARY_CSV" | "DOCUMENT_IR_PACKAGE";
         /** GeometryResponse */
         GeometryResponse: {
             /** Coordinate System */
@@ -2524,6 +2696,7 @@ export interface components {
         /** RestoreResponse */
         RestoreResponse: {
             data: components["schemas"]["RestoreData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** RestoreRevisionRequest */
         RestoreRevisionRequest: {
@@ -2565,6 +2738,8 @@ export interface components {
         };
         /** ReviewQueueItem */
         ReviewQueueItem: {
+            /** Page Id */
+            page_id: string;
             segment: components["schemas"]["PageEditorSegmentResponse"];
             source_context: components["schemas"]["ReviewQueueSourceContext"];
             /** Warnings */
@@ -3064,6 +3239,27 @@ export interface components {
                 [key: string]: unknown;
             };
         };
+        /** VerifyBackupData */
+        VerifyBackupData: {
+            /** Backup Id */
+            backup_id: string;
+            /**
+             * Message
+             * @default Backup verification completed successfully.
+             */
+            message: string;
+            /**
+             * Status
+             * @default VERIFIED
+             * @constant
+             */
+            status: "VERIFIED";
+        };
+        /** VerifyBackupResponse */
+        VerifyBackupResponse: {
+            data: components["schemas"]["VerifyBackupData"];
+            meta: components["schemas"]["ResponseMeta"];
+        };
         /** WarningDataResponse */
         WarningDataResponse: {
             data: components["schemas"]["WarningResponse"];
@@ -3153,6 +3349,71 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_backups: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BackupListResponse"];
+                };
+            };
+            /** @description The backup was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore conflicts with existing state or maintenance. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore request or archive is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore could not be completed safely. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The application is in maintenance mode. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
     create_backup: {
         parameters: {
             query?: never;
@@ -3248,6 +3509,73 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["RestoreResponse"];
+                };
+            };
+            /** @description The backup was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore conflicts with existing state or maintenance. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore request or archive is invalid. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The restore could not be completed safely. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The application is in maintenance mode. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    verify_backup: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                backup_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["VerifyBackupResponse"];
                 };
             };
             /** @description The backup was not found. */
@@ -3513,6 +3841,182 @@ export interface operations {
             };
             /** @description An unexpected server error was normalized. */
             500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_document_pages: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DocumentPageListResponse"];
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The document was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    download_document_source: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                document_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Immutable source PDF. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/pdf": unknown;
+                };
+            };
+            /** @description The request was rejected by the local security policy. */
+            403: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The document was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The immutable source is unavailable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request contains invalid values. */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description An unexpected server error was normalized. */
+            500: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    download_export: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                export_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Validated export PDF. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": unknown;
+                    "application/pdf": unknown;
+                };
+            };
+            /** @description The export or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The export file is unavailable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request is invalid. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };
@@ -5957,6 +6461,55 @@ export interface operations {
             };
             /** @description The analysis job could not be queued. */
             503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+        };
+    };
+    list_project_exports: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                project_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ExportListResponse"];
+                };
+            };
+            /** @description The export or project was not found. */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The export file is unavailable. */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
+            /** @description The request is invalid. */
+            422: {
                 headers: {
                     [name: string]: unknown;
                 };

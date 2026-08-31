@@ -62,7 +62,7 @@ export function ReviewQueue({
   projectId,
 }: Readonly<{
   client: ReviewQueueClient;
-  onSelectSegment(segmentId: string): void;
+  onSelectSegment(segmentId: string, pageId: string): void;
   projectId: string;
 }>) {
   const [filters, setFilters] = useState<FilterState>(INITIAL_FILTERS);
@@ -220,7 +220,7 @@ export function ReviewQueue({
               <button
                 className="block w-full rounded-2xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-blue-400 hover:bg-blue-50"
                 data-segment-id={item.segment.id}
-                onClick={() => onSelectSegment(item.segment.id)}
+                onClick={() => onSelectSegment(item.segment.id, item.page_id)}
                 type="button"
               >
                 <div className="flex flex-wrap items-start justify-between gap-3">

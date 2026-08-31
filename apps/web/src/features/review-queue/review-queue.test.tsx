@@ -37,6 +37,7 @@ function segment(id: string, sourceText: string, globalOrder: number): ReviewQue
 
 function item(nextSegment: ReviewQueueSegment): ReviewQueueItem {
   return {
+    page_id: "pag_00000000-0000-4000-8000-000000000001",
     segment: nextSegment,
     warnings: [],
     source_context: {
@@ -123,6 +124,6 @@ describe("ReviewQueue", () => {
     render(<ReviewQueue client={client} onSelectSegment={onSelectSegment} projectId="prj_test" />);
 
     fireEvent.click(await screen.findByRole("button", { name: /First/ }));
-    expect(onSelectSegment).toHaveBeenCalledWith(first.segment.id);
+    expect(onSelectSegment).toHaveBeenCalledWith(first.segment.id, first.page_id);
   });
 });

@@ -54,6 +54,7 @@ class ReviewQueueSourceContext(BaseModel):
 
 
 class ReviewQueueItem(BaseModel):
+    page_id: str
     segment: PageEditorSegmentResponse
     warnings: list[PageEditorWarningResponse] = Field(default_factory=list)
     source_context: ReviewQueueSourceContext
@@ -181,6 +182,7 @@ def list_review_queue(
     page = rows[offset : offset + limit]
     items = [
         ReviewQueueItem(
+            page_id=row[1],
             segment=_segment_response(row[0]),
             source_context=_source_context(rows, index),
         )

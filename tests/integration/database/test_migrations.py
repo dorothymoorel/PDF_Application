@@ -297,11 +297,14 @@ def test_application_imports_do_not_run_migrations(statement: str, tmp_path: Pat
 
 
 def test_no_runtime_database_exists_in_repository() -> None:
-    artifacts = [
-        path
-        for pattern in ("*.db", "*.sqlite", "*.sqlite3")
-        for path in REPOSITORY_ROOT.rglob(pattern)
-        if ".mypy_cache" not in path.parts
-    ]
+    artifacts: list[Path] = []
+    ignored = {".git", ".mypy_cache", ".next", ".venv", "node_modules", "test-results"}
+    for current, directories, filenames in os.walk(REPOSITORY_ROOT):
+        directories[:] = [name for name in directories if name not in ignored]
+        artifacts.extend(
+            Path(current) / filename
+            for filename in filenames
+            if Path(filename).suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
+        )
 
     assert artifacts == []

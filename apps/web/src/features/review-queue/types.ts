@@ -10,6 +10,7 @@ export type ReviewQueueSourceContext = {
 };
 
 export type ReviewQueueItem = {
+  page_id: string;
   segment: ReviewQueueSegment;
   warnings: ReviewQueueWarning[];
   source_context: ReviewQueueSourceContext;

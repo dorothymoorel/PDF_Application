@@ -1,4 +1,4 @@
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from datetime import UTC, datetime
 from shutil import disk_usage
 from typing import Annotated, Any, Literal, Never, cast
@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, File, Form, Header, Request, UploadFile,
 from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.orm import Session, sessionmaker
+from starlette.responses import StreamingResponse
 from transloka_api.config import (
     DEFAULT_MAX_PDF_OBJECTS,
     DEFAULT_MAX_PDF_PAGES,
@@ -15,8 +16,10 @@ from transloka_api.config import (
 )
 from transloka_api.exception_handlers import TransLokaError
 from transloka_api.middleware import get_request_id
+from transloka_api.routers.pages import _page_response
 from transloka_api.routers.projects import ProjectSession, _raise_project_error
 from transloka_api.schemas import ErrorResponse
+from transloka_api.schemas.pages import PageEditorPageResponse
 from transloka_api.schemas.projects import ResponseMeta
 from transloka_api.services.imports import (
     EmptyUploadError,
@@ -33,6 +36,7 @@ from transloka_api.services.projects import ProjectService
 from transloka_core.database.models.documents import Document, DocumentClass, DocumentStatus
 from transloka_core.database.models.files import StoredFile
 from transloka_core.database.models.jobs import JobStatus, JobType
+from transloka_core.database.models.pages import DocumentPage
 from transloka_core.database.models.projects import Project, ProjectStatus
 from transloka_core.jobs.dispatch import (
     InvalidJobDispatchError,
@@ -42,7 +46,7 @@ from transloka_core.jobs.dispatch import (
 )
 from transloka_core.repositories.files import StoredFilesRepository
 from transloka_core.repositories.projects import ProjectRepositoryError, ProjectsRepository
-from transloka_core.storage.local import LocalFileStorage
+from transloka_core.storage.local import LocalFileStorage, LocalFileStorageError
 from transloka_documents.analysis import PdfAnalysisError, PdfAnalysisResult, analyze_pdf
 from transloka_documents.validation import PdfValidationError, PdfValidationLimits, validate_pdf
 from transloka_worker.analysis import AnalysisCommand, AnalysisWorkerError
@@ -118,6 +122,11 @@ class DocumentDetailData(BaseModel):
 
 class DocumentDetailResponse(BaseModel):
     data: DocumentDetailData
+    meta: ResponseMeta
+
+
+class DocumentPageListResponse(BaseModel):
+    data: list[PageEditorPageResponse]
     meta: ResponseMeta
 
 
@@ -372,6 +381,99 @@ def get_document(document_id: str, session: ProjectSession) -> DocumentDetailRes
             title=document.title,
         ),
         meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
+@document_router.get(
+    "/{document_id}/pages",
+    operation_id="list_document_pages",
+    response_model=DocumentPageListResponse,
+    responses=_DOCUMENT_ERROR_RESPONSES,
+)
+def list_document_pages(
+    document_id: str,
+    session: ProjectSession,
+) -> DocumentPageListResponse:
+    if session.get(Document, document_id) is None:
+        raise TransLokaError(
+            code="DOCUMENT_NOT_FOUND",
+            message="The requested document was not found.",
+            status_code=404,
+        )
+    pages = list(
+        session.scalars(
+            select(DocumentPage)
+            .where(DocumentPage.document_id == document_id)
+            .order_by(DocumentPage.source_page_number, DocumentPage.id)
+        )
+    )
+    return DocumentPageListResponse(
+        data=[_page_response(page) for page in pages],
+        meta=ResponseMeta(request_id=_request_id()),
+    )
+
+
+@document_router.get(
+    "/{document_id}/source",
+    operation_id="download_document_source",
+    responses={
+        **_DOCUMENT_ERROR_RESPONSES,
+        200: {"content": {"application/pdf": {}}, "description": "Immutable source PDF."},
+        409: {"description": "The immutable source is unavailable.", "model": ErrorResponse},
+    },
+)
+def download_document_source(
+    document_id: str,
+    request: Request,
+    session: ProjectSession,
+) -> StreamingResponse:
+    document = session.get(Document, document_id)
+    if document is None:
+        raise TransLokaError(
+            code="DOCUMENT_NOT_FOUND",
+            message="The requested document was not found.",
+            status_code=404,
+        )
+    stored = session.get(StoredFile, document.original_file_id)
+    if stored is None:
+        _raise_source_unavailable()
+    settings = cast(Settings, request.app.state.settings)
+    storage = LocalFileStorage(settings.data_directories)
+    try:
+        if storage.checksum(stored.storage_key) != stored.checksum_sha256:
+            _raise_source_unavailable()
+        source = storage.open_read(stored.storage_key)
+    except LocalFileStorageError as exc:
+        raise TransLokaError(
+            code="DOCUMENT_SOURCE_UNAVAILABLE",
+            message="The immutable source PDF is unavailable.",
+            status_code=409,
+        ) from exc
+
+    return StreamingResponse(
+        _stream_file(source),
+        media_type="application/pdf",
+        headers={
+            "Cache-Control": "no-store",
+            "Content-Disposition": 'inline; filename="source.pdf"',
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+def _stream_file(source: Any) -> Iterator[bytes]:
+    try:
+        while chunk := source.read(1024 * 1024):
+            yield chunk
+    finally:
+        source.close()
+
+
+def _raise_source_unavailable() -> Never:
+    raise TransLokaError(
+        code="DOCUMENT_SOURCE_UNAVAILABLE",
+        message="The immutable source PDF is unavailable.",
+        status_code=409,
     )
 
 

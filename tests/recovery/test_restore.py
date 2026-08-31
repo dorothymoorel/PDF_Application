@@ -412,7 +412,8 @@ def test_restore_api_reuses_idempotent_result_and_rejects_conflict(
 
     assert first.status_code == 202, first.text
     assert duplicate.status_code == 202
-    assert duplicate.json() == first.json()
+    assert duplicate.json()["data"] == first.json()["data"]
+    assert duplicate.json()["meta"]["request_id"] != first.json()["meta"]["request_id"]
     assert conflict.status_code == 409
     assert conflict.json()["error"]["code"] == "IDEMPOTENCY_CONFLICT"
 

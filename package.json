@@ -9,12 +9,15 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p packages/api-client/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json && tsc --noEmit -p packages/shared-config/tsconfig.json",
+    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p packages/api-client/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json && tsc --noEmit -p packages/shared-config/tsconfig.json && tsc --noEmit -p tests/browser/tsconfig.json",
     "test": "pnpm -r --if-present run test",
-    "build": "pnpm -r --if-present run build"
+    "build": "pnpm -r --if-present run build",
+    "e2e": "playwright test"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
+    "@playwright/test": "1.62.1",
+    "@types/node": "24.13.3",
     "eslint": "^10.8.0",
     "typescript": "^6.0.2",
     "typescript-eslint": "^8.65.0"

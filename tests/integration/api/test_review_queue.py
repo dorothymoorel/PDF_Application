@@ -52,6 +52,7 @@ def test_review_queue_orders_segments_and_returns_context(
         "First late segment.",
         "Second late segment.",
     ]
+    assert {item["page_id"] for item in body["data"]} == {PAGE_ID}
     assert body["data"][0]["source_context"] == {
         "previous_segment": None,
         "next_segment": "First late segment.",

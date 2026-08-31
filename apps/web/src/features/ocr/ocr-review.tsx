@@ -32,11 +32,15 @@ export function OCRReview({
   initialSegmentId = null,
   pageId,
   pageImageUrl,
+  pageNumber = 1,
+  pagePdfUrl,
 }: Readonly<{
   client: OCRReviewClient;
   initialSegmentId?: string | null;
   pageId: string;
   pageImageUrl: string;
+  pageNumber?: number;
+  pagePdfUrl?: string;
 }>) {
   const [view, setView] = useState<OCRReviewPage | null>(null);
   const [selectedSegmentId, setSelectedSegmentId] = useState<string | null>(initialSegmentId);
@@ -104,11 +108,6 @@ export function OCRReview({
   );
   const isLowConfidence = confidence !== null && confidence < LOW_CONFIDENCE_THRESHOLD;
 
-  useEffect(() => {
-    setDraft(selectedSegment?.resolved_source_text ?? view?.resolved_source_text ?? "");
-    setSaveMessage(null);
-  }, [selectedSegment?.current_revision, selectedSegment?.id, selectedSegment?.resolved_source_text, view?.resolved_source_text]);
-
   const moveSelectedSegment = (offset: number) => {
     if (view === null || selectedSegmentIndex < 0) {
       return;
@@ -116,6 +115,8 @@ export function OCRReview({
     const nextSegment = view.segments[selectedSegmentIndex + offset];
     if (nextSegment !== undefined) {
       setSelectedSegmentId(nextSegment.id);
+      setDraft(nextSegment.resolved_source_text);
+      setSaveMessage(null);
     }
   };
 
@@ -159,6 +160,7 @@ export function OCRReview({
               ),
             },
       );
+      setDraft(updatedSegment.resolved_source_text);
       setSaveMessage(
         "Source saved. Re-translation may be required because this correction invalidates the existing translation.",
       );
@@ -215,11 +217,23 @@ export function OCRReview({
               Page image
             </h2>
             <figure className="mt-4 overflow-auto rounded-xl border border-slate-200 bg-slate-100 p-3">
-              <img
-                alt="OCR source page"
-                className="mx-auto max-h-[70vh] w-auto max-w-full object-contain shadow-sm"
-                src={pageImageUrl}
-              />
+              {pageImageUrl !== "" ? (
+                <img
+                  alt="OCR source page"
+                  className="mx-auto max-h-[70vh] w-auto max-w-full object-contain shadow-sm"
+                  src={pageImageUrl}
+                />
+              ) : pagePdfUrl !== undefined ? (
+                <iframe
+                  className="h-[70vh] w-full bg-white"
+                  src={`${pagePdfUrl}#page=${pageNumber}&view=FitH`}
+                  title={`OCR source PDF page ${pageNumber}`}
+                />
+              ) : (
+                <p className="p-8 text-center text-sm text-slate-600">
+                  No source page preview is available.
+                </p>
+              )}
               <figcaption className="mt-3 text-center text-xs text-slate-500">
                 Use the image to verify characters, spacing, and line breaks.
               </figcaption>

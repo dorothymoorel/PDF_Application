@@ -1,5 +1,6 @@
 import hashlib
 import json
+import os
 from io import BytesIO
 from pathlib import Path
 from typing import cast
@@ -371,9 +372,13 @@ def _pdf_bytes() -> bytes:
 
 
 def _database_artifacts() -> set[Path]:
-    return {
-        path.resolve()
-        for pattern in ("*.db", "*.sqlite", "*.sqlite3")
-        for path in REPOSITORY_ROOT.rglob(pattern)
-        if ".venv" not in path.parts and ".worktrees" not in path.parts
-    }
+    artifacts: set[Path] = set()
+    ignored = {".git", ".next", ".venv", ".worktrees", "node_modules", "test-results"}
+    for current, directories, filenames in os.walk(REPOSITORY_ROOT):
+        directories[:] = [name for name in directories if name not in ignored]
+        artifacts.update(
+            (Path(current) / filename).resolve()
+            for filename in filenames
+            if Path(filename).suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
+        )
+    return artifacts

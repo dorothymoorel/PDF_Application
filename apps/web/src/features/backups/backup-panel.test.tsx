@@ -64,8 +64,9 @@ function makeClient(overrideStatus: BackupJobStatus = "QUEUED"): BackupClient {
           data: {
             job_id: "job_restore_test",
             backup_id: backup().id,
-            status: "ACCEPTED" as const,
+            status: "COMPLETED" as const,
             pre_restore_backup_id: "bkp_pre_restore",
+            backup_type: "DATABASE_ONLY" as const,
           },
           meta: { request_id: "req_restore_test" },
         }),
@@ -104,14 +105,14 @@ describe("BackupPanel", () => {
   });
 
   it("keeps BackupStatus for BackupRecord separate from BackupJobStatus", () => {
-    // backup-panel.tsx:14 stays QUEUED|RUNNING|COMPLETED|FAILED for BackupRecord
+    // Persisted backup rows use the database lifecycle, separate from job status.
     const recordStatus: BackupStatus = "COMPLETED";
-    expect(["QUEUED", "RUNNING", "COMPLETED", "FAILED"]).toContain(recordStatus);
-    // BackupJobStatus is separate union for CreateBackupResponse at :42
+    expect(["CREATED", "RUNNING", "COMPLETED", "FAILED", "CANCELLED"]).toContain(recordStatus);
+    // BackupJobStatus is the broader application-job lifecycle.
     const jobStatus: BackupJobStatus = "STALE";
     expect(["QUEUED","RUNNING","RETRYING","CANCELLATION_REQUESTED","COMPLETED","COMPLETED_WITH_WARNINGS","PARTIALLY_COMPLETED","FAILED","CANCELLED","STALE"]).toContain(jobStatus);
     // ensure they are not merged - BackupRecord should not accept RETRYING
-    const isBackupRecordStatus = (s: string): boolean => ["QUEUED","RUNNING","COMPLETED","FAILED"].includes(s);
+    const isBackupRecordStatus = (s: string): boolean => ["CREATED","RUNNING","COMPLETED","FAILED","CANCELLED"].includes(s);
     expect(isBackupRecordStatus("RETRYING")).toBe(false);
     expect(isBackupRecordStatus("STALE")).toBe(false);
   });

@@ -1,3 +1,5 @@
+import hashlib
+import sqlite3
 from collections.abc import Iterator
 from pathlib import Path
 from typing import cast
@@ -1149,3 +1151,49 @@ def test_bulk_retranslation_fails_closed_when_queue_is_not_configured(
             assert session.scalars(select(ApplicationJob)).all() == []
     finally:
         engine.dispose()
+
+
+def test_document_page_list_exposes_persisted_page_without_private_paths(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+
+    response = client.get(f"/api/v1/documents/{DOCUMENT_ID}/pages")
+
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert [page["id"] for page in body["data"]] == [PAGE_ID]
+    assert body["data"][0]["source_page_number"] == 1
+    assert str(data_root) not in response.text
+
+
+def test_document_source_streams_only_checksum_verified_managed_file(
+    page_editor_api: tuple[TestClient, Path],
+) -> None:
+    client, data_root = page_editor_api
+    source_bytes = b"%PDF-1.7\n% TransLoka source fixture\n%%EOF\n"
+    database = data_root / "database" / "transloka.db"
+    with sqlite3.connect(database) as connection:
+        storage_key = cast(
+            str,
+            connection.execute(
+                "SELECT storage_key FROM stored_files WHERE id = ?",
+                (ORIGINAL_FILE_ID,),
+            ).fetchone()[0],
+        )
+        connection.execute(
+            "UPDATE stored_files SET size_bytes = ?, checksum_sha256 = ? WHERE id = ?",
+            (len(source_bytes), hashlib.sha256(source_bytes).hexdigest(), ORIGINAL_FILE_ID),
+        )
+    source_path = data_root.joinpath(*storage_key.split("/"))
+    source_path.parent.mkdir(parents=True, exist_ok=True)
+    source_path.write_bytes(source_bytes)
+
+    response = client.get(f"/api/v1/documents/{DOCUMENT_ID}/source")
+
+    assert response.status_code == 200, response.text
+    assert response.content == source_bytes
+    assert response.headers["content-type"] == "application/pdf"
+    assert response.headers["cache-control"] == "no-store"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert str(data_root) not in str(response.headers)

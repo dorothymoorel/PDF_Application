@@ -1,4 +1,5 @@
 import json
+import os
 from pathlib import Path
 from typing import cast
 
@@ -34,11 +35,26 @@ CLIENT_HEADERS = {
 
 
 def _database_artifacts() -> frozenset[Path]:
-    return frozenset(
-        path
-        for path in REPOSITORY_ROOT.rglob("*")
-        if path.is_file() and path.suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
-    )
+    ignored_directories = {
+        ".git",
+        ".mypy_cache",
+        ".next",
+        ".pytest_cache",
+        ".ruff_cache",
+        ".venv",
+        "node_modules",
+        "test-results",
+    }
+    artifacts: set[Path] = set()
+    for current, directories, filenames in os.walk(REPOSITORY_ROOT):
+        directories[:] = [name for name in directories if name not in ignored_directories]
+        root = Path(current)
+        artifacts.update(
+            root / filename
+            for filename in filenames
+            if Path(filename).suffix.casefold() in {".db", ".sqlite", ".sqlite3"}
+        )
+    return frozenset(artifacts)
 
 
 def test_backup_app_to_tasksdb_to_worker_completes_and_publishes(
@@ -128,6 +144,24 @@ def test_backup_app_to_tasksdb_to_worker_completes_and_publishes(
         job_resp = client.get(f"/api/v1/jobs/{job_id}", headers=CLIENT_HEADERS)
         assert job_resp.status_code == 200
         assert job_resp.json()["data"]["status"] == "COMPLETED"
+
+        backups_response = client.get("/api/v1/backups", headers=CLIENT_HEADERS)
+        assert backups_response.status_code == 200, backups_response.text
+        listed_backups = backups_response.json()["data"]
+        assert len(listed_backups) == 1
+        assert listed_backups[0]["status"] == "COMPLETED"
+        assert listed_backups[0]["checksum_sha256"] is not None
+
+        verification_response = client.post(
+            f"/api/v1/backups/{listed_backups[0]['id']}/verify",
+            headers=CLIENT_HEADERS,
+        )
+        assert verification_response.status_code == 200, verification_response.text
+        assert verification_response.json()["data"] == {
+            "backup_id": listed_backups[0]["id"],
+            "status": "VERIFIED",
+            "message": "Backup verification completed successfully.",
+        }
 
         factory2 = cast(sessionmaker[Session], status_application.state.session_factory)
         with factory2() as session:

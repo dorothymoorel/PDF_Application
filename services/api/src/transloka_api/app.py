@@ -46,6 +46,7 @@ from transloka_api.routers.backups import router as backups_router
 from transloka_api.routers.benchmarks import router as benchmarks_router
 from transloka_api.routers.documents import document_router as document_detail_router
 from transloka_api.routers.documents import router as documents_router
+from transloka_api.routers.exports import router as exports_router
 from transloka_api.routers.glossaries import router as glossaries_router
 from transloka_api.routers.jobs import router as jobs_router
 from transloka_api.routers.maintenance import router as maintenance_router
@@ -269,6 +270,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     application.include_router(benchmarks_router)
     application.include_router(documents_router)
     application.include_router(document_detail_router)
+    application.include_router(exports_router)
     application.include_router(glossaries_router)
     application.include_router(jobs_router)
     application.include_router(maintenance_router)

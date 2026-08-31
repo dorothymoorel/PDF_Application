@@ -5,6 +5,7 @@ import tseslint from "typescript-eslint";
 const typescriptFiles = [
   "apps/**/*.{ts,tsx,mts,cts}",
   "packages/**/*.{ts,tsx,mts,cts}",
+  "tests/browser/**/*.{ts,tsx,mts,cts}",
 ];
 
 export default defineConfig([

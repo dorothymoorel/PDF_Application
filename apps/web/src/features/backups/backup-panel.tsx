@@ -1,17 +1,16 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import type { ApiResult } from "@transloka/api-client";
 
 export const BACKUP_TYPES = [
   "DATABASE_ONLY",
   "METADATA",
   "FULL_PROJECTS",
-  "FULL_APPLICATION",
 ] as const;
 
 export type BackupType = (typeof BACKUP_TYPES)[number];
-export type BackupStatus = "QUEUED" | "RUNNING" | "COMPLETED" | "FAILED";
+export type BackupStatus = "CREATED" | "RUNNING" | "COMPLETED" | "FAILED" | "CANCELLED";
 export type BackupJobStatus =
   | "QUEUED"
   | "RUNNING"
@@ -28,8 +27,8 @@ export type BackupRecord = {
   id: string;
   backup_type: BackupType;
   filename: string;
-  size_bytes: number;
-  checksum_sha256: string;
+  size_bytes: number | null;
+  checksum_sha256: string | null;
   application_version: string;
   database_schema_version: string;
   status: BackupStatus;
@@ -55,7 +54,7 @@ export type CreateBackupResponse = {
 };
 
 export type VerifyBackupResponse = {
-  data: { backup_id: string; status: "VERIFIED" | "FAILED"; message: string };
+  data: { backup_id: string; status: "VERIFIED"; message: string };
   meta: { request_id: string };
 };
 
@@ -69,8 +68,9 @@ export type RestoreBackupResponse = {
   data: {
     job_id: string;
     backup_id: string;
-    status: "ACCEPTED";
-    pre_restore_backup_id: string | null;
+    status: "COMPLETED";
+    pre_restore_backup_id: string;
+    backup_type: BackupType;
   };
   meta: { request_id: string };
 };
@@ -89,7 +89,8 @@ export type BackupClient = {
   ) => Promise<ApiResult<RestoreBackupResponse>>;
 };
 
-function formatBackupSize(value: number): string {
+function formatBackupSize(value: number | null): string {
+  if (value === null) return "Pending";
   if (!Number.isFinite(value) || value < 0) return "0 B";
   if (value < 1_000) return `${Math.round(value)} B`;
   if (value < 1_000_000) return `${Math.round(value / 1_000)} KB`;
@@ -122,29 +123,26 @@ export function BackupPanel({
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(true);
 
-  useEffect(() => {
-    let active = true;
+  const loadBackups = useCallback(async () => {
     setIsLoading(true);
-    void client
-      .listBackups()
-      .then((result) => {
-        if (!active) return;
-        if (!result.ok) {
-          setError(resultError(result));
-          return;
-        }
-        setBackups(result.data.data);
-      })
-      .catch((cause: unknown) => {
-        if (active) setError(cause instanceof Error ? cause.message : "Backups could not be loaded.");
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+    setError(null);
+    try {
+      const result = await client.listBackups();
+      if (!result.ok) {
+        setError(resultError(result));
+        return;
+      }
+      setBackups(result.data.data);
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : "Backups could not be loaded.");
+    } finally {
+      setIsLoading(false);
+    }
   }, [client]);
+
+  useEffect(() => {
+    void loadBackups();
+  }, [loadBackups]);
 
   const createBackup = async () => {
     if (pendingAction !== null) return;
@@ -261,7 +259,17 @@ export function BackupPanel({
             <p className="text-sm font-semibold uppercase tracking-wide text-blue-700">History</p>
             <h2 className="mt-1 text-xl font-semibold text-slate-950" id="backup-list-heading">Available backups</h2>
           </div>
-          <p className="text-sm text-slate-600">{backups.length} backup(s)</p>
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-slate-600">{backups.length} backup(s)</p>
+            <button
+              className="rounded-lg border border-slate-300 bg-white px-3 py-2 text-xs font-semibold text-slate-800 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+              disabled={isLoading || pendingAction !== null}
+              onClick={() => void loadBackups()}
+              type="button"
+            >
+              {isLoading ? "Refreshing…" : "Refresh backups"}
+            </button>
+          </div>
         </div>
         {isLoading ? (
           <p className="mt-4 text-sm text-slate-600" role="status">Loading backups…</p>

@@ -102,9 +102,11 @@ export function ReviewEditor({
         const requestedSegment = nextView.segments.find(
           (segment) => segment.id === initialSegmentId,
         );
+        const nextSegment = requestedSegment ?? nextView.segments[0];
         setView(nextView);
         setPageNumber(nextView.page.source_page_number);
-        setSelectedSegmentId(requestedSegment?.id ?? nextView.segments[0]?.id ?? null);
+        setSelectedSegmentId(nextSegment?.id ?? null);
+        setDraft(initialTranslation(nextSegment));
       })
       .catch((cause: unknown) => {
         if (active && !(cause instanceof DOMException && cause.name === "AbortError")) {
@@ -128,18 +130,8 @@ export function ReviewEditor({
     view?.segments.findIndex((segment) => segment.id === selectedSegmentId) ?? -1;
 
   useEffect(() => {
-    setDraft(initialTranslation(selectedSegment));
-    setSaveMessage(null);
-    if (selectedSegment !== undefined) {
-      translationTextareaRef.current?.focus();
-    }
-  }, [
-    selectedSegment?.current_revision,
-    selectedSegment?.final_text,
-    selectedSegment?.id,
-    selectedSegment?.machine_translation,
-    selectedSegment?.reviewed_translation,
-  ]);
+    if (selectedSegmentId !== null) translationTextareaRef.current?.focus();
+  }, [selectedSegmentId]);
 
   useEffect(() => {
     if (error === null) {
@@ -152,13 +144,22 @@ export function ReviewEditor({
     }
   }, [error, view]);
 
+  const selectSegment = (segmentId: string) => {
+    const nextSegment = view?.segments.find((segment) => segment.id === segmentId);
+    setSelectedSegmentId(segmentId);
+    if (nextSegment !== undefined) {
+      setDraft(initialTranslation(nextSegment));
+      setSaveMessage(null);
+    }
+  };
+
   const moveSelectedSegment = (offset: number) => {
     if (view === null || selectedSegmentIndex < 0) {
       return;
     }
     const nextSegment = view.segments[selectedSegmentIndex + offset];
     if (nextSegment !== undefined) {
-      setSelectedSegmentId(nextSegment.id);
+      selectSegment(nextSegment.id);
     }
   };
 
@@ -201,6 +202,7 @@ export function ReviewEditor({
               ),
             },
       );
+      setDraft(initialTranslation(updatedSegment));
       setSaveMessage("Translation saved.");
     } catch (cause: unknown) {
       setError(cause instanceof Error ? cause.message : "The translation could not be saved.");
@@ -264,7 +266,7 @@ export function ReviewEditor({
               blocks={pageBlocks(view)}
               {...(loadDocument === undefined ? {} : { loadDocument })}
               onPageChange={setPageNumber}
-              onSelectSegment={setSelectedSegmentId}
+              onSelectSegment={selectSegment}
               pageHeightPoints={view.page.height_points}
               pageNumber={pageNumber}
               pageWidthPoints={view.page.width_points}
