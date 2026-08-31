@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator
+from dataclasses import replace
 from datetime import UTC, datetime
 from math import ceil
 from typing import Annotated, Any, Literal, Never, cast
@@ -367,11 +369,17 @@ def retry_failed_translation(
     if job is None:
         _raise_job_not_found()
     try:
+        replacement_payload_json = (
+            _reduced_translation_command_payload(job.payload_json)
+            if payload.use_smaller_batch
+            else None
+        )
         retry = JobRetryService(_session_factory(request)).request(
             job.id,
             idempotency_key=idempotency_key,
             retry_failed_items_only=True,
             reason=("SMALLER_BATCH" if payload.use_smaller_batch else "USER_REQUESTED"),
+            replacement_payload_json=replacement_payload_json,
         )
         if retry.created:
             try:
@@ -409,6 +417,12 @@ def retry_failed_translation(
             message="The idempotency key belongs to a different retry request.",
             status_code=409,
         ) from exc
+    except TranslationWorkerError as exc:
+        raise TransLokaError(
+            code="JOB_PAYLOAD_INVALID",
+            message="The translation job cannot be retried because its saved settings are invalid.",
+            status_code=409,
+        ) from exc
     return _status_response(session, project)
 
 
@@ -435,6 +449,17 @@ def _mark_retry_queue_failure(
         attempt.completed_at = completed_at
         attempt.error_code = QUEUE_DISPATCH_FAILED
         attempt.error_message = "The translation job could not be queued."
+
+
+def _reduced_translation_command_payload(payload_json: str) -> str:
+    command = TranslationCommand.from_payload_json(payload_json)
+    reduced_batch_size = max(1, (command.batch_size + 1) // 2)
+    return json.dumps(
+        replace(command, batch_size=reduced_batch_size).to_payload(),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    )
 
 
 def _get_session(request: Request) -> Iterator[Session]:

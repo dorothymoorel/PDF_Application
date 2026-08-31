@@ -460,11 +460,11 @@ def test_translation_start_fails_closed_when_queue_is_not_configured(
 def test_translation_cancel_and_retry_failed(
     translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
 ) -> None:
-    client, _factory, project_id, application = translation_api
+    client, factory, project_id, application = translation_api
     start = client.post(
         f"/api/v1/projects/{project_id}/translation/start",
         headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-lifecycle"},
-        json={"model_id": MODEL_ID},
+        json={"model_id": MODEL_ID, "batch_size": 8},
     )
     assert start.status_code == 202
 
@@ -492,6 +492,10 @@ def test_translation_cancel_and_retry_failed(
     assert repeated.status_code == 202
     queue = cast(RecordingQueue, application.state.translation_queue)
     assert queue.enqueued == [start.json()["data"]["job_id"], start.json()["data"]["job_id"]]
+    with factory() as session:
+        job = session.get(ApplicationJob, start.json()["data"]["job_id"])
+        assert job is not None
+        assert TranslationCommand.from_payload_json(job.payload_json).batch_size == 4
 
     status_response = client.get(f"/api/v1/projects/{project_id}/translation/status")
     assert status_response.status_code == 200

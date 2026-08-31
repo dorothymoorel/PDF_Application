@@ -80,11 +80,13 @@ class JobRetryService:
         idempotency_key: str,
         retry_failed_items_only: bool,
         reason: str,
+        replacement_payload_json: str | None = None,
     ) -> JobRetryResult:
         _validate_text(idempotency_key, "Idempotency key", _MAX_IDEMPOTENCY_KEY_LENGTH)
         _validate_text(reason, "Retry reason", _MAX_REASON_LENGTH)
         if not isinstance(retry_failed_items_only, bool):
             raise InvalidJobRetryError("The failed-items-only option is invalid.")
+        _validate_replacement_payload_json(replacement_payload_json)
 
         attempt_id = _retry_attempt_id(job_id, idempotency_key)
         details_json = _retry_details_json(
@@ -145,6 +147,8 @@ class JobRetryService:
             row.completed_at = None
             row.cancelled_at = None
             row.heartbeat_at = None
+            if replacement_payload_json is not None:
+                row.payload_json = replacement_payload_json
             session.flush()
             return _result(row, attempt, created=True)
 
@@ -260,6 +264,19 @@ def _validate_text(value: str, label: str, max_length: int) -> None:
         or len(value) > max_length
     ):
         raise InvalidJobRetryError(f"{label} is invalid.")
+
+
+def _validate_replacement_payload_json(value: str | None) -> None:
+    if value is None:
+        return
+    if type(value) is not str or not value:
+        raise InvalidJobRetryError("The replacement job payload is invalid.")
+    try:
+        decoded = json.loads(value)
+    except (TypeError, ValueError):
+        raise InvalidJobRetryError("The replacement job payload is invalid.") from None
+    if not isinstance(decoded, dict):
+        raise InvalidJobRetryError("The replacement job payload is invalid.")
 
 
 def _utc_now() -> str:

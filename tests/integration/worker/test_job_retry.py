@@ -122,6 +122,27 @@ def test_first_retry_creates_complete_attempt_history_and_preserves_result(
         }
 
 
+def test_retry_replaces_job_payload_in_the_same_transaction(
+    retry_database: tuple[Engine, sessionmaker[Session], str],
+) -> None:
+    _engine, factory, job_id = retry_database
+    _fail_job(factory, job_id)
+
+    JobRetryService(factory).request(
+        job_id,
+        idempotency_key="retry-replace-payload",
+        retry_failed_items_only=True,
+        reason="SMALLER_BATCH",
+        replacement_payload_json='{"batch_size":4}',
+    )
+
+    with factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.RETRYING.value
+        assert job.payload_json == '{"batch_size":4}'
+
+
 def test_same_retry_key_is_idempotent_and_conflicting_body_is_rejected(
     retry_database: tuple[Engine, sessionmaker[Session], str],
 ) -> None:
