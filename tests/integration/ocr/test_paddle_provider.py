@@ -1,10 +1,12 @@
 import sys
 import time
 from dataclasses import dataclass
+from io import BytesIO
 from pathlib import Path
 from types import ModuleType
 
 import pytest
+from PIL import Image
 from transloka_documents.ocr import (
     OCRGeometry,
     OCRHealth,
@@ -24,7 +26,18 @@ from transloka_documents.ocr.paddle import (
 
 
 def _page() -> OCRPage:
-    return OCRPage(page_number=1, width_px=1200, height_px=1600, image=b"local-page-image")
+    image = Image.new("RGB", (2, 2), "white")
+    output = BytesIO()
+    try:
+        image.save(output, format="PNG")
+    finally:
+        image.close()
+    return OCRPage(
+        page_number=1,
+        width_px=1200,
+        height_px=1600,
+        image=output.getvalue(),
+    )
 
 
 def _result(*, geometry: OCRGeometry, confidence: float = 0.94) -> OCRResult:
@@ -83,7 +96,8 @@ def test_local_runtime_is_constructed_in_cpu_mode_and_parses_geometry(
 ) -> None:
     model_path = tmp_path / "paddle-model"
     model_path.mkdir()
-    (model_path / "model.marker").write_text("local", encoding="utf-8")
+    (model_path / "PP-OCRv5_mobile_det").mkdir()
+    (model_path / "en_PP-OCRv4_mobile_rec").mkdir()
     captured: dict[str, object] = {}
 
     class FakePaddleOCR:
@@ -92,8 +106,8 @@ def test_local_runtime_is_constructed_in_cpu_mode_and_parses_geometry(
         def __init__(self, **options: object) -> None:
             captured.update(options)
 
-        def predict(self, *, input: bytes) -> list[dict[str, object]]:
-            assert input == b"local-page-image"
+        def predict(self, *, input: object) -> list[dict[str, object]]:
+            assert getattr(input, "shape", None) == (2, 2, 3)
             return [
                 {
                     "rec_texts": ["Recognized text"],
@@ -110,7 +124,9 @@ def test_local_runtime_is_constructed_in_cpu_mode_and_parses_geometry(
     result = provider.analyze_page(_page())
 
     assert captured["device"] == "cpu"
-    assert captured["model_dir"] == str(model_path)
+    assert captured["enable_mkldnn"] is False
+    assert captured["text_detection_model_dir"] == str(model_path / "PP-OCRv5_mobile_det")
+    assert captured["text_recognition_model_dir"] == str(model_path / "en_PP-OCRv4_mobile_rec")
     assert result.text == "Recognized text"
     assert result.confidence == pytest.approx(0.91)
     assert result.geometry == OCRGeometry(x=10, y=20, width=210, height=50)
@@ -134,7 +150,8 @@ def test_provider_unavailable_does_not_fallback_to_a_remote_runtime(
 ) -> None:
     model_path = tmp_path / "paddle-model"
     model_path.mkdir()
-    (model_path / "model.marker").write_text("local", encoding="utf-8")
+    (model_path / "PP-OCRv5_mobile_det").mkdir()
+    (model_path / "en_PP-OCRv4_mobile_rec").mkdir()
 
     monkeypatch.setitem(sys.modules, "paddleocr", None)
     provider = LocalPaddleOCRProvider(model_cache_dir=tmp_path, model_name="paddle-model")

@@ -6,6 +6,7 @@ import os
 from collections.abc import Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from io import BytesIO
 from pathlib import Path
 from typing import Any, Protocol, cast, runtime_checkable
 
@@ -21,6 +22,9 @@ from .base import (
     OCRSettings,
     OCRTextBlock,
 )
+
+_DETECTION_MODEL_DIRECTORY = "PP-OCRv5_mobile_det"
+_RECOGNITION_MODEL_DIRECTORY = "en_PP-OCRv4_mobile_rec"
 
 
 @runtime_checkable
@@ -73,7 +77,7 @@ class PaddleOCRProviderAdapter:
         self,
         *,
         model_cache_dir: str | Path | None = None,
-        model_name: str = "paddleocr",
+        model_name: str = "official_models",
         language: str = "en",
         backend: PaddleOCRBackend | None = None,
     ) -> None:
@@ -89,6 +93,14 @@ class PaddleOCRProviderAdapter:
     @property
     def model_path(self) -> Path:
         return self._model_cache_dir / self._model_name
+
+    @property
+    def detection_model_path(self) -> Path:
+        return self.model_path / _DETECTION_MODEL_DIRECTORY
+
+    @property
+    def recognition_model_path(self) -> Path:
+        return self.model_path / _RECOGNITION_MODEL_DIRECTORY
 
     @property
     def device(self) -> str:
@@ -163,10 +175,13 @@ class PaddleOCRProviderAdapter:
     def _get_backend(self) -> PaddleOCRBackend:
         if self._backend is not None:
             return self._backend
-        if not self.model_path.exists():
+        if not self.detection_model_path.is_dir() or not self.recognition_model_path.is_dir():
             raise PaddleOCRModelMissingError
 
         try:
+            # PaddleOCR probes model hosts at import unless this is set. The runtime
+            # receives explicit local model directories and must remain offline.
+            os.environ.setdefault("PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK", "True")
             paddleocr = importlib.import_module("paddleocr")
         except ImportError as exc:
             raise PaddleOCRUnavailableError(
@@ -237,40 +252,53 @@ def _create_paddle_engine(paddle_class: Any, model_path: Path, language: str) ->
     options = {
         "lang": language,
         "device": "cpu",
-        "model_dir": str(model_path),
+        "text_detection_model_name": _DETECTION_MODEL_DIRECTORY,
+        "text_detection_model_dir": str(model_path / _DETECTION_MODEL_DIRECTORY),
+        "text_recognition_model_name": _RECOGNITION_MODEL_DIRECTORY,
+        "text_recognition_model_dir": str(model_path / _RECOGNITION_MODEL_DIRECTORY),
+        # PaddleOCR enables oneDNN by default. Disable it for Windows CPU because
+        # PaddlePaddle's PIR/oneDNN path can reject valid OCR model attributes.
+        "enable_mkldnn": False,
         "use_doc_orientation_classify": False,
         "use_doc_unwarping": False,
         "use_textline_orientation": False,
     }
     try:
         return paddle_class(**options)
-    except TypeError:
-        try:
-            return paddle_class(
-                lang=language,
-                device="cpu",
-                model_dir=str(model_path),
-                use_angle_cls=False,
-            )
-        except Exception as exc:
-            raise PaddleOCRUnavailableError(
-                "The local PaddleOCR model could not be loaded."
-            ) from exc
     except Exception as exc:
         raise PaddleOCRUnavailableError("The local PaddleOCR model could not be loaded.") from exc
 
 
 def _run_paddle_engine(engine: object, image: bytes) -> object:
+    image_array = _decode_page_image(image)
     predict = getattr(engine, "predict", None)
     if callable(predict):
         try:
-            return predict(input=image)
+            return predict(input=image_array)
         except TypeError:
-            return predict(image)
+            return predict(image_array)
     ocr = getattr(engine, "ocr", None)
     if callable(ocr):
-        return ocr(image, cls=False)
+        return ocr(image_array, cls=False)
     raise PaddleOCRUnavailableError("The local PaddleOCR runtime has no page analysis method.")
+
+
+def _decode_page_image(image: bytes) -> object:
+    try:
+        numpy = importlib.import_module("numpy")
+        pillow_image = importlib.import_module("PIL.Image")
+    except (ImportError, AttributeError) as exc:
+        raise PaddleOCRUnavailableError(
+            "The local PaddleOCR runtime cannot decode a rendered page image."
+        ) from exc
+    try:
+        with pillow_image.open(BytesIO(image)) as source:
+            return numpy.asarray(source.convert("RGB"))
+    except Exception as exc:
+        raise OCRProviderError(
+            OCRProviderErrorCode.INVALID_REQUEST,
+            "The rendered OCR page image is invalid.",
+        ) from exc
 
 
 def _parse_paddle_result(raw: object, page: OCRPage, settings: OCRSettings) -> OCRResult:

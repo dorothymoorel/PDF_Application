@@ -28,6 +28,12 @@ transloka-quality = { workspace = true }
 transloka-reconstruction = { workspace = true }
 transloka-translation = { workspace = true }
 transloka-worker = { workspace = true }
+paddlepaddle = { index = "paddlepaddle" }
+
+[[tool.uv.index]]
+name = "paddlepaddle"
+url = "https://www.paddlepaddle.org.cn/packages/stable/cpu/"
+explicit = true
 
 [tool.uv.workspace]
 members = [

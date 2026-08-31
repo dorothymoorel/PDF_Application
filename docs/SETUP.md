@@ -150,7 +150,28 @@ ollama pull <model-id>
 Gunakan `docs/MODEL_SELECTION.md` untuk health check, benchmark, dan review
 license. Endpoint selain loopback ditolak oleh provider lokal.
 
-## 8. Jalankan quality checks
+## 8. Siapkan OCR lokal
+
+OCR halaman scan memakai PaddleOCR CPU dan dua model bahasa Inggris lokal.
+Paket Python terkunci dalam `uv.lock`, tetapi model tidak diunduh saat aplikasi
+berjalan. Jalankan setup berikut secara eksplisit sekali sebelum OCR pertama:
+
+```powershell
+.\scripts\provision-ocr-models.ps1
+```
+
+Model disimpan di `<data-root>\cache\paddleocr\official_models`, di luar
+repository. Untuk memakai data root lain, berikan path absolut:
+
+```powershell
+.\scripts\provision-ocr-models.ps1 -DataRoot "D:\TransLoka"
+```
+
+Setelah script selesai, mulai aplikasi dengan `scripts\start.ps1`. OCR tetap
+memproses satu halaman per waktu pada CPU dan tidak mengunduh model saat job
+OCR berjalan.
+
+## 9. Jalankan quality checks
 
 ```powershell
 uv run pytest
@@ -166,7 +187,7 @@ pnpm build
 Test standar memakai fake provider dan temporary data; test Ollama/PaddleOCR
 lokal dapat membutuhkan runtime tambahan.
 
-## 9. Layout data lokal
+## 10. Layout data lokal
 
 Runtime membuat subfolder berikut di bawah data root:
 
