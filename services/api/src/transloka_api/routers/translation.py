@@ -9,7 +9,7 @@ from typing import Annotated, Any, Literal, Never, cast
 
 from fastapi import APIRouter, Depends, Header, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import func, select
+from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.exception_handlers import TransLokaError
 from transloka_api.middleware import get_request_id
@@ -668,7 +668,24 @@ def _latest_job(session: Session, project_id: str) -> ApplicationJob | None:
             ApplicationJob.project_id == project_id,
             ApplicationJob.job_type == JobType.TRANSLATE_DOCUMENT.value,
         )
-        .order_by(ApplicationJob.created_at.desc(), ApplicationJob.id.desc())
+        .order_by(
+            case(
+                (
+                    ApplicationJob.status.in_(
+                        (
+                            JobStatus.RUNNING.value,
+                            JobStatus.RETRYING.value,
+                            JobStatus.CANCELLATION_REQUESTED.value,
+                        )
+                    ),
+                    0,
+                ),
+                (ApplicationJob.status == JobStatus.QUEUED.value, 1),
+                else_=2,
+            ),
+            ApplicationJob.created_at.desc(),
+            ApplicationJob.id.desc(),
+        )
         .limit(1)
     )
 

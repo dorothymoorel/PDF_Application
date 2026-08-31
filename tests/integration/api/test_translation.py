@@ -38,6 +38,7 @@ from transloka_core.database.models.jobs import (
     JobAttempt,
     JobAttemptStatus,
     JobStatus,
+    JobType,
 )
 from transloka_core.database.models.models import LocalModelRecord, ModelLicenseStatus
 from transloka_core.database.models.pages import DocumentPage, PageType
@@ -464,6 +465,56 @@ def test_translation_start_fails_closed_when_queue_is_not_configured(
     assert response.json()["error"]["code"] == "QUEUE_NOT_CONFIGURED"
     with factory() as session:
         assert session.scalars(select(ApplicationJob)).all() == []
+
+
+def test_translation_status_prefers_running_job_over_newer_queued_job(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, _application = translation_api
+    start = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-running-status"},
+        json={"model_id": MODEL_ID},
+    )
+    running_job_id = start.json()["data"]["job_id"]
+    with transaction_scope(factory) as session:
+        running = session.get(ApplicationJob, running_job_id)
+        assert running is not None
+        running.status = JobStatus.RUNNING.value
+        running.progress = 0.5
+        session.add(
+            ApplicationJob(
+                id=_id("job_", 112),
+                project_id=project_id,
+                document_id=DOCUMENT_ID,
+                parent_job_id=None,
+                job_type=JobType.TRANSLATE_DOCUMENT.value,
+                queue_name="translation",
+                status=JobStatus.QUEUED.value,
+                progress=0.0,
+                current_stage=None,
+                idempotency_key="translation-newer-queued-status",
+                payload_json=running.payload_json,
+                result_json=None,
+                retry_count=0,
+                max_retries=3,
+                error_code=None,
+                error_message=None,
+                created_at="2026-08-19T00:00:00.000Z",
+                queued_at="2026-08-19T00:00:00.000Z",
+                started_at=None,
+                completed_at=None,
+                cancelled_at=None,
+                heartbeat_at=None,
+            )
+        )
+
+    response = client.get(f"/api/v1/projects/{project_id}/translation/status")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["active_job_id"] == running_job_id
+    assert response.json()["data"]["status"] == "TRANSLATING"
+    assert response.json()["data"]["progress"] == 0.5
 
 
 def test_translation_cancel_and_retry_failed(
