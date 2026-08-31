@@ -50,7 +50,12 @@ from transloka_reconstruction.hybrid import (
     PageDescriptor,
     PageStrategy,
 )
-from transloka_reconstruction.overlay import CoverRegion, OverlayPageGenerator, OverlayText
+from transloka_reconstruction.overlay import (
+    CoverRegion,
+    OverlayPageGenerator,
+    OverlayText,
+    TextAlignment,
+)
 from transloka_reconstruction.reflow.generator import ReflowPageSettings, ReflowPDFGenerator
 from transloka_reconstruction.reflow.types import ReflowBlock, ReflowBlockKind, ReflowDocument
 from transloka_reconstruction.settings import ReconstructionMode, ReconstructionSettings
@@ -70,6 +75,7 @@ class ReconstructionBlockInput:
     source_text: str
     translated_text: str | None
     source_geometry: Mapping[str, object]
+    source_style: Mapping[str, object] | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -422,14 +428,19 @@ class ReconstructionRenderer:
                 strategies.append((block.block_id, "PRESERVE"))
                 continue
             x, y, width, height = _pdf_geometry(block.source_geometry, page)
+            font_size = _font_size(block.source_style, block.source_geometry, height)
+            text_x, text_width, alignment = _text_box(block, page, x, width)
             texts.append(
                 OverlayText(
                     block.translated_text,
-                    x=x,
+                    x=text_x,
                     y=y,
-                    width=width,
+                    width=text_width,
                     height=height,
-                    font_size_pt=_font_size(block.source_geometry, height),
+                    font_name=_font_name(block.source_style),
+                    font_size_pt=font_size,
+                    leading_pt=_leading(block, font_size, height),
+                    alignment=alignment,
                     text_id=block.block_id,
                 )
             )
@@ -731,6 +742,7 @@ def _load_page(session: Session, page: DocumentPage) -> ReconstructionPageInput:
                 or "",
                 translated_text=translated,
                 source_geometry=_geometry_json(block.source_geometry_json),
+                source_style=_style_json(block.style_json),
             )
         )
     return ReconstructionPageInput(
@@ -751,6 +763,18 @@ def _geometry_json(value: str) -> Mapping[str, object]:
         raise ReconstructionWorkerError("A reconstruction block geometry is invalid.") from None
     if not isinstance(parsed, dict):
         raise ReconstructionWorkerError("A reconstruction block geometry is invalid.")
+    return cast(dict[str, object], parsed)
+
+
+def _style_json(value: str | None) -> Mapping[str, object]:
+    if value is None:
+        return {}
+    try:
+        parsed = json.loads(value)
+    except (json.JSONDecodeError, TypeError):
+        raise ReconstructionWorkerError("A reconstruction block style is invalid.") from None
+    if not isinstance(parsed, dict):
+        raise ReconstructionWorkerError("A reconstruction block style is invalid.")
     return cast(dict[str, object], parsed)
 
 
@@ -800,10 +824,94 @@ def _finite_geometry(value: object, *, positive: bool = False) -> float:
     return result
 
 
-def _font_size(geometry: Mapping[str, object], height: float) -> float:
-    value = geometry.get("font_size_pt", min(12.0, max(6.0, height * 0.65)))
+def _font_size(
+    style: Mapping[str, object] | None,
+    geometry: Mapping[str, object],
+    height: float,
+) -> float:
+    value = (style or {}).get(
+        "font_size",
+        geometry.get("font_size_pt", min(12.0, max(6.0, height * 0.65))),
+    )
     size = _finite_geometry(value, positive=True)
-    return min(size, max(6.0, height * 0.8))
+    return min(size, max(6.0, height))
+
+
+def _font_name(style: Mapping[str, object] | None) -> str:
+    value = (style or {}).get("font_name")
+    if not isinstance(value, str) or not value.strip():
+        return "Helvetica"
+    name = value.strip().removeprefix("/").split("+", 1)[-1]
+    standard_fonts = {
+        "Courier",
+        "Courier-Bold",
+        "Courier-Oblique",
+        "Courier-BoldOblique",
+        "Helvetica",
+        "Helvetica-Bold",
+        "Helvetica-Oblique",
+        "Helvetica-BoldOblique",
+        "Times-Roman",
+        "Times-Bold",
+        "Times-Italic",
+        "Times-BoldItalic",
+        "Symbol",
+        "ZapfDingbats",
+    }
+    if name in standard_fonts:
+        return name
+
+    lowered = name.casefold()
+    bold = any(marker in lowered for marker in ("bold", "semibold", "demi"))
+    italic = any(marker in lowered for marker in ("italic", "oblique"))
+    if any(marker in lowered for marker in ("courier", "mono", "consol")):
+        return (
+            "Courier-BoldOblique"
+            if bold and italic
+            else ("Courier-Bold" if bold else "Courier-Oblique" if italic else "Courier")
+        )
+    if any(marker in lowered for marker in ("times", "serif", "georgia", "garamond")):
+        return (
+            "Times-BoldItalic"
+            if bold and italic
+            else ("Times-Bold" if bold else "Times-Italic" if italic else "Times-Roman")
+        )
+    return (
+        "Helvetica-BoldOblique"
+        if bold and italic
+        else ("Helvetica-Bold" if bold else "Helvetica-Oblique" if italic else "Helvetica")
+    )
+
+
+def _text_box(
+    block: ReconstructionBlockInput,
+    page: ReconstructionPageInput,
+    x: float,
+    width: float,
+) -> tuple[float, float, TextAlignment]:
+    if page.column_count == 1 and block.block_type in {
+        "DOCUMENT_TITLE",
+        "SUBTITLE",
+        "HEADING_1",
+        "HEADING_2",
+        "HEADING_3",
+    }:
+        width = max(width, page.width_points - (2 * x))
+    if block.block_type == "PAGE_NUMBER" and x > page.width_points / 2:
+        right = x + width
+        x = page.width_points / 2
+        width = right - x
+        return x, width, TextAlignment.RIGHT
+    return x, width, TextAlignment.LEFT
+
+
+def _leading(block: ReconstructionBlockInput, font_size: float, height: float) -> float:
+    source_lines = tuple(line for line in block.source_text.splitlines() if line.strip())
+    if len(source_lines) > 1:
+        leading = (height - font_size) / (len(source_lines) - 1)
+        if math.isfinite(leading) and leading > 0:
+            return leading
+    return min(font_size * 1.2, height)
 
 
 def _reflow_kind(block_type: str) -> ReflowBlockKind:

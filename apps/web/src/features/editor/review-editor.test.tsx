@@ -177,6 +177,8 @@ function fakePdf(): PdfDocumentLoader {
 function makeClient(
   pageResponse: ApiResult<PageResponse> | Promise<ApiResult<PageResponse>> = pageResult(),
 ): ReviewEditorClient & {
+  approveSegment: ReturnType<typeof vi.fn>;
+  unapproveSegment: ReturnType<typeof vi.fn>;
   getPageEditorView: ReturnType<typeof vi.fn>;
   editSegmentTranslation: ReturnType<typeof vi.fn>;
 } {
@@ -189,7 +191,23 @@ function makeClient(
       }),
     ),
   );
-  return { getPageEditorView, editSegmentTranslation };
+  const approveSegment = vi.fn((): Promise<ApiResult<SegmentResponse>> =>
+    Promise.resolve(
+      success({
+        data: FIRST_SEGMENT,
+        meta: { request_id: "req_editor_approve" },
+      }),
+    ),
+  );
+  const unapproveSegment = vi.fn((): Promise<ApiResult<SegmentResponse>> =>
+    Promise.resolve(
+      success({
+        data: FIRST_SEGMENT,
+        meta: { request_id: "req_editor_unapprove" },
+      }),
+    ),
+  );
+  return { approveSegment, editSegmentTranslation, getPageEditorView, unapproveSegment };
 }
 
 beforeEach(() => {
@@ -301,6 +319,76 @@ describe("ReviewEditor", () => {
     expect(screen.getByLabelText<HTMLTextAreaElement>("Reviewed translation").value).toBe(
       "Terjemahan yang ditinjau.",
     );
+  });
+
+  it("approves the selected translation at its current revision", async () => {
+    const approvedSegment = {
+      ...FIRST_SEGMENT,
+      current_revision: 2,
+      final_text: FIRST_SEGMENT.reviewed_translation,
+      review_status: "APPROVED" as const,
+      status: "APPROVED" as const,
+    };
+    const client = makeClient();
+    client.approveSegment.mockResolvedValue(
+      success({ data: approvedSegment, meta: { request_id: "req_approve" } }),
+    );
+    render(
+      <ReviewEditor
+        client={client}
+        loadDocument={fakePdf()}
+        pageId={PAGE_VIEW.page.id}
+        pdfUrl="/source.pdf"
+      />,
+    );
+
+    await screen.findByLabelText("Reviewed translation");
+    fireEvent.click(screen.getByRole("button", { name: "Approve translation" }));
+
+    await waitFor(() =>
+      expect(client.approveSegment).toHaveBeenCalledWith(FIRST_SEGMENT_ID, {
+        expected_revision: 1,
+        lock_after_approval: false,
+      }),
+    );
+    expect(await screen.findByText("Translation approved.")).toBeTruthy();
+  });
+
+  it("reopens an approved translation for revision", async () => {
+    const approvedSegment = {
+      ...FIRST_SEGMENT,
+      review_status: "APPROVED" as const,
+      status: "APPROVED" as const,
+    };
+    const reopenedSegment = {
+      ...approvedSegment,
+      current_revision: 2,
+      review_status: "EDITED" as const,
+      status: "USER_EDITED" as const,
+    };
+    const client = makeClient(pageResult({ ...PAGE_VIEW, segments: [approvedSegment] }));
+    client.unapproveSegment.mockResolvedValue(
+      success({ data: reopenedSegment, meta: { request_id: "req_unapprove" } }),
+    );
+    render(
+      <ReviewEditor
+        client={client}
+        loadDocument={fakePdf()}
+        pageId={PAGE_VIEW.page.id}
+        pdfUrl="/source.pdf"
+      />,
+    );
+
+    await screen.findByLabelText("Reviewed translation");
+    fireEvent.click(screen.getByRole("button", { name: "Reopen translation" }));
+
+    await waitFor(() =>
+      expect(client.unapproveSegment).toHaveBeenCalledWith(FIRST_SEGMENT_ID, {
+        expected_revision: 1,
+        reason: "Reopened for translation revision.",
+      }),
+    );
+    expect(await screen.findByText("Translation reopened.")).toBeTruthy();
   });
 
   it("shows an API failure and allows retry", async () => {

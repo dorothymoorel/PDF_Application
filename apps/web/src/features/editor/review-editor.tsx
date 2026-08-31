@@ -68,6 +68,7 @@ export function ReviewEditor({
   const [pageNumber, setPageNumber] = useState(1);
   const [draft, setDraft] = useState("");
   const [isLoading, setIsLoading] = useState(true);
+  const [isApproving, setIsApproving] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [saveMessage, setSaveMessage] = useState<string | null>(null);
@@ -211,9 +212,59 @@ export function ReviewEditor({
     }
   };
 
+  const approveTranslation = async () => {
+    if (
+      selectedSegment === undefined ||
+      selectedSegment.is_locked ||
+      isApproving
+    ) {
+      return;
+    }
+
+    setIsApproving(true);
+    setError(null);
+    setSaveMessage(null);
+    try {
+      const isApproved = selectedSegment.review_status === "APPROVED";
+      const result = isApproved
+        ? await client.unapproveSegment(selectedSegment.id, {
+            expected_revision: selectedSegment.current_revision,
+            reason: "Reopened for translation revision.",
+          })
+        : await client.approveSegment(selectedSegment.id, {
+            expected_revision: selectedSegment.current_revision,
+            lock_after_approval: false,
+          });
+      if (!result.ok) {
+        setError(result.error.message);
+        if (result.error.kind === "api" && result.error.code === "REVISION_CONFLICT") {
+          setConflictOpen(true);
+        }
+        return;
+      }
+      const updatedSegment = result.data.data;
+      setView((current) =>
+        current === null
+          ? current
+          : {
+              ...current,
+              segments: current.segments.map((segment) =>
+                segment.id === updatedSegment.id ? updatedSegment : segment,
+              ),
+            },
+      );
+      setDraft(initialTranslation(updatedSegment));
+      setSaveMessage(isApproved ? "Translation reopened." : "Translation approved.");
+    } catch (cause: unknown) {
+      setError(cause instanceof Error ? cause.message : "The review state could not be changed.");
+    } finally {
+      setIsApproving(false);
+    }
+  };
+
   return (
     <main
-      aria-busy={isLoading || isSaving}
+      aria-busy={isLoading || isSaving || isApproving}
       aria-labelledby="review-editor-heading"
       className="w-full space-y-6 [&_button:focus-visible]:outline-none [&_button:focus-visible]:ring-2 [&_button:focus-visible]:ring-blue-500 [&_button:focus-visible]:ring-offset-2"
     >
@@ -375,21 +426,49 @@ export function ReviewEditor({
               </label>
               <textarea
                 className={`mt-2 min-h-36 w-full resize-y rounded-xl border border-slate-300 px-3 py-3 text-sm leading-6 text-slate-950 outline-none focus:border-blue-700 focus:ring-2 focus:ring-blue-100 disabled:cursor-not-allowed disabled:bg-slate-100 ${FOCUS_RING_CLASS}`}
-                disabled={selectedSegment === undefined || selectedSegment.is_locked || isSaving}
+                disabled={
+                  selectedSegment === undefined || selectedSegment.is_locked || isSaving || isApproving
+                }
                 id="translation-editor"
                 onChange={(event) => setDraft(event.target.value)}
                 readOnly={selectedSegment?.is_locked ?? false}
                 ref={translationTextareaRef}
                 value={draft}
               />
-              <button
-                className={`mt-4 rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
-                disabled={selectedSegment === undefined || selectedSegment.is_locked || isSaving}
-                onClick={() => void saveTranslation()}
-                type="button"
-              >
-                {isSaving ? "Saving…" : "Save translation"}
-              </button>
+              <div className="mt-4 flex flex-wrap gap-3">
+                <button
+                  className={`rounded-lg bg-blue-700 px-4 py-2.5 text-sm font-semibold text-white hover:bg-blue-800 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
+                  disabled={
+                    selectedSegment === undefined ||
+                    selectedSegment.is_locked ||
+                    isSaving ||
+                    isApproving
+                  }
+                  onClick={() => void saveTranslation()}
+                  type="button"
+                >
+                  {isSaving ? "Saving…" : "Save translation"}
+                </button>
+                <button
+                  className={`rounded-lg border border-emerald-700 bg-white px-4 py-2.5 text-sm font-semibold text-emerald-800 hover:bg-emerald-50 disabled:cursor-not-allowed disabled:opacity-50 ${FOCUS_RING_CLASS}`}
+                  disabled={
+                    selectedSegment === undefined ||
+                    selectedSegment.is_locked ||
+                    isSaving ||
+                    isApproving
+                  }
+                  onClick={() => void approveTranslation()}
+                  type="button"
+                >
+                  {isApproving
+                    ? selectedSegment?.review_status === "APPROVED"
+                      ? "Reopening…"
+                      : "Approving…"
+                    : selectedSegment?.review_status === "APPROVED"
+                      ? "Reopen translation"
+                      : "Approve translation"}
+                </button>
+              </div>
               {saveMessage !== null ? (
                 <p className="mt-3 text-sm text-emerald-700" role="status">
                   {saveMessage}

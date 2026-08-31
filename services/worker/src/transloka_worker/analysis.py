@@ -3,12 +3,20 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from statistics import median
 from typing import Self
 from uuid import NAMESPACE_URL, UUID, uuid5
 
 from sqlalchemy import delete, select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_core.database import transaction_scope
+from transloka_core.database.models.document_ir import (
+    DocumentBlock,
+    DocumentSegment,
+    ReviewStatus,
+    SegmentStatus,
+    SemanticRole,
+)
 from transloka_core.database.models.documents import (
     Document,
     DocumentClass,
@@ -26,6 +34,19 @@ from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import Project, ProjectStatus
 from transloka_core.storage.local import LocalFileStorage, LocalFileStorageError
 from transloka_documents.analysis import PdfAnalysisResult, analyze_pdf
+from transloka_documents.extraction import (
+    DigitalTextExtractionResult,
+    ExtractedPage,
+    TextGeometry,
+    extract_digital_text,
+)
+from transloka_documents.segmentation import segment_block
+from transloka_documents.structure.classifier import (
+    BlockClassificationContext,
+    BlockType,
+    classify_block,
+)
+from transloka_documents.structure.reading_order import resolve_reading_order
 
 ANALYSIS_COMMAND_SCHEMA = "transloka.analysis.command.v1"
 _ANALYSIS_COMMAND_FIELDS = frozenset({"schema", "project_id", "document_id"})
@@ -103,10 +124,13 @@ class DatabaseAnalysisJobRunner:
             _start_attempt(self._session_factory, job_id, self._worker_identifier)
             with self._storage.open_read(loaded.storage_key) as source:
                 analysis = analyze_pdf(source)
+                source.seek(0)
+                extraction = extract_digital_text(source)
             result = _complete_analysis(
                 self._session_factory,
                 loaded,
                 analysis,
+                extraction,
                 self._worker_identifier,
             )
         except Exception:
@@ -220,8 +244,11 @@ def _complete_analysis(
     session_factory: sessionmaker[Session],
     loaded: LoadedAnalysisJob,
     analysis: PdfAnalysisResult,
+    extraction: DigitalTextExtractionResult,
     worker_identifier: str,
 ) -> AnalysisRunResult:
+    if extraction.page_count != analysis.page_count:
+        raise AnalysisWorkerError("The digital extraction page count is inconsistent.")
     now = _utc_now()
     scanned_page_count = sum(not page.has_text_layer for page in analysis.pages)
     document_class = _document_class(analysis)
@@ -232,37 +259,60 @@ def _complete_analysis(
         if job is None or document is None or project is None:
             raise AnalysisWorkerError("The analysis state disappeared before completion.")
         session.execute(delete(DocumentPage).where(DocumentPage.document_id == document.id))
-        for page in analysis.pages:
-            session.add(
-                DocumentPage(
-                    id=_page_id(document.id, page.page_number),
-                    document_id=document.id,
-                    source_page_number=page.page_number,
-                    logical_page_number=None,
-                    width_points=page.width_points,
-                    height_points=page.height_points,
-                    rotation_degrees=float(page.rotation_degrees),
-                    page_type=(
-                        PageType.DIGITAL.value if page.has_text_layer else PageType.SCANNED.value
-                    ),
-                    page_classification=None,
-                    column_count=0,
-                    reading_direction="LTR",
-                    status=DocumentStatus.ANALYZED.value,
-                    render_file_id=None,
-                    thumbnail_file_id=None,
-                    native_extraction_confidence=None,
-                    ocr_confidence=None,
-                    structure_confidence=None,
-                    metadata_json=json.dumps(
-                        {"has_text_layer": page.has_text_layer},
-                        separators=(",", ":"),
-                        sort_keys=True,
-                    ),
-                    created_at=now,
-                    updated_at=now,
-                )
+        global_block_order = 0
+        global_segment_order = 0
+        block_count = 0
+        segment_count = 0
+        for page, extracted_page in zip(analysis.pages, extraction.pages, strict=True):
+            if extracted_page.page_number != page.page_number:
+                raise AnalysisWorkerError("The digital extraction page order is inconsistent.")
+            page_row = DocumentPage(
+                id=_page_id(document.id, page.page_number),
+                document_id=document.id,
+                source_page_number=page.page_number,
+                logical_page_number=None,
+                width_points=page.width_points,
+                height_points=page.height_points,
+                rotation_degrees=float(page.rotation_degrees),
+                page_type=(
+                    PageType.DIGITAL.value if page.has_text_layer else PageType.SCANNED.value
+                ),
+                page_classification=None,
+                column_count=0,
+                reading_direction="LTR",
+                status=DocumentStatus.ANALYZED.value,
+                render_file_id=None,
+                thumbnail_file_id=None,
+                native_extraction_confidence=None,
+                ocr_confidence=None,
+                structure_confidence=None,
+                metadata_json=json.dumps(
+                    {"has_text_layer": page.has_text_layer},
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                created_at=now,
+                updated_at=now,
             )
+            session.add(page_row)
+            session.flush()
+            if page.has_text_layer and extracted_page.has_text:
+                (
+                    global_block_order,
+                    global_segment_order,
+                    page_block_count,
+                    page_segment_count,
+                ) = _persist_digital_page_ir(
+                    session,
+                    project,
+                    page_row,
+                    extracted_page,
+                    global_block_order,
+                    global_segment_order,
+                    now,
+                )
+                block_count += page_block_count
+                segment_count += page_segment_count
         document.title = analysis.title
         document.author = analysis.author
         document.document_class = document_class.value
@@ -288,6 +338,8 @@ def _complete_analysis(
                 "document_id": document.id,
                 "page_count": analysis.page_count,
                 "scanned_page_count": scanned_page_count,
+                "block_count": block_count,
+                "segment_count": segment_count,
                 "schema": "transloka.analysis.job.v1",
             },
             separators=(",", ":"),
@@ -310,6 +362,147 @@ def _complete_analysis(
         page_count=analysis.page_count,
         scanned_page_count=scanned_page_count,
     )
+
+
+def _persist_digital_page_ir(
+    session: Session,
+    project: Project,
+    page_row: DocumentPage,
+    page: ExtractedPage,
+    global_block_order: int,
+    global_segment_order: int,
+    now: str,
+) -> tuple[int, int, int, int]:
+    reading_order = resolve_reading_order(page)
+    font_sizes = tuple(
+        block.font_size
+        for block in page.block_candidates
+        if block.font_size is not None and block.font_size > 0
+    )
+    body_font_size = median(font_sizes) if font_sizes else None
+    confidences: list[float] = []
+    segment_rows: list[DocumentSegment] = []
+    segment_count = 0
+
+    page_row.column_count = reading_order.column_count
+    page_row.native_extraction_confidence = 1.0
+    for assignment in reading_order.assignments:
+        candidate = page.block_candidates[assignment.block_index]
+        classification = classify_block(
+            candidate,
+            BlockClassificationContext(
+                page_width=page.width_points,
+                page_height=page.height_points,
+                region=assignment.region,
+                body_font_size=body_font_size,
+                is_first_content_block=assignment.page_reading_order == 1,
+            ),
+        )
+        block_id = _block_id(page_row.id, assignment.block_index)
+        global_block_order += 1
+        confidences.append(classification.confidence)
+        session.add(
+            DocumentBlock(
+                id=block_id,
+                page_id=page_row.id,
+                section_id=None,
+                parent_block_id=None,
+                block_type=classification.block_type.value,
+                semantic_role=_semantic_role(classification.block_type),
+                page_reading_order=assignment.page_reading_order,
+                global_reading_order=global_block_order,
+                source_text=candidate.source_text,
+                normalized_source_text=candidate.normalized_text,
+                source_geometry_json=_geometry_json(candidate.geometry),
+                target_geometry_json=None,
+                style_json=_style_json(candidate.font_name, candidate.font_size),
+                detail_json=None,
+                status=DocumentStatus.STRUCTURED.value,
+                confidence=classification.confidence,
+                created_at=now,
+                updated_at=now,
+            )
+        )
+        for segment in segment_block(block_id, candidate, classification.block_type):
+            global_segment_order += 1
+            segment_count += 1
+            segment_rows.append(
+                DocumentSegment(
+                    id=segment.segment_id,
+                    block_id=block_id,
+                    section_id=None,
+                    segment_order=segment.segment_order,
+                    global_order=global_segment_order,
+                    source_text=segment.source_text,
+                    native_text=segment.source_text,
+                    ocr_text=None,
+                    resolved_source_text=segment.source_text,
+                    normalized_source_text=segment.normalized_source_text,
+                    protected_source_text=None,
+                    machine_translation=None,
+                    reviewed_translation=None,
+                    final_text=None,
+                    source_language=project.source_language,
+                    target_language=project.target_language,
+                    status=(
+                        SegmentStatus.READY_FOR_TRANSLATION.value
+                        if segment.is_translatable
+                        else SegmentStatus.NOT_TRANSLATABLE.value
+                    ),
+                    review_status=ReviewStatus.NOT_REVIEWED.value,
+                    is_locked=0,
+                    current_revision=0,
+                    confidence_overall=classification.confidence,
+                    confidence_json=None,
+                    translation_settings_hash=None,
+                    created_at=now,
+                    updated_at=now,
+                )
+            )
+
+    session.flush()
+    session.add_all(segment_rows)
+    page_row.structure_confidence = sum(confidences) / len(confidences) if confidences else None
+    page_row.status = DocumentStatus.STRUCTURED.value
+    return global_block_order, global_segment_order, len(reading_order.assignments), segment_count
+
+
+def _geometry_json(geometry: TextGeometry) -> str:
+    return json.dumps(
+        {
+            "coordinate_system": geometry.coordinate_system,
+            "height": geometry.height,
+            "width": geometry.width,
+            "x": geometry.x,
+            "y": geometry.y,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _style_json(font_name: str | None, font_size: float | None) -> str | None:
+    if font_name is None and font_size is None:
+        return None
+    return json.dumps(
+        {"font_name": font_name, "font_size": font_size},
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+
+
+def _semantic_role(block_type: BlockType) -> str | None:
+    return {
+        BlockType.DOCUMENT_TITLE: SemanticRole.TITLE.value,
+        BlockType.HEADING_1: SemanticRole.SECTION_TITLE.value,
+        BlockType.PARAGRAPH: SemanticRole.BODY_TEXT.value,
+        BlockType.LIST: SemanticRole.BODY_TEXT.value,
+        BlockType.CAPTION: SemanticRole.CAPTION.value,
+        BlockType.CODE_BLOCK: SemanticRole.CODE.value,
+        BlockType.HEADER: SemanticRole.NAVIGATION.value,
+        BlockType.FOOTER: SemanticRole.NAVIGATION.value,
+        BlockType.PAGE_NUMBER: SemanticRole.NAVIGATION.value,
+    }.get(block_type)
 
 
 def _fail_analysis(
@@ -378,6 +571,10 @@ def _document_class(analysis: PdfAnalysisResult) -> DocumentClass:
 
 def _page_id(document_id: str, page_number: int) -> str:
     return f"pag_{uuid5(NAMESPACE_URL, f'transloka:page:{document_id}:{page_number}')}"
+
+
+def _block_id(page_id: str, block_index: int) -> str:
+    return f"blk_{uuid5(NAMESPACE_URL, f'transloka:block:{page_id}:{block_index}')}"
 
 
 def _validate_identifier(value: str, prefix: str) -> None:

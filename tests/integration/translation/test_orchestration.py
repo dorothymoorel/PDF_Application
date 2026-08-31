@@ -103,6 +103,27 @@ def test_protection_and_restoration_preserve_url() -> None:
     )
 
 
+def test_protection_uses_unique_placeholders_across_batch_segments() -> None:
+    provider = _ProtectedEchoProvider()
+    store = InMemoryTranslationRunStore()
+    orchestrator = TranslationOrchestrator(provider, store)
+
+    result = asyncio.run(
+        orchestrator.run(
+            _operation(
+                _segment("s1", "Use API one in the document workflow", order=0),
+                _segment("s2", "Use API two in the document workflow", order=1),
+            )
+        )
+    )
+
+    assert result.status is TranslationRunStatus.COMPLETED_WITH_WARNINGS
+    assert [item.translated_text_restored for item in store.results] == [
+        "Terjemahkan Use API one in the document workflow",
+        "Terjemahkan Use API two in the document workflow",
+    ]
+
+
 class _ScriptedProvider:
     def __init__(self, responses: list[str | TranslationProviderError]) -> None:
         self._responses = responses

@@ -19,7 +19,13 @@ import type {
 } from "../../src/features/backups/backup-panel";
 import type { ExportRecord } from "../../src/features/exports/types";
 import type { OCRReviewResponse, SourceResolutionInput, SourceResolutionResponse } from "../../src/features/ocr/types";
-import type { ReviewPageResponse, SaveSegmentTranslationInput, SegmentDataResponse } from "../../src/features/editor/types";
+import type {
+  ApproveSegmentInput,
+  ReviewPageResponse,
+  SaveSegmentTranslationInput,
+  SegmentDataResponse,
+  UnapproveSegmentInput,
+} from "../../src/features/editor/types";
 import type { ReviewQueueQueryFilters, ReviewQueueResponse } from "../../src/features/review-queue/types";
 
 type FetchImplementation = (input: string | URL, init?: RequestInit) => Promise<Response>;
@@ -418,6 +424,30 @@ export function createWorkspaceClient(options: WorkspaceClientOptions = {}) {
       request(
         `/api/v1/segments/${encodeURIComponent(segmentId)}/translation`,
         "PATCH",
+        isSegmentDataResponse,
+        requestOptions,
+        input,
+      ),
+    approveSegment: (
+      segmentId: string,
+      input: ApproveSegmentInput,
+      requestOptions: RequestOptions = {},
+    ) =>
+      request(
+        `/api/v1/segments/${encodeURIComponent(segmentId)}/approve`,
+        "POST",
+        isSegmentDataResponse,
+        requestOptions,
+        input,
+      ),
+    unapproveSegment: (
+      segmentId: string,
+      input: UnapproveSegmentInput,
+      requestOptions: RequestOptions = {},
+    ) =>
+      request(
+        `/api/v1/segments/${encodeURIComponent(segmentId)}/unapprove`,
+        "POST",
         isSegmentDataResponse,
         requestOptions,
         input,

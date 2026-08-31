@@ -138,17 +138,23 @@ class OverlayPageGenerator:
         return _writer_bytes(writer)
 
     def _draw_text(self, canvas: _Canvas, text: OverlayText) -> None:
+        from reportlab.pdfbase.pdfmetrics import getDescent  # type: ignore[import-untyped]
+
         canvas.saveState()
         canvas.setFillColorRGB(*text.color)
         canvas.setFont(text.font_name, text.font_size_pt)
         leading = text.leading_pt or text.font_size_pt * 1.2
         lines = _wrap_text(canvas, text)
-        required_height = len(lines) * leading
+        required_height = text.font_size_pt + (len(lines) - 1) * leading
         if text.height is not None and required_height > text.height + 0.01:
             raise OverlayLayoutError(
                 f"Text {text.text_id or '<anonymous>'} exceeds its declared height."
             )
-        baseline = text.y + text.height - text.font_size_pt if text.height is not None else text.y
+        baseline = (
+            text.y + text.height - text.font_size_pt - getDescent(text.font_name, text.font_size_pt)
+            if text.height is not None
+            else text.y
+        )
         for line in lines:
             line_width = canvas.stringWidth(line, text.font_name, text.font_size_pt)
             if text.width is not None and line_width > text.width + 0.01:
@@ -288,6 +294,23 @@ def _wrap_text(canvas: _Canvas, text: OverlayText) -> tuple[str, ...]:
     paragraphs = normalized.split("\n")
     if text.width is None:
         return tuple(paragraphs)
+    lines = _wrap_paragraphs(canvas, text, paragraphs)
+    if text.height is None or len(paragraphs) < 2 or any(not item.strip() for item in paragraphs):
+        return lines
+    leading = text.leading_pt or text.font_size_pt * 1.2
+    maximum_lines = max(1, math.floor((text.height - text.font_size_pt + 0.01) / leading) + 1)
+    if len(lines) <= maximum_lines:
+        return lines
+    rebalanced = _wrap_paragraphs(canvas, text, (" ".join(paragraphs),))
+    return rebalanced if len(rebalanced) <= maximum_lines else lines
+
+
+def _wrap_paragraphs(
+    canvas: _Canvas,
+    text: OverlayText,
+    paragraphs: Sequence[str],
+) -> tuple[str, ...]:
+    assert text.width is not None
     lines: list[str] = []
     for paragraph in paragraphs:
         words = paragraph.split()

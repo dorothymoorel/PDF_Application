@@ -114,9 +114,11 @@ class ProtectedContentDetector:
         self,
         text: str,
         glossary_rules: Iterable[MatchRule] = (),
+        *,
+        reserved_placeholders: Iterable[str] = (),
     ) -> ProtectedDocument:
         detected = self.detect(text, glossary_rules)
-        generator = PlaceholderGenerator(text)
+        generator = PlaceholderGenerator("\n".join((text, *reserved_placeholders)))
         inventory: list[ProtectedInventoryItem] = []
         protected_parts: list[str] = []
         source_offset = 0

@@ -11,6 +11,16 @@ export type SaveSegmentTranslationInput = {
   reviewed_translation: string;
 };
 
+export type ApproveSegmentInput = {
+  expected_revision: number;
+  lock_after_approval: boolean;
+};
+
+export type UnapproveSegmentInput = {
+  expected_revision: number;
+  reason?: string;
+};
+
 export type SegmentDataResponse = {
   data: ReviewSegment;
   meta: components["schemas"]["ResponseMeta"];
@@ -26,6 +36,18 @@ export interface ReviewEditorClient {
     this: void,
     segmentId: string,
     input: SaveSegmentTranslationInput,
+    options?: { signal?: AbortSignal },
+  ): Promise<ApiResult<SegmentDataResponse>>;
+  approveSegment(
+    this: void,
+    segmentId: string,
+    input: ApproveSegmentInput,
+    options?: { signal?: AbortSignal },
+  ): Promise<ApiResult<SegmentDataResponse>>;
+  unapproveSegment(
+    this: void,
+    segmentId: string,
+    input: UnapproveSegmentInput,
     options?: { signal?: AbortSignal },
   ): Promise<ApiResult<SegmentDataResponse>>;
 }

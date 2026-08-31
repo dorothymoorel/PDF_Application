@@ -232,10 +232,15 @@ class TranslationOrchestrator:
         requests: list[TranslationRequestSegment] = []
         placeholders: list[TranslationPlaceholder] = []
         inventories: dict[str, tuple[ProtectedInventoryItem, ...]] = {}
+        reserved_placeholders: list[str] = []
         for segment in batch.segments:
-            protected = self._detector.protect(segment.source_text)
+            protected = self._detector.protect(
+                segment.source_text,
+                reserved_placeholders=reserved_placeholders,
+            )
             inventories[segment.segment_id] = protected.inventory
             requests.append(TranslationRequestSegment(segment.segment_id, protected.text))
+            reserved_placeholders.extend(item.placeholder for item in protected.inventory)
             placeholders.extend(
                 TranslationPlaceholder(
                     segment_id=segment.segment_id,
