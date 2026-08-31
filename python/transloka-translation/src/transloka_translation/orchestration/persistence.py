@@ -9,9 +9,27 @@ from typing import Any, Protocol, cast
 from uuid import uuid4
 
 from transloka_translation.batching import TranslationBatch
-from transloka_translation.validation import ValidationReport
+from transloka_translation.validation import (
+    ValidationCode,
+    ValidationIssue,
+    ValidationReport,
+    ValidationSeverity,
+)
 
 from .models import TranslationOperation, TranslationRunStatus
+
+_VALIDATOR_TYPE_BY_VALIDATION_CODE: dict[ValidationCode, str] = {
+    ValidationCode.SEGMENT_MAPPING_MISMATCH: "SEGMENT_MAPPING",
+    ValidationCode.PLACEHOLDER_MISMATCH: "PLACEHOLDER_INTEGRITY",
+    ValidationCode.NUMBER_MISMATCH: "NUMERICAL_INTEGRITY",
+    ValidationCode.URL_MISMATCH: "URL_INTEGRITY",
+    ValidationCode.CODE_MISMATCH: "CODE_INTEGRITY",
+    ValidationCode.CITATION_MISMATCH: "CITATION_INTEGRITY",
+    ValidationCode.TARGET_LANGUAGE_MISMATCH: "LANGUAGE",
+    ValidationCode.EMPTY_TRANSLATION: "SEMANTIC",
+    ValidationCode.SUSPICIOUS_LENGTH: "LENGTH_RATIO",
+    ValidationCode.NEGATION_MISMATCH: "SEMANTIC",
+}
 
 
 def operation_fingerprint(operation: TranslationOperation) -> str:
@@ -349,7 +367,6 @@ class SqlAlchemyTranslationRunStore:
             SegmentTranslationStatus,
             TranslationValidation,
             TranslationValidationStatus,
-            ValidatorType,
         )
 
         result_id = str(uuid4())
@@ -389,19 +406,15 @@ class SqlAlchemyTranslationRunStore:
                 else ReviewStatus.NOT_REVIEWED.value
             )
             segment.updated_at = _now()
-            for issue in report.issues:
-                try:
-                    validator_type = ValidatorType[issue.code.name]
-                except KeyError:
-                    validator_type = ValidatorType.SEMANTIC
+            for validator_type, status, details_json in _group_validation_issues(report.issues):
                 session.add(
                     TranslationValidation(
                         id=str(uuid4()),
                         segment_translation_id=result_id,
-                        validator_type=validator_type.value,
-                        status=issue.severity.value,
+                        validator_type=validator_type,
+                        status=status,
                         score=None,
-                        details_json=json.dumps({"message": issue.message}),
+                        details_json=details_json,
                         created_at=_now(),
                     )
                 )
@@ -449,3 +462,43 @@ def _settings_with_fingerprint(settings_json: str, fingerprint: str) -> str:
         value = {"value": value}
     value["_operation_fingerprint"] = fingerprint
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _group_validation_issues(
+    issues: Iterable[ValidationIssue],
+) -> tuple[tuple[str, str, str], ...]:
+    grouped: dict[str, list[ValidationIssue]] = {}
+    for issue in issues:
+        validator_type = _VALIDATOR_TYPE_BY_VALIDATION_CODE.get(issue.code, "SEMANTIC")
+        grouped.setdefault(validator_type, []).append(issue)
+
+    return tuple(
+        (
+            validator_type,
+            _highest_validation_severity(group).value,
+            json.dumps(
+                {
+                    "issues": [
+                        {
+                            "code": issue.code.value,
+                            "severity": issue.severity.value,
+                            "message": issue.message,
+                        }
+                        for issue in group
+                    ]
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+        for validator_type, group in grouped.items()
+    )
+
+
+def _highest_validation_severity(issues: Iterable[ValidationIssue]) -> ValidationSeverity:
+    return (
+        ValidationSeverity.CRITICAL
+        if any(issue.severity is ValidationSeverity.CRITICAL for issue in issues)
+        else ValidationSeverity.WARNING
+    )

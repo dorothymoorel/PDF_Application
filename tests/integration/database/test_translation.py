@@ -6,7 +6,7 @@ from uuid import UUID
 import pytest
 from alembic import command
 from alembic.config import Config
-from sqlalchemy import Engine, inspect, text
+from sqlalchemy import Engine, inspect, select, text
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_core.database import create_session_factory, create_sqlite_engine, transaction_scope
@@ -19,6 +19,13 @@ from transloka_core.database.models.translation import (
     TranslationValidation,
 )
 from transloka_core.storage import resolve_local_data_directories
+from transloka_translation.orchestration import SqlAlchemyTranslationRunStore, StoredAttempt
+from transloka_translation.validation import (
+    ValidationCode,
+    ValidationIssue,
+    ValidationReport,
+    ValidationSeverity,
+)
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
 ALEMBIC_CONFIGURATION = REPOSITORY_ROOT / "alembic.ini"
@@ -351,6 +358,81 @@ def test_batch_segment_join_and_attempt_number_are_unique(
     with pytest.raises(IntegrityError):
         with transaction_scope(factory) as session:
             session.add(_attempt(attempt_id=SECOND_ATTEMPT_ID))
+
+
+def test_translation_result_groups_duplicate_validation_types(
+    translation_database: tuple[Path, Engine, sessionmaker[Session]],
+) -> None:
+    _root, _engine, factory = translation_database
+    with transaction_scope(factory) as session:
+        session.add(_batch())
+        session.flush()
+        session.add(
+            TranslationBatchSegment(batch_id=BATCH_ID, segment_id=SEGMENT_ID, segment_order=0)
+        )
+        session.add(_attempt())
+
+    store = SqlAlchemyTranslationRunStore(factory)
+    stored = store.record_result(
+        StoredAttempt(ATTEMPT_ID, 1, "COMPLETED", (SEGMENT_ID,)),
+        SEGMENT_ID,
+        "Tidak ada penolakan.",
+        "Tidak ada penolakan.",
+        ValidationReport(
+            issues=(
+                ValidationIssue(
+                    ValidationCode.NEGATION_MISMATCH,
+                    ValidationSeverity.WARNING,
+                    SEGMENT_ID,
+                    "Translated text may have changed source negation.",
+                ),
+                ValidationIssue(
+                    ValidationCode.NEGATION_MISMATCH,
+                    ValidationSeverity.WARNING,
+                    SEGMENT_ID,
+                    "Translated text may have changed source negation.",
+                ),
+                ValidationIssue(
+                    ValidationCode.NUMBER_MISMATCH,
+                    ValidationSeverity.WARNING,
+                    SEGMENT_ID,
+                    "Translated text may have changed source number inventory.",
+                ),
+            )
+        ),
+    )
+
+    with factory() as session:
+        result_id = session.scalar(
+            select(SegmentTranslation.id).where(SegmentTranslation.segment_id == SEGMENT_ID)
+        )
+        assert result_id is not None
+        validations = session.scalars(
+            select(TranslationValidation)
+            .where(TranslationValidation.segment_translation_id == result_id)
+            .order_by(TranslationValidation.validator_type)
+        ).all()
+
+    assert stored.validation_status == "PASSED_WITH_WARNINGS"
+    assert [(row.validator_type, row.status) for row in validations] == [
+        ("NUMERICAL_INTEGRITY", "WARNING"),
+        ("SEMANTIC", "WARNING"),
+    ]
+    semantic = next(row for row in validations if row.validator_type == "SEMANTIC")
+    assert json.loads(semantic.details_json or "{}") == {
+        "issues": [
+            {
+                "code": "NEGATION_MISMATCH",
+                "message": "Translated text may have changed source negation.",
+                "severity": "WARNING",
+            },
+            {
+                "code": "NEGATION_MISMATCH",
+                "message": "Translated text may have changed source negation.",
+                "severity": "WARNING",
+            },
+        ]
+    }
 
 
 def test_translation_result_is_append_only_across_attempts(
