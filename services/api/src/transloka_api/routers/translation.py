@@ -63,6 +63,10 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
         "description": "Translation readiness or job state prevents the operation.",
         "model": ErrorResponse,
     },
+    429: {
+        "description": "An active full-document translation already exists.",
+        "model": ErrorResponse,
+    },
     422: {"description": "The request contains invalid values.", "model": ErrorResponse},
     500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
 }
@@ -269,6 +273,15 @@ async def start_translation(
             run_semantic_validation=payload.run_semantic_validation,
             glossary_snapshot_id=snapshot.id,
         )
+        if payload.scope == "FULL_DOCUMENT" and _idempotent_job(session, idempotency_key) is None:
+            active_job = _active_full_document_job(session, project_id, document_id)
+            if active_job is not None:
+                raise TransLokaError(
+                    code="TRANSLATION_ALREADY_RUNNING",
+                    message="A full-document translation is already running for the active document.",
+                    status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                    details={"job_id": active_job.id},
+                )
         result = JobDispatchService(session_factory, queue).dispatch(
             job_type=JobType.TRANSLATE_DOCUMENT,
             idempotency_key=idempotency_key,
@@ -654,6 +667,38 @@ def _latest_job(session: Session, project_id: str) -> ApplicationJob | None:
         .where(
             ApplicationJob.project_id == project_id,
             ApplicationJob.job_type == JobType.TRANSLATE_DOCUMENT.value,
+        )
+        .order_by(ApplicationJob.created_at.desc(), ApplicationJob.id.desc())
+        .limit(1)
+    )
+
+
+def _idempotent_job(session: Session, idempotency_key: str) -> ApplicationJob | None:
+    return session.scalar(
+        select(ApplicationJob).where(ApplicationJob.idempotency_key == idempotency_key).limit(1)
+    )
+
+
+def _active_full_document_job(
+    session: Session,
+    project_id: str,
+    document_id: str,
+) -> ApplicationJob | None:
+    return session.scalar(
+        select(ApplicationJob)
+        .where(
+            ApplicationJob.project_id == project_id,
+            ApplicationJob.document_id == document_id,
+            ApplicationJob.job_type == JobType.TRANSLATE_DOCUMENT.value,
+            ApplicationJob.status.in_(
+                (
+                    JobStatus.QUEUED.value,
+                    JobStatus.RUNNING.value,
+                    JobStatus.RETRYING.value,
+                    JobStatus.CANCELLATION_REQUESTED.value,
+                )
+            ),
+            func.json_extract(ApplicationJob.payload_json, "$.scope") == "FULL_DOCUMENT",
         )
         .order_by(ApplicationJob.created_at.desc(), ApplicationJob.id.desc())
         .limit(1)

@@ -408,6 +408,15 @@ def test_translation_start_is_idempotent_and_readiness_blocks_start(
     assert repeated.json()["data"] == first.json()["data"]
 
     job_id = first.json()["data"]["job_id"]
+    duplicate = client.post(
+        start_path,
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-start-duplicate"},
+        json=body,
+    )
+    assert duplicate.status_code == 429
+    assert duplicate.json()["error"]["code"] == "TRANSLATION_ALREADY_RUNNING"
+    assert duplicate.json()["error"]["details"] == {"job_id": job_id}
+
     with factory() as session:
         row = session.get(ApplicationJob, job_id)
         assert row is not None

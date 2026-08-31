@@ -200,6 +200,7 @@ class OllamaTranslationProvider:
             {
                 "model": self._require_model_name(),
                 "stream": False,
+                "think": False,
                 "format": response_schema,
                 "messages": [message.to_dict() for message in prompt.messages],
                 "options": {"temperature": self._temperature},

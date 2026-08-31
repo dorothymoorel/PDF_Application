@@ -310,6 +310,7 @@ def test_translation_request_posts_structured_chat_payload() -> None:
     payload = fake.request_bodies[0]
     assert payload["model"] == "model-a:latest"
     assert payload["stream"] is False
+    assert payload["think"] is False
     assert payload["options"] == {"temperature": 0.25}
     messages = payload["messages"]
     assert isinstance(messages, list)
