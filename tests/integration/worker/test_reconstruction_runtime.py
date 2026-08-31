@@ -208,22 +208,25 @@ def test_overlay_renderer_preserves_source_font_name_and_size() -> None:
     )
 
     result = ReconstructionRenderer().render(loaded)
-    observed: list[tuple[str, float, str]] = []
+    observed: list[tuple[str, float, str, float]] = []
 
     def visit_text(
         text: str,
         _cm: list[float],
-        _tm: list[float],
+        tm: list[float],
         font: dict[str, object] | None,
         size: float,
     ) -> None:
         if text.strip():
-            observed.append((text.strip(), size, str((font or {}).get("/BaseFont"))))
+            observed.append((text.strip(), size, str((font or {}).get("/BaseFont")), tm[4]))
 
     PdfReader(BytesIO(result.pdf_bytes)).pages[0].extract_text(visitor_text=visit_text)
 
-    assert (translated, 20.0, "/Helvetica-Bold") in observed
-    assert ("Halaman 1 dari 2", 10.0, "/Helvetica") in observed
+    assert (translated, 20.0, "/Helvetica-Bold", 20.0) in observed
+    assert any(
+        text == "Halaman 1 dari 2" and size == 10.0 and font == "/Helvetica"
+        for text, size, font, _x in observed
+    )
 
 
 def test_overlay_renderer_preserves_source_line_spacing() -> None:
