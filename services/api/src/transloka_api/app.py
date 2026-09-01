@@ -66,6 +66,7 @@ from transloka_api.services.benchmarks import (
     ProductionFullBenchmarkRunner,
     ProductionQuickBenchmarkRunner,
 )
+from transloka_api.startup import recover_stale_jobs
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -188,6 +189,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
             coordinator=coordinator,
         )
         try:
+            recover_stale_jobs(session_factory, effective_settings.data_directories)
             yield
         finally:
             backup_queue_owner.close()
