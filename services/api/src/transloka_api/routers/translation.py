@@ -681,7 +681,19 @@ def _latest_job(session: Session, project_id: str) -> ApplicationJob | None:
                     0,
                 ),
                 (ApplicationJob.status == JobStatus.QUEUED.value, 1),
-                else_=2,
+                (
+                    ApplicationJob.status.in_(
+                        (
+                            JobStatus.STALE.value,
+                            JobStatus.FAILED.value,
+                            JobStatus.PARTIALLY_COMPLETED.value,
+                            JobStatus.COMPLETED_WITH_WARNINGS.value,
+                        )
+                    ),
+                    2,
+                ),
+                (ApplicationJob.status == JobStatus.CANCELLED.value, 3),
+                else_=4,
             ),
             ApplicationJob.created_at.desc(),
             ApplicationJob.id.desc(),

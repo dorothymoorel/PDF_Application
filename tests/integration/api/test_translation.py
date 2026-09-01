@@ -562,6 +562,68 @@ def test_translation_cancel_and_retry_failed(
     assert status_response.json()["data"]["active_job_id"] == start.json()["data"]["job_id"]
 
 
+def test_translation_retry_prefers_stale_job_over_newer_cancelled_job(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = translation_api
+    start = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-stale-retry"},
+        json={"model_id": MODEL_ID, "batch_size": 8},
+    )
+    stale_job_id = start.json()["data"]["job_id"]
+    with transaction_scope(factory) as session:
+        stale_job = session.get(ApplicationJob, stale_job_id)
+        assert stale_job is not None
+        stale_job.status = JobStatus.STALE.value
+        stale_job.current_stage = JobStatus.STALE.value
+        stale_job.completed_at = "2026-08-19T00:00:00.000Z"
+        session.add(
+            ApplicationJob(
+                id=_id("job_", 113),
+                project_id=project_id,
+                document_id=DOCUMENT_ID,
+                parent_job_id=None,
+                job_type=JobType.TRANSLATE_DOCUMENT.value,
+                queue_name="translation",
+                status=JobStatus.CANCELLED.value,
+                progress=0.0,
+                current_stage=JobStatus.CANCELLED.value,
+                idempotency_key="translation-newer-cancelled-status",
+                payload_json=stale_job.payload_json,
+                result_json=None,
+                retry_count=0,
+                max_retries=3,
+                error_code=None,
+                error_message=None,
+                created_at="2026-08-19T00:00:00.000Z",
+                queued_at=None,
+                started_at=None,
+                completed_at="2026-08-19T00:00:00.000Z",
+                cancelled_at="2026-08-19T00:00:00.000Z",
+                heartbeat_at=None,
+            )
+        )
+
+    retried = client.post(
+        f"/api/v1/projects/{project_id}/translation/retry-failed",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-stale-retry-1"},
+        json={"use_smaller_batch": True, "use_selected_model": True},
+    )
+
+    assert retried.status_code == 202
+    assert retried.json()["data"]["active_job_id"] == stale_job_id
+    queue = cast(RecordingQueue, application.state.translation_queue)
+    assert queue.enqueued == [stale_job_id, stale_job_id]
+    with factory() as session:
+        stale_job = session.get(ApplicationJob, stale_job_id)
+        cancelled_job = session.get(ApplicationJob, _id("job_", 113))
+        assert stale_job is not None
+        assert stale_job.status == JobStatus.RETRYING.value
+        assert cancelled_job is not None
+        assert cancelled_job.status == JobStatus.CANCELLED.value
+
+
 def test_translation_retry_queue_failure_persists_terminal_state(
     translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
 ) -> None:
