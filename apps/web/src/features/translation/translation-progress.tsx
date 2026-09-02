@@ -31,10 +31,12 @@ export function TranslationProgress({
   client = defaultClient,
   pollIntervalMs = 2_000,
   projectId,
+  refreshToken = 0,
 }: Readonly<{
   client?: TranslationUiClient;
   pollIntervalMs?: number;
   projectId: string;
+  refreshToken?: number;
 }>) {
   const [status, setStatus] = useState<TranslationStatus | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -83,7 +85,7 @@ export function TranslationProgress({
       }
       controller.abort();
     };
-  }, [client, pollIntervalMs, projectId, refreshVersion]);
+  }, [client, pollIntervalMs, projectId, refreshToken, refreshVersion]);
 
   const cancel = async () => {
     if (status === null || pendingAction !== null || isTerminalTranslationStatus(status.status)) {

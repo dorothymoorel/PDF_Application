@@ -218,6 +218,7 @@ export function ProjectWorkspace({
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refresh, setRefresh] = useState(0);
+  const [translationRefreshToken, setTranslationRefreshToken] = useState(0);
 
   const loadModels = useCallback(async () => {
     const result = await modelsClient.listModels();
@@ -369,8 +370,17 @@ export function ProjectWorkspace({
               void loadModels();
             }}
           />
-          <TranslationSettings client={client} models={models} projectId={projectId} />
-          <TranslationProgress client={client} projectId={projectId} />
+          <TranslationSettings
+            client={client}
+            models={models}
+            onStarted={() => setTranslationRefreshToken((value) => value + 1)}
+            projectId={projectId}
+          />
+          <TranslationProgress
+            client={client}
+            projectId={projectId}
+            refreshToken={translationRefreshToken}
+          />
         </div>
       ) : null}
       {tab === "review" && document !== null ? (

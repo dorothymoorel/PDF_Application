@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TranslationProgress } from "./translation-progress";
@@ -79,6 +79,30 @@ describe("translation progress", () => {
       expect.stringContaining("translation-ui-retry-prj_1-"),
       { use_smaller_batch: true, use_selected_model: true },
     );
+  });
+
+  it("refreshes a stale terminal result when a sibling starts a new job", async () => {
+    const failed = statusWith({ status: "FAILED", active_job_id: "job_old", failed_segments: 2 });
+    const running = statusWith({ status: "RUNNING", active_job_id: "job_new", completed_segments: 9, progress: 0.45 });
+    const client: TranslationUiClient = {
+      ...clientWith(failed),
+      getTranslationStatus: vi
+        .fn()
+        .mockResolvedValueOnce(result(failed))
+        .mockResolvedValueOnce(result(running)),
+    };
+    const view = render(
+      <TranslationProgress client={client} pollIntervalMs={10_000} projectId="prj_1" refreshToken={0} />,
+    );
+    await settle();
+    expect(screen.getByText("Failed")).toBeTruthy();
+
+    view.rerender(
+      <TranslationProgress client={client} pollIntervalMs={10_000} projectId="prj_1" refreshToken={1} />,
+    );
+
+    await waitFor(() => expect(screen.getByText("Running")).toBeTruthy());
+    expect(screen.getByText("9 of 20 segments")).toBeTruthy();
   });
 
   it("renders completed state without active actions", async () => {
