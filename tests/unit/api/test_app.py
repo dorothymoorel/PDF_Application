@@ -1,4 +1,6 @@
+import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -6,6 +8,33 @@ from pydantic import ValidationError
 from transloka_api import app as app_module
 from transloka_api.app import create_app
 from transloka_api.config import DEFAULT_MAX_UPLOAD_BYTES, Settings
+from transloka_documents.ocr.base import OCRHealth, OCRHealthStatus
+from transloka_translation.providers import ProviderHealth, ProviderHealthStatus
+from transloka_worker.health import PersistedWorkerHeartbeat, WorkerStatus
+
+
+class HealthyOllamaProvider:
+    async def health_check(self) -> ProviderHealth:
+        return ProviderHealth(status=ProviderHealthStatus.AVAILABLE, version="test")
+
+
+class HealthyOCRProvider:
+    def health_check(self) -> OCRHealth:
+        return OCRHealth(status=OCRHealthStatus.AVAILABLE, version="test")
+
+
+class StaticWorkerHeartbeatStore:
+    def __init__(self, status: WorkerStatus = WorkerStatus.RUNNING) -> None:
+        self._status = status
+
+    def read(self) -> PersistedWorkerHeartbeat:
+        return PersistedWorkerHeartbeat(
+            worker_name="transloka-worker",
+            worker_identifier="health-test-worker",
+            status=self._status,
+            sequence=1,
+            recorded_at=time.time(),
+        )
 
 
 def test_app_creation() -> None:
@@ -75,11 +104,16 @@ def test_invalid_upload_limit_fails_closed(
         Settings()
 
 
-def test_health_responses() -> None:
-    client = TestClient(create_app(Settings(host="127.0.0.1", port=8000)))
-
-    health = client.get("/health")
-    system_health = client.get("/api/v1/system/health")
+def test_health_responses(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path / "system health"))
+    monkeypatch.setattr(app_module, "recover_stale_jobs", lambda *_args: ())
+    application = create_app(Settings(host="127.0.0.1", port=8000))
+    with TestClient(application) as client:
+        application.state.ollama_provider = HealthyOllamaProvider()
+        application.state.ocr_health_provider = HealthyOCRProvider()
+        application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore()
+        health = client.get("/health")
+        system_health = client.get("/api/v1/system/health")
 
     assert health.status_code == 200
     assert health.json() == {
@@ -88,18 +122,62 @@ def test_health_responses() -> None:
         "version": "0.1.0",
     }
     assert system_health.status_code == 200
-    assert system_health.json() == {
+    system_body = system_health.json()
+    assert system_body == {
         "data": {
-            "status": "DEGRADED",
+            "status": "HEALTHY",
             "components": {
-                "database": {"status": "UNAVAILABLE"},
-                "filesystem": {"status": "UNAVAILABLE"},
-                "worker": {"status": "UNAVAILABLE"},
-                "ollama": {"status": "UNAVAILABLE"},
-                "ocr": {"status": "UNAVAILABLE"},
+                "database": {"status": "AVAILABLE"},
+                "filesystem": {"status": "AVAILABLE"},
+                "worker": {"status": "AVAILABLE"},
+                "ollama": {"status": "AVAILABLE"},
+                "ocr": {"status": "AVAILABLE"},
             },
-        }
+        },
+        "meta": {"request_id": system_health.headers["X-Request-ID"]},
     }
+
+
+def test_system_health_is_degraded_when_worker_is_stopped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path / "degraded health"))
+    monkeypatch.setattr(app_module, "recover_stale_jobs", lambda *_args: ())
+    application = create_app()
+    with TestClient(application) as client:
+        application.state.ollama_provider = HealthyOllamaProvider()
+        application.state.ocr_health_provider = HealthyOCRProvider()
+        application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore(WorkerStatus.STOPPED)
+
+        response = client.get("/api/v1/system/health")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "DEGRADED"
+    assert response.json()["data"]["components"]["worker"] == {"status": "UNAVAILABLE"}
+
+
+def test_system_health_is_unhealthy_when_database_probe_fails(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path / "unhealthy health"))
+    monkeypatch.setattr(app_module, "recover_stale_jobs", lambda *_args: ())
+    application = create_app()
+    with TestClient(application) as client:
+        application.state.ollama_provider = HealthyOllamaProvider()
+        application.state.ocr_health_provider = HealthyOCRProvider()
+        application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore()
+
+        def unavailable_session_factory() -> Any:
+            raise OSError("database unavailable")
+
+        application.state.session_factory = unavailable_session_factory
+        response = client.get("/api/v1/system/health")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["status"] == "UNHEALTHY"
+    assert response.json()["data"]["components"]["database"] == {"status": "UNAVAILABLE"}
 
 
 def test_lifespan_recovers_stale_jobs_before_accepting_requests(

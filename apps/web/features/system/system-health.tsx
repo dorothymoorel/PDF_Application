@@ -1,15 +1,25 @@
 "use client";
 
+import {
+  createTransLokaClient,
+  DEFAULT_API_BASE_URL,
+  type SystemHealthResponse,
+} from "@transloka/api-client";
 import { useCallback, useEffect, useRef, useState } from "react";
 
-export const API_HEALTH_URL = "http://127.0.0.1:8000/health";
+export const API_HEALTH_URL = `${DEFAULT_API_BASE_URL}/api/v1/system/health`;
 export const HEALTH_TIMEOUT_MS = 5_000;
 
-type FetchHealth = (input: string, init: RequestInit) => Promise<Response>;
+type FetchHealth = (input: string | URL, init?: RequestInit) => Promise<Response>;
+type SystemComponents = SystemHealthResponse["data"]["components"];
+type CompletedHealth =
+  | { kind: "healthy"; components: SystemComponents }
+  | { kind: "degraded"; components: SystemComponents }
+  | { kind: "unhealthy"; components: SystemComponents };
 
 export type HealthCheckResult =
-  | { kind: "healthy"; version: string }
-  | { kind: "degraded" }
+  | CompletedHealth
+  | { kind: "degraded-response" }
   | { kind: "unavailable"; reason: "network" | "timeout" }
   | { kind: "invalid" }
   | { kind: "error" }
@@ -19,79 +29,42 @@ export type HealthViewState =
   | { kind: "loading" }
   | (Exclude<HealthCheckResult, { kind: "cancelled" }> & { checkedAt: number });
 
-const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,31}$/;
-
-function isHealthResponse(value: unknown): value is {
-  status: "ok";
-  service: "transloka-api";
-  version: string;
-} {
-  if (typeof value !== "object" || value === null || Array.isArray(value)) {
-    return false;
-  }
-
-  const response = value as Record<string, unknown>;
-  return (
-    response.status === "ok" &&
-    response.service === "transloka-api" &&
-    typeof response.version === "string" &&
-    VERSION_PATTERN.test(response.version)
-  );
-}
-
 export async function checkApiHealth(
   fetchHealth: FetchHealth = fetch,
   parentSignal?: AbortSignal,
   timeoutMs = HEALTH_TIMEOUT_MS,
 ): Promise<HealthCheckResult> {
-  if (parentSignal?.aborted) {
-    return { kind: "cancelled" };
+  const client = createTransLokaClient({ fetch: fetchHealth });
+  const result = await client.getSystemHealth({
+    timeoutMs,
+    ...(parentSignal === undefined ? {} : { signal: parentSignal }),
+  });
+
+  if (result.ok) {
+    const completed = {
+      components: result.data.data.components,
+    };
+    switch (result.data.data.status) {
+      case "HEALTHY":
+        return { kind: "healthy", ...completed };
+      case "DEGRADED":
+        return { kind: "degraded", ...completed };
+      case "UNHEALTHY":
+        return { kind: "unhealthy", ...completed };
+    }
   }
 
-  const controller = new AbortController();
-  let timedOut = false;
-  const cancelRequest = () => controller.abort();
-  parentSignal?.addEventListener("abort", cancelRequest, { once: true });
-  const timeout = setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-
-  try {
-    const response = await fetchHealth(API_HEALTH_URL, {
-      cache: "no-store",
-      headers: { Accept: "application/json" },
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      return { kind: "degraded" };
-    }
-
-    let payload: unknown;
-    try {
-      payload = await response.json();
-    } catch {
-      return { kind: "invalid" };
-    }
-
-    return isHealthResponse(payload)
-      ? { kind: "healthy", version: payload.version }
-      : { kind: "invalid" };
-  } catch (error: unknown) {
-    if (parentSignal?.aborted) {
+  switch (result.error.kind) {
+    case "aborted":
       return { kind: "cancelled" };
-    }
-    if (timedOut) {
-      return { kind: "unavailable", reason: "timeout" };
-    }
-    if (error instanceof TypeError) {
+    case "network":
       return { kind: "unavailable", reason: "network" };
-    }
-    return { kind: "error" };
-  } finally {
-    clearTimeout(timeout);
-    parentSignal?.removeEventListener("abort", cancelRequest);
+    case "timeout":
+      return { kind: "unavailable", reason: "timeout" };
+    case "invalid-response":
+      return { kind: "invalid" };
+    case "api":
+      return { kind: "degraded-response" };
   }
 }
 
@@ -118,15 +91,60 @@ export function createHealthRequest(fetchHealth: FetchHealth = fetch) {
   };
 }
 
-const plannedComponents = ["Worker", "Database", "Filesystem", "Ollama", "OCR"] as const;
+const componentNames = ["database", "filesystem", "worker", "ollama", "ocr"] as const;
+const componentLabels: Record<(typeof componentNames)[number], string> = {
+  database: "Database",
+  filesystem: "Filesystem",
+  worker: "Worker",
+  ollama: "Ollama",
+  ocr: "OCR",
+};
+
+function statusLabel(status: "AVAILABLE" | "DEGRADED" | "UNAVAILABLE"): string {
+  switch (status) {
+    case "AVAILABLE":
+      return "Healthy";
+    case "DEGRADED":
+      return "Degraded";
+    case "UNAVAILABLE":
+      return "Unavailable";
+  }
+}
+
+function componentDetail(
+  name: (typeof componentNames)[number],
+  status: "AVAILABLE" | "DEGRADED" | "UNAVAILABLE",
+): string {
+  if (status === "AVAILABLE") {
+    return {
+      database: "The SQLite database is responding.",
+      filesystem: "The local data directories are available.",
+      worker: "The worker heartbeat is current.",
+      ollama: "The local Ollama service is responding.",
+      ocr: "The local OCR runtime and model bundle are ready.",
+    }[name];
+  }
+  if (status === "DEGRADED") {
+    return `${componentLabels[name]} is responding with reduced readiness.`;
+  }
+  return {
+    database: "The database is unavailable. Restart TransLoka and check the data directory.",
+    filesystem: "The data directory is missing or not writable.",
+    worker: "Start the TransLoka worker and wait for a fresh heartbeat.",
+    ollama: "Start Ollama locally, then retry this health check.",
+    ocr: "Install the OCR runtime and provision its local model bundle.",
+  }[name];
+}
 
 function apiStatus(state: HealthViewState): { label: string; detail: string } {
   switch (state.kind) {
     case "loading":
       return { label: "Checking", detail: "Waiting for the local API." };
     case "healthy":
-      return { label: "Healthy", detail: `FastAPI ${state.version} is responding.` };
     case "degraded":
+    case "unhealthy":
+      return { label: "Healthy", detail: "The detailed health endpoint is responding." };
+    case "degraded-response":
       return { label: "Degraded", detail: "The local API responded with an error status." };
     case "unavailable":
       return {
@@ -142,10 +160,7 @@ function apiStatus(state: HealthViewState): { label: string; detail: string } {
         detail: "The local API response did not match the expected health contract.",
       };
     case "error":
-      return {
-        label: "Error",
-        detail: "The health check could not be completed safely.",
-      };
+      return { label: "Error", detail: "The health check could not be completed safely." };
   }
 }
 
@@ -156,7 +171,10 @@ function overallStatus(state: HealthViewState): string {
     case "healthy":
       return "Healthy";
     case "degraded":
+    case "degraded-response":
       return "Degraded";
+    case "unhealthy":
+      return "Unhealthy";
     case "unavailable":
       return "Unavailable";
     case "invalid":
@@ -174,11 +192,17 @@ function StatusRow({
     <div className="rounded-xl border border-slate-200 bg-white p-5">
       <dt className="font-semibold text-slate-950">{name}</dt>
       <dd className="mt-2">
-        <span className="font-medium text-slate-800">{status}</span>
+        <span className="font-medium text-slate-800">Status: {status}</span>
         <span className="mt-1 block text-sm leading-6 text-slate-600">{detail}</span>
       </dd>
     </div>
   );
+}
+
+function isCompletedHealth(state: HealthViewState): state is CompletedHealth & {
+  checkedAt: number;
+} {
+  return state.kind === "healthy" || state.kind === "degraded" || state.kind === "unhealthy";
 }
 
 export function HealthStatusView({ state }: Readonly<{ state: HealthViewState }>) {
@@ -209,14 +233,24 @@ export function HealthStatusView({ state }: Readonly<{ state: HealthViewState }>
           status="Healthy"
         />
         <StatusRow detail={api.detail} name="API" status={api.label} />
-        {plannedComponents.map((name) => (
-          <StatusRow
-            detail="No health probe is implemented for this component yet."
-            key={name}
-            name={name}
-            status="Not implemented"
-          />
-        ))}
+        {componentNames.map((name) => {
+          const completed = isCompletedHealth(state);
+          const status = completed ? state.components[name].status : "UNAVAILABLE";
+          return (
+            <StatusRow
+              detail={
+                completed
+                  ? componentDetail(name, status)
+                  : state.kind === "loading"
+                    ? "Waiting for the detailed API health response."
+                    : "Detailed status is unavailable until the API health check succeeds."
+              }
+              key={name}
+              name={componentLabels[name]}
+              status={state.kind === "loading" ? "Checking" : statusLabel(status)}
+            />
+          );
+        })}
       </dl>
     </>
   );

@@ -1,10 +1,11 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 from fastapi import FastAPI, Request, Response
 from fastapi.exceptions import RequestValidationError
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
+from sqlalchemy.orm import Session, sessionmaker
 from starlette.concurrency import run_in_threadpool
 from starlette.exceptions import HTTPException
 from starlette.middleware.base import RequestResponseEndpoint
@@ -41,6 +42,7 @@ from transloka_api.middleware import (
     ClientHeaderMiddleware,
     OriginValidationMiddleware,
     RequestIdMiddleware,
+    get_request_id,
 )
 from transloka_api.routers.backups import router as backups_router
 from transloka_api.routers.benchmarks import router as benchmarks_router
@@ -67,6 +69,7 @@ from transloka_api.services.benchmarks import (
     ProductionQuickBenchmarkRunner,
 )
 from transloka_api.startup import recover_stale_jobs
+from transloka_api.system_health import SystemHealthResponse, inspect_system_health
 
 _HEALTH_ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
     403: {
@@ -84,27 +87,6 @@ class HealthResponse(BaseModel):
     status: Literal["ok"] = "ok"
     service: Literal["transloka-api"] = "transloka-api"
     version: str = __version__
-
-
-class ComponentHealth(BaseModel):
-    status: Literal["UNAVAILABLE"] = "UNAVAILABLE"
-
-
-class SystemComponents(BaseModel):
-    database: ComponentHealth = Field(default_factory=ComponentHealth)
-    filesystem: ComponentHealth = Field(default_factory=ComponentHealth)
-    worker: ComponentHealth = Field(default_factory=ComponentHealth)
-    ollama: ComponentHealth = Field(default_factory=ComponentHealth)
-    ocr: ComponentHealth = Field(default_factory=ComponentHealth)
-
-
-class SystemHealthData(BaseModel):
-    status: Literal["DEGRADED"] = "DEGRADED"
-    components: SystemComponents = Field(default_factory=SystemComponents)
-
-
-class SystemHealthResponse(BaseModel):
-    data: SystemHealthData = Field(default_factory=SystemHealthData)
 
 
 def create_app(settings: Settings | None = None) -> FastAPI:
@@ -304,11 +286,19 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         operation_id="get_system_health",
         response_model=SystemHealthResponse,
         responses=_HEALTH_ERROR_RESPONSES,
-        summary="Get placeholder system health",
+        summary="Get system health",
         tags=["System"],
     )
-    def get_system_health() -> SystemHealthResponse:
-        return SystemHealthResponse()
+    async def get_system_health(request: Request) -> SystemHealthResponse:
+        request_id = get_request_id()
+        if request_id is None:
+            raise RuntimeError("The request identifier is unavailable.")
+        return await inspect_system_health(
+            application_state=request.app.state,
+            directories=effective_settings.data_directories,
+            session_factory=cast(sessionmaker[Session], request.app.state.session_factory),
+            request_id=request_id,
+        )
 
     return application
 

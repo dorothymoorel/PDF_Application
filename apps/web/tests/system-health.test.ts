@@ -22,10 +22,18 @@ const jsonResponse = (body: unknown, status = 200) =>
   });
 
 const healthyResponse = {
-  status: "ok",
-  service: "transloka-api",
-  version: "0.1.0",
-};
+  data: {
+    status: "HEALTHY",
+    components: {
+      database: { status: "AVAILABLE" },
+      filesystem: { status: "AVAILABLE" },
+      worker: { status: "AVAILABLE" },
+      ollama: { status: "AVAILABLE" },
+      ocr: { status: "AVAILABLE" },
+    },
+  },
+  meta: { request_id: "health-request" },
+} as const;
 
 function renderState(state: HealthViewState): string {
   return renderToStaticMarkup(createElement(HealthStatusView, { state }));
@@ -75,25 +83,30 @@ describe("system health page", () => {
     render(createElement(StrictMode, null, createElement(SystemHealth)));
 
     await waitFor(() => {
-      expect(screen.getByText("FastAPI 0.1.0 is responding.")).toBeTruthy();
+      expect(screen.getByText("The worker heartbeat is current.")).toBeTruthy();
     });
     expect(fetchHealth).toHaveBeenCalledTimes(2);
   });
 
   it("accepts only the expected healthy API contract", async () => {
-    const fetchHealth = vi.fn(() => Promise.resolve(jsonResponse(healthyResponse)));
+    const fetchHealth = vi.fn((input: string | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(jsonResponse(healthyResponse));
+    });
 
     await expect(checkApiHealth(fetchHealth)).resolves.toEqual({
       kind: "healthy",
-      version: "0.1.0",
+      components: healthyResponse.data.components,
     });
-    expect(fetchHealth).toHaveBeenCalledWith(
-      API_HEALTH_URL,
-      expect.objectContaining({
-        cache: "no-store",
-        headers: { Accept: "application/json" },
-      }),
-    );
+    const call = fetchHealth.mock.calls[0];
+    if (call === undefined) {
+      throw new Error("Expected the system health check to call fetch.");
+    }
+    const [url, init] = call;
+    expect(url).toBe(API_HEALTH_URL);
+    expect(init).toMatchObject({ cache: "no-store", credentials: "omit" });
+    expect(new Headers(init?.headers).get("Accept")).toBe("application/json");
   });
 
   it("reports network failures as unavailable without exposing the error", async () => {
@@ -121,13 +134,13 @@ describe("system health page", () => {
     expect(renderState({ kind: "invalid", checkedAt: 0 })).toContain("Invalid response");
   });
 
-  it("handles non-success responses as degraded without rendering the body", async () => {
+  it("handles a malformed non-success response without rendering the body", async () => {
     const response = new Response("private backend detail", { status: 503 });
     const result = await checkApiHealth(vi.fn(() => Promise.resolve(response)));
-    const view = renderState({ kind: "degraded", checkedAt: 0 });
+    const view = renderState({ kind: "invalid", checkedAt: 0 });
 
-    expect(result).toEqual({ kind: "degraded" });
-    expect(view).toContain("Degraded");
+    expect(result).toEqual({ kind: "invalid" });
+    expect(view).toContain("Invalid response");
     expect(view).not.toContain("private backend detail");
   });
 
@@ -163,9 +176,9 @@ describe("system health page", () => {
 
   it("bounds request duration and reports timeout safely", async () => {
     const fetchHealth = vi.fn(
-      (_input: string, init: RequestInit) =>
+      (_input: string | URL, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init.signal?.addEventListener(
+          init?.signal?.addEventListener(
             "abort",
             () => reject(new DOMException("private timeout detail", "AbortError")),
             { once: true },
@@ -184,9 +197,9 @@ describe("system health page", () => {
   it("cancels cleanly when its owner aborts", async () => {
     const controller = new AbortController();
     const fetchHealth = vi.fn(
-      (_input: string, init: RequestInit) =>
+      (_input: string | URL, init?: RequestInit) =>
         new Promise<Response>((_resolve, reject) => {
-          init.signal?.addEventListener(
+          init?.signal?.addEventListener(
             "abort",
             () => reject(new DOMException("aborted", "AbortError")),
             { once: true },
@@ -200,23 +213,43 @@ describe("system health page", () => {
     await expect(request).resolves.toEqual({ kind: "cancelled" });
   });
 
-  it("never marks future components as healthy", () => {
-    const view = renderState({ kind: "healthy", version: "0.1.0", checkedAt: 0 });
+  it("renders validated component states instead of placeholders", () => {
+    const view = renderState({
+      kind: "healthy",
+      components: healthyResponse.data.components,
+      checkedAt: 0,
+    });
 
     for (const component of ["Worker", "Database", "Filesystem", "Ollama", "OCR"]) {
       expect(view).toContain(component);
     }
-    expect(view.match(/Not implemented/g)).toHaveLength(5);
+    expect(view).not.toContain("Not implemented");
+    expect(view).toContain("The worker heartbeat is current.");
   });
 
-  it("renders unexpected client failures with a safe error message", async () => {
+  it("explains an unavailable dependency without relying on color", () => {
+    const view = renderState({
+      kind: "degraded",
+      components: {
+        ...healthyResponse.data.components,
+        worker: { status: "UNAVAILABLE" },
+      },
+      checkedAt: 0,
+    });
+
+    expect(view).toContain("Degraded");
+    expect(view).toContain("Status: Unavailable");
+    expect(view).toContain("Start the TransLoka worker");
+  });
+
+  it("renders unexpected fetch failures as safe network errors", async () => {
     const result = await checkApiHealth(
       vi.fn(() => Promise.reject(new Error("private stack detail"))),
     );
-    const view = renderState({ kind: "error", checkedAt: 0 });
+    const view = renderState({ kind: "unavailable", reason: "network", checkedAt: 0 });
 
-    expect(result).toEqual({ kind: "error" });
-    expect(view).toContain("could not be completed safely");
+    expect(result).toEqual({ kind: "unavailable", reason: "network" });
+    expect(view).toContain("Start the local API");
     expect(view).not.toContain("private stack detail");
   });
 });

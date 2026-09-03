@@ -41,6 +41,20 @@ const healthyResponse = {
   version: "0.1.0",
 } as const;
 
+const healthySystemResponse = {
+  data: {
+    status: "HEALTHY",
+    components: {
+      database: { status: "AVAILABLE" },
+      filesystem: { status: "AVAILABLE" },
+      worker: { status: "AVAILABLE" },
+      ollama: { status: "AVAILABLE" },
+      ocr: { status: "AVAILABLE" },
+    },
+  },
+  meta: { request_id: "system-health-request" },
+} as const;
+
 const project = {
   id: "prj_00000000-0000-4000-8000-000000000001",
   name: "System Design Book",
@@ -208,6 +222,54 @@ describe("health client", () => {
     expect(init?.credentials).toBe("omit");
     expect(new Headers(init?.headers).get(REQUEST_ID_HEADER)).toBe("client-request");
     expect(new Headers(init?.headers).has(CLIENT_HEADER)).toBe(false);
+  });
+
+  it("returns validated detailed system health", async () => {
+    const fetchImplementation = vi.fn(
+      (input: string | URL, init?: RequestInit) => {
+        void input;
+        void init;
+        return Promise.resolve(jsonResponse(healthySystemResponse));
+      },
+    );
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+
+    await expect(client.getSystemHealth()).resolves.toEqual({
+      ok: true,
+      data: healthySystemResponse,
+      status: 200,
+      requestId: null,
+    });
+    expect(fetchImplementation.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/v1/system/health",
+    );
+  });
+
+  it.each([
+    { ...healthySystemResponse, meta: {} },
+    {
+      ...healthySystemResponse,
+      data: { ...healthySystemResponse.data, status: "UNKNOWN" },
+    },
+    {
+      ...healthySystemResponse,
+      data: {
+        ...healthySystemResponse.data,
+        components: {
+          ...healthySystemResponse.data.components,
+          worker: { status: "RUNNING" },
+        },
+      },
+    },
+  ])("rejects malformed detailed system health", async (payload) => {
+    const client = createTransLokaClient({
+      fetch: () => Promise.resolve(jsonResponse(payload)),
+    });
+
+    await expect(client.getSystemHealth()).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+    });
   });
 
   it("parses normalized API errors without exposing extra response fields", async () => {

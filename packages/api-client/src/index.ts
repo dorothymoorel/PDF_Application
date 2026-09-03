@@ -18,6 +18,7 @@ export {
   type RetryTranslationInput,
   type RetryJobInput,
   type StartTranslationInput,
+  type SystemHealthResponse,
   type PreviewReconstructionInput,
   type ReconstructionJobResponse,
   type ReconstructionMode,

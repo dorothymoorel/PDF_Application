@@ -13,6 +13,7 @@ import {
 
 type HealthResponse =
   paths["/health"]["get"]["responses"][200]["content"]["application/json"];
+export type SystemHealthResponse = components["schemas"]["SystemHealthResponse"];
 type JobAttemptListResponse = components["schemas"]["JobAttemptListResponse"];
 type JobDataResponse = components["schemas"]["JobDataResponse"];
 type JobListResponse = components["schemas"]["JobListResponse"];
@@ -175,6 +176,8 @@ const PREVIEW_ID_PATTERN =
   /^prv_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
 const SAFE_MESSAGE_PATTERN = /^[^\u0000-\u001F\u007F]{1,512}$/;
 const VERSION_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+_-]{0,31}$/;
+const COMPONENT_HEALTH_STATUSES = new Set(["AVAILABLE", "DEGRADED", "UNAVAILABLE"]);
+const SYSTEM_HEALTH_STATUSES = new Set(["HEALTHY", "DEGRADED", "UNHEALTHY"]);
 const MUTATION_METHODS: ReadonlySet<string> = new Set<MutationMethod>([
   "DELETE",
   "PATCH",
@@ -436,6 +439,29 @@ function isHealthResponse(value: unknown): value is HealthResponse {
     typeof value.version === "string" &&
     VERSION_PATTERN.test(value.version)
   );
+}
+
+function isSystemHealthResponse(value: unknown): value is SystemHealthResponse {
+  if (
+    !isRecord(value) ||
+    !isRecord(value.data) ||
+    !isRecord(value.data.components) ||
+    !isResponseMeta(value.meta) ||
+    typeof value.data.status !== "string" ||
+    !SYSTEM_HEALTH_STATUSES.has(value.data.status)
+  ) {
+    return false;
+  }
+
+  const components = value.data.components;
+  return ["database", "filesystem", "worker", "ollama", "ocr"].every((name) => {
+    const component = components[name];
+    return (
+      isRecord(component) &&
+      typeof component.status === "string" &&
+      COMPONENT_HEALTH_STATUSES.has(component.status)
+    );
+  });
 }
 
 function isNullableString(value: unknown): value is string | null {
@@ -1110,6 +1136,21 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           method: "GET",
           path: "/health",
           validate: isHealthResponse,
+        },
+        requestOptions,
+      );
+    },
+
+    getSystemHealth(
+      requestOptions: RequestOptions = {},
+    ): Promise<ApiResult<SystemHealthResponse>> {
+      return request(
+        {
+          invalidResponseMessage:
+            "The API response did not match the generated system health contract.",
+          method: "GET",
+          path: "/api/v1/system/health",
+          validate: isSystemHealthResponse,
         },
         requestOptions,
       );

@@ -1140,7 +1140,7 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get placeholder system health */
+        /** Get system health */
         get: operations["get_system_health"];
         put?: never;
         post?: never;
@@ -1424,10 +1424,9 @@ export interface components {
         ComponentHealth: {
             /**
              * Status
-             * @default UNAVAILABLE
-             * @constant
+             * @enum {string}
              */
-            status: "UNAVAILABLE";
+            status: "AVAILABLE" | "DEGRADED" | "UNAVAILABLE";
         };
         /** CreateBackupData */
         CreateBackupData: {
@@ -3022,25 +3021,25 @@ export interface components {
         };
         /** SystemComponents */
         SystemComponents: {
-            database?: components["schemas"]["ComponentHealth"];
-            filesystem?: components["schemas"]["ComponentHealth"];
-            ocr?: components["schemas"]["ComponentHealth"];
-            ollama?: components["schemas"]["ComponentHealth"];
-            worker?: components["schemas"]["ComponentHealth"];
+            database: components["schemas"]["ComponentHealth"];
+            filesystem: components["schemas"]["ComponentHealth"];
+            ocr: components["schemas"]["ComponentHealth"];
+            ollama: components["schemas"]["ComponentHealth"];
+            worker: components["schemas"]["ComponentHealth"];
         };
         /** SystemHealthData */
         SystemHealthData: {
-            components?: components["schemas"]["SystemComponents"];
+            components: components["schemas"]["SystemComponents"];
             /**
              * Status
-             * @default DEGRADED
-             * @constant
+             * @enum {string}
              */
-            status: "DEGRADED";
+            status: "HEALTHY" | "DEGRADED" | "UNHEALTHY";
         };
         /** SystemHealthResponse */
         SystemHealthResponse: {
-            data?: components["schemas"]["SystemHealthData"];
+            data: components["schemas"]["SystemHealthData"];
+            meta: components["schemas"]["ResponseMeta"];
         };
         /** TermDataResponse */
         TermDataResponse: {
