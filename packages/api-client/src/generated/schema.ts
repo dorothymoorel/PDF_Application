@@ -7213,6 +7213,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description The local worker or translation queue is unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
         };
     };
     start_translation: {
@@ -7277,6 +7286,15 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
+            /** @description An active full-document translation already exists. */
+            429: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponse"];
+                };
+            };
             /** @description An unexpected server error was normalized. */
             500: {
                 headers: {
@@ -7286,7 +7304,7 @@ export interface operations {
                     "application/json": components["schemas"]["ErrorResponse"];
                 };
             };
-            /** @description The translation queue is not configured. */
+            /** @description The local worker or translation queue is unavailable. */
             503: {
                 headers: {
                     [name: string]: unknown;

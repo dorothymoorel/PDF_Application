@@ -41,6 +41,7 @@ from transloka_core.database.models.translation import (
     TranslationBatch,
 )
 from transloka_core.storage.local import LocalFileStorage
+from transloka_worker.health import WorkerHeartbeatStore, WorkerStatus
 from transloka_worker.queue import create_huey, resolve_queue_configuration
 from transloka_worker.tasks.translation import (
     TRANSLATION_TASK_NAME,
@@ -114,6 +115,16 @@ def test_production_translation_runtime_crosses_api_queue_worker_boundary(
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(data_root))
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
 
+    configuration = resolve_queue_configuration(data_root)
+    heartbeat_huey = create_huey(configuration)
+    try:
+        WorkerHeartbeatStore(
+            heartbeat_huey,
+            worker_identifier="translation-runtime-e2e",
+        ).record(WorkerStatus.RUNNING)
+    finally:
+        heartbeat_huey.storage.close()
+
     application = create_app()
     with TestClient(application) as client:
         application.state.ollama_provider = HealthyProvider()
@@ -136,7 +147,6 @@ def test_production_translation_runtime_crosses_api_queue_worker_boundary(
         job_id = cast(str, start.json()["data"]["job_id"])
         assert application.state.translation_queue_owner.huey.pending_count() == 1
 
-    configuration = resolve_queue_configuration(data_root)
     huey = create_huey(configuration)
     engine = create_sqlite_engine(configuration.directories)
     factory = create_session_factory(engine)

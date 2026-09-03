@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
+import time
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
 from math import ceil
-from typing import Annotated, Any, Literal, Never, cast
+from typing import Annotated, Any, Literal, Never, Protocol, cast
 
 from fastapi import APIRouter, Depends, Header, Request, status
 from pydantic import BaseModel, ConfigDict, Field
@@ -51,6 +52,7 @@ from transloka_core.storage.local import LocalFileStorage
 from transloka_glossary.snapshots import GlossarySnapshotError, create_glossary_snapshot
 from transloka_translation.providers import ProviderHealthStatus
 from transloka_translation.providers.ollama import OllamaTranslationProvider
+from transloka_worker.health import PersistedWorkerHeartbeat, WorkerHeartbeatStore, WorkerStatus
 from transloka_worker.translation import TranslationCommand, TranslationWorkerError
 
 _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
@@ -63,17 +65,18 @@ _ERROR_RESPONSES: dict[int | str, dict[str, Any]] = {
         "description": "Translation readiness or job state prevents the operation.",
         "model": ErrorResponse,
     },
-    429: {
-        "description": "An active full-document translation already exists.",
-        "model": ErrorResponse,
-    },
     422: {"description": "The request contains invalid values.", "model": ErrorResponse},
     500: {"description": "An unexpected server error was normalized.", "model": ErrorResponse},
 }
-_QUEUE_NOT_CONFIGURED_RESPONSE = {
-    "description": "The translation queue is not configured.",
+_ALREADY_RUNNING_RESPONSE = {
+    "description": "An active full-document translation already exists.",
     "model": ErrorResponse,
 }
+_SERVICE_UNAVAILABLE_RESPONSE = {
+    "description": "The local worker or translation queue is unavailable.",
+    "model": ErrorResponse,
+}
+WORKER_HEARTBEAT_MAX_AGE_SECONDS = 15.0
 
 router = APIRouter(prefix="/api/v1/projects", tags=["Translation"])
 
@@ -183,6 +186,10 @@ class _Readiness:
         self.blockers = blockers
 
 
+class _WorkerHeartbeatReader(Protocol):
+    def read(self) -> PersistedWorkerHeartbeat | None: ...
+
+
 @router.get(
     "/{project_id}/translation-readiness",
     operation_id="get_translation_readiness",
@@ -211,7 +218,11 @@ async def get_translation_readiness(
     "/{project_id}/translation/start",
     operation_id="start_translation",
     response_model=TranslationJobResponse,
-    responses={**_ERROR_RESPONSES, 503: _QUEUE_NOT_CONFIGURED_RESPONSE},
+    responses={
+        **_ERROR_RESPONSES,
+        429: _ALREADY_RUNNING_RESPONSE,
+        503: _SERVICE_UNAVAILABLE_RESPONSE,
+    },
     status_code=status.HTTP_202_ACCEPTED,
 )
 async def start_translation(
@@ -222,6 +233,8 @@ async def start_translation(
     session: Annotated[Session, Depends(_get_session)],
 ) -> TranslationJobResponse:
     readiness = await _collect_readiness(request, session, project_id, payload.model_id)
+    if any(issue.code == "WORKER_UNAVAILABLE" for issue in readiness.blockers):
+        _raise_worker_unavailable()
     if readiness.blockers:
         raise TransLokaError(
             code="TRANSLATION_NOT_READY",
@@ -367,7 +380,7 @@ def cancel_translation(
     "/{project_id}/translation/retry-failed",
     operation_id="retry_failed_translation",
     response_model=TranslationStatusResponse,
-    responses=_ERROR_RESPONSES,
+    responses={**_ERROR_RESPONSES, 503: _SERVICE_UNAVAILABLE_RESPONSE},
     status_code=status.HTTP_202_ACCEPTED,
 )
 def retry_failed_translation(
@@ -381,6 +394,7 @@ def retry_failed_translation(
     job = _latest_job(session, project_id)
     if job is None:
         _raise_job_not_found()
+    _require_worker_available(request)
     try:
         replacement_payload_json = (
             _reduced_translation_command_payload(job.payload_json)
@@ -579,6 +593,13 @@ async def _collect_readiness(
                 message="The local Ollama service is unavailable.",
             )
         )
+    if not _worker_available(request):
+        blockers.append(
+            TranslationBlockingIssue(
+                code="WORKER_UNAVAILABLE",
+                message="Start the TransLoka worker and wait for it to become ready.",
+            )
+        )
     if unresolved_count:
         blockers.append(
             TranslationBlockingIssue(
@@ -605,6 +626,40 @@ async def _collect_readiness(
         segment_count=segment_count,
         estimated_batches=ceil(segment_count / 5) if segment_count else 0,
         blockers=blockers,
+    )
+
+
+def _worker_available(request: Request) -> bool:
+    heartbeat_reader = cast(
+        _WorkerHeartbeatReader | None,
+        getattr(request.app.state, "worker_heartbeat_store", None),
+    )
+    if heartbeat_reader is None:
+        queue_owner = getattr(request.app.state, "translation_queue_owner", None)
+        huey = getattr(queue_owner, "huey", None)
+        if huey is None:
+            return False
+        heartbeat_reader = WorkerHeartbeatStore(huey)
+    try:
+        heartbeat = heartbeat_reader.read()
+    except Exception:
+        return False
+    if heartbeat is None or heartbeat.status is not WorkerStatus.RUNNING:
+        return False
+    age_seconds = time.time() - heartbeat.recorded_at
+    return 0.0 <= age_seconds <= WORKER_HEARTBEAT_MAX_AGE_SECONDS
+
+
+def _require_worker_available(request: Request) -> None:
+    if not _worker_available(request):
+        _raise_worker_unavailable()
+
+
+def _raise_worker_unavailable() -> Never:
+    raise TransLokaError(
+        code="WORKER_UNAVAILABLE",
+        message="The TransLoka worker is unavailable. Start it and wait for readiness.",
+        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
     )
 
 

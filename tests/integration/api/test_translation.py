@@ -1,3 +1,4 @@
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from typing import Any, cast
@@ -44,6 +45,7 @@ from transloka_core.database.models.models import LocalModelRecord, ModelLicense
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import Project
 from transloka_translation.providers import ProviderHealth, ProviderHealthStatus
+from transloka_worker.health import PersistedWorkerHeartbeat, WorkerStatus
 from transloka_worker.translation import TranslationCommand
 
 REPOSITORY_ROOT = Path(__file__).parents[3]
@@ -103,6 +105,28 @@ class UnavailableQueue:
         raise OSError("queue unavailable")
 
 
+class StaticWorkerHeartbeatStore:
+    def __init__(
+        self,
+        status: WorkerStatus | None = WorkerStatus.RUNNING,
+        *,
+        recorded_at: float | None = None,
+    ) -> None:
+        self._status = status
+        self._recorded_at = time.time() if recorded_at is None else recorded_at
+
+    def read(self) -> PersistedWorkerHeartbeat | None:
+        if self._status is None:
+            return None
+        return PersistedWorkerHeartbeat(
+            worker_name="transloka-worker",
+            worker_identifier="test-worker",
+            status=self._status,
+            sequence=1,
+            recorded_at=self._recorded_at,
+        )
+
+
 @pytest.fixture
 def translation_api(
     monkeypatch: pytest.MonkeyPatch,
@@ -115,6 +139,7 @@ def translation_api(
     with TestClient(application) as client:
         application.state.ollama_provider = HealthyProvider()
         application.state.translation_queue = RecordingQueue()
+        application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore()
         project_response = client.post(
             "/api/v1/projects",
             headers=CLIENT_HEADERS,
@@ -342,6 +367,7 @@ def test_translation_readiness_ready(
     [
         ("model", "OLLAMA_MODEL_NOT_SELECTED"),
         ("ollama", "OLLAMA_UNAVAILABLE"),
+        ("worker", "WORKER_UNAVAILABLE"),
         ("source", "UNRESOLVED_SOURCE"),
         ("glossary", "GLOSSARY_CONFLICT"),
         ("segments", "NO_SEGMENTS"),
@@ -365,6 +391,8 @@ def test_translation_readiness_reports_each_blocker(
             segment = session.get(DocumentSegment, SEGMENT_ID)
             assert segment is not None
             segment.status = SegmentStatus.CREATED.value
+    elif blocker == "worker":
+        application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore(WorkerStatus.STOPPED)
     elif blocker == "glossary":
         with transaction_scope(factory) as session:
             session.add(
@@ -391,6 +419,36 @@ def test_translation_readiness_reports_each_blocker(
 
     assert response.status_code == 200
     assert expected_code in {issue["code"] for issue in response.json()["data"]["blocking_issues"]}
+
+
+@pytest.mark.parametrize(
+    "heartbeat_store",
+    [
+        StaticWorkerHeartbeatStore(None),
+        StaticWorkerHeartbeatStore(WorkerStatus.STOPPED),
+        StaticWorkerHeartbeatStore(recorded_at=0.0),
+        StaticWorkerHeartbeatStore(recorded_at=time.time() + 60.0),
+    ],
+    ids=("missing", "stopped", "stale", "future"),
+)
+def test_translation_start_fails_closed_when_worker_is_unavailable(
+    heartbeat_store: StaticWorkerHeartbeatStore,
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = translation_api
+    application.state.worker_heartbeat_store = heartbeat_store
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-worker-unavailable"},
+        json={"model_id": MODEL_ID},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "WORKER_UNAVAILABLE"
+    assert cast(RecordingQueue, application.state.translation_queue).enqueued == []
+    with factory() as session:
+        assert session.scalars(select(ApplicationJob)).all() == []
 
 
 def test_translation_start_is_idempotent_and_readiness_blocks_start(
@@ -560,6 +618,41 @@ def test_translation_cancel_and_retry_failed(
     status_response = client.get(f"/api/v1/projects/{project_id}/translation/status")
     assert status_response.status_code == 200
     assert status_response.json()["data"]["active_job_id"] == start.json()["data"]["job_id"]
+
+
+def test_translation_retry_fails_closed_when_worker_is_unavailable(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = translation_api
+    start = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-worker-retry"},
+        json={"model_id": MODEL_ID},
+    )
+    assert start.status_code == 202
+    job_id = start.json()["data"]["job_id"]
+    application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore(WorkerStatus.STOPPED)
+    cancelled = client.post(
+        f"/api/v1/projects/{project_id}/translation/cancel",
+        headers=CLIENT_HEADERS,
+        json={"reason": "Prepare worker-unavailable retry."},
+    )
+    assert cancelled.status_code == 200
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/retry-failed",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-worker-retry-1"},
+        json={"use_smaller_batch": True, "use_selected_model": True},
+    )
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "WORKER_UNAVAILABLE"
+    assert cast(RecordingQueue, application.state.translation_queue).enqueued == [job_id]
+    with factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.CANCELLED.value
+        assert job.retry_count == 0
 
 
 def test_translation_retry_prefers_stale_job_over_newer_cancelled_job(
