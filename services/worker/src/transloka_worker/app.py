@@ -4,8 +4,7 @@ import signal
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import StrEnum
-from threading import Event, Lock
+from threading import Event, Lock, Thread
 from types import FrameType
 from typing import Protocol, cast
 
@@ -17,6 +16,7 @@ from transloka_documents.ocr.paddle import PaddleOCRProviderAdapter
 
 from transloka_worker.analysis import DatabaseAnalysisJobRunner
 from transloka_worker.backup import DatabaseBackupRequestLoader, ProductionBackupJobRunner
+from transloka_worker.health import WORKER_NAME, WorkerHeartbeatStore, WorkerStatus
 from transloka_worker.ocr import DatabaseOCRRequestLoader, OCRJobRunner
 from transloka_worker.queue import QueueConfiguration, create_consumer, resolve_queue_configuration
 from transloka_worker.reconstruction import (
@@ -35,13 +35,7 @@ from transloka_worker.translation import (
 
 logger = logging.getLogger(__name__)
 
-WORKER_NAME = "transloka-worker"
 DEFAULT_HEARTBEAT_INTERVAL_SECONDS = 5.0
-
-
-class WorkerStatus(StrEnum):
-    STOPPED = "STOPPED"
-    RUNNING = "RUNNING"
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,14 +64,34 @@ class QueueWorker:
         consumer: Consumer,
         *,
         close_resources: Callable[[], None] | None = None,
+        heartbeat_store: WorkerHeartbeatStore | None = None,
+        heartbeat_interval_seconds: float = DEFAULT_HEARTBEAT_INTERVAL_SECONDS,
     ) -> None:
+        if not math.isfinite(heartbeat_interval_seconds) or heartbeat_interval_seconds <= 0:
+            raise ValueError("Heartbeat interval must be a positive finite number.")
         self._consumer = consumer
         self._close_resources = close_resources
+        self._heartbeat_store = heartbeat_store
+        self._heartbeat_interval_seconds = heartbeat_interval_seconds
+        self._heartbeat_stop = Event()
 
     def run(self) -> None:
+        heartbeat_thread: Thread | None = None
         try:
+            if self._heartbeat_store is not None:
+                self._heartbeat_store.record(WorkerStatus.RUNNING)
+                heartbeat_thread = Thread(
+                    target=self._emit_heartbeats,
+                    name="transloka-worker-heartbeat",
+                    daemon=True,
+                )
+                heartbeat_thread.start()
             self._consumer.run()
         finally:
+            self._heartbeat_stop.set()
+            if heartbeat_thread is not None:
+                heartbeat_thread.join(timeout=self._heartbeat_interval_seconds + 1.0)
+            self._record_stopped_heartbeat()
             self.close_resources()
 
     def stop(self) -> None:
@@ -86,6 +100,36 @@ class QueueWorker:
     def close_resources(self) -> None:
         if self._close_resources is not None:
             self._close_resources()
+
+    def _emit_heartbeats(self) -> None:
+        while not self._heartbeat_stop.wait(self._heartbeat_interval_seconds):
+            try:
+                if self._heartbeat_store is not None:
+                    self._heartbeat_store.record(WorkerStatus.RUNNING)
+            except Exception as exc:
+                logger.error(
+                    "Worker heartbeat failed",
+                    extra={
+                        "worker_name": WORKER_NAME,
+                        "error_type": type(exc).__name__,
+                    },
+                )
+                self._consumer.stop(graceful=True)
+                return
+
+    def _record_stopped_heartbeat(self) -> None:
+        if self._heartbeat_store is None:
+            return
+        try:
+            self._heartbeat_store.record(WorkerStatus.STOPPED)
+        except Exception as exc:
+            logger.error(
+                "Worker stopped heartbeat failed",
+                extra={
+                    "worker_name": WORKER_NAME,
+                    "error_type": type(exc).__name__,
+                },
+            )
 
 
 def create_queue_worker(
@@ -178,7 +222,15 @@ def create_queue_worker(
         cast(object, consumer).huey.storage.close()  # type: ignore[attr-defined]
         engine.dispose()
 
-    return QueueWorker(consumer, close_resources=close_resources)
+    heartbeat_store = WorkerHeartbeatStore(
+        cast(object, consumer).huey,  # type: ignore[attr-defined]
+        worker_identifier=worker_identifier,
+    )
+    return QueueWorker(
+        consumer,
+        close_resources=close_resources,
+        heartbeat_store=heartbeat_store,
+    )
 
 
 class Worker:
