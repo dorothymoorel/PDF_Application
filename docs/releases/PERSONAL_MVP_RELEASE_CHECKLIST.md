@@ -18,29 +18,32 @@ dependency gates now pass. Three previous High blockers are closed: ReportLab is
 declared and locked, canonical routers and four production worker flows are wired,
 and the Node audits report no known vulnerabilities.
 
-The release remains blocked for three independent reasons. The only installed
-candidate model, `qwen3:1.7b`, is rejected by both the full and fresh quick
-benchmarks for a critical placeholder-integrity failure. A clean first-run data
-root is not migrated by the documented startup workflow and returns HTTP 500 on
-the Projects screen. After a manual migration, the rendered UI can create a
-project and stage a PDF, but it provides no normal project-open action and does
-not continue the staged upload into validation, analysis, OCR, translation,
-review, reconstruction, or export.
+This checklist is the M11-T18 snapshot from 2026-08-28. Later remediation must
+be validated by a new complete M11-T18 run before the release decision changes.
+
+Post-review evidence on 2026-09-04 resolves the automated portion of
+REL-HIGH-003: the current `qwen3:1.7b` candidate passed a fresh 6/6 quick
+benchmark and two independent 90/90 full runs with no critical failure. The
+production run returned `RECOMMENDED_DEFAULT`; its local registry record now
+contains `Apache-2.0` and `APPROVED_FOR_PERSONAL_USE`. See
+`LOCAL_MODEL_BENCHMARK_2026-09-04.md`. Human blind quality review remains open,
+so the release decision stays **NOT_READY** until that review and a clean
+M11-T18 rerun are complete.
 
 ## Acceptance criteria
 
 | Gate | Result | Evidence |
 | --- | --- | --- |
-| No Critical defect | PASS | No uncontained Critical product defect was observed. The model placeholder mismatch is detected, normalized, and rejected rather than persisted as a valid translation. |
-| No blocking High defect | **FAIL** | REL-HIGH-003, REL-HIGH-005, and REL-HIGH-006 remain open: there is no accepted local model, clean first-run startup fails, and the rendered user workflow cannot progress beyond a staged PDF. |
+| No Critical defect | PASS | No uncontained Critical product defect was observed in the original review. The later automated model rerun completed without a critical failure. |
+| No blocking High defect | **FAIL** | The original review found REL-HIGH-003, REL-HIGH-005, and REL-HIGH-006. The automated model gate now passes, but human blind review and a complete M11-T18 rerun remain required before the current blocking-defect count can be recertified. |
 | Digital PDF E2E | PASS | 1 passed in 5.76s in the locked environment. |
 | Scanned PDF E2E | PASS | 1 passed in 13.52s in the locked environment. |
 | Backup-restore E2E | PASS | 1 passed in 9.99s; backup and restoration integrity checks passed. |
 | Security regression suite | PASS | 71/71 security tests passed; an additional 143 security/Ollama tests passed. |
 | Original checksum invariant | PASS | 18 immutable-original and PDF-validation tests passed. |
 | Final PDF validation | PASS | 7/7 final-PDF validation tests passed. |
-| Local model benchmark on target hardware | **FAIL** | Full benchmark: 89/90 successful with one critical `PLACEHOLDER_MISMATCH`; fresh quick benchmark: 5/6 successful with the same critical failure. Candidate recommendation is `REJECTED`. |
-| Reconstruction manual review | **NOT RUN** | No release-approved model exists from which to create the final representative translation artifact. |
+| Local model benchmark on target hardware | **PASS (AUTOMATED)** | Post-review evidence: production full benchmark 90/90, zero critical failures, quality score 1.0, recommendation `RECOMMENDED_DEFAULT`; fresh quick benchmark 6/6. Human blind quality review is still pending. |
+| Reconstruction manual review | **NOT RUN** | The automated model gate now passes, but representative human review has not yet been recorded. |
 
 ## Previous release blockers
 
@@ -48,7 +51,7 @@ review, reconstruction, or export.
 | --- | --- | --- |
 | REL-HIGH-001 — reconstruction dependency missing | **CLOSED** | `reportlab==5.0.1` is declared in `transloka-reconstruction`, locked, and present after `uv sync --locked`; digital, scanned, and final-PDF gates pass without ephemeral dependencies. |
 | REL-HIGH-002 — production runtime not wired | **CLOSED** | Canonical routers are registered and production translation, OCR, reconstruction, and backup tasks pass 27 runtime-composition/E2E tests. |
-| REL-HIGH-003 — real Ollama translation and benchmark unavailable | **PARTIALLY CLOSED / STILL BLOCKING** | Real localhost translation and quick/full runners execute. The installed model remains rejected for a critical placeholder mismatch, and human review is absent. |
+| REL-HIGH-003 — real Ollama translation and benchmark unavailable | **AUTOMATED GATE CLOSED / HUMAN REVIEW OPEN** | `LOCAL_MODEL_BENCHMARK_2026-09-04.md` records quick 6/6 and production full 90/90 with zero critical failures. Registry license status is `APPROVED_FOR_PERSONAL_USE`; human blind review remains required. |
 | REL-HIGH-004 — High Node advisories | **CLOSED** | High, Critical, and production-only High audits all report no known vulnerabilities. |
 
 ## Commands and test results
@@ -159,47 +162,47 @@ loopback. The trial used a generated non-sensitive one-page PDF.
 
 ### Full benchmark evidence
 
-The canonical production full benchmark evidence remains
-`docs/releases/LOCAL_MODEL_BENCHMARK_2026-08-27.md`. No model, prompt, dataset,
-or hardware change justified repeating the approximately 62-minute, 90-attempt
-run.
+The current production full benchmark evidence is
+`docs/releases/LOCAL_MODEL_BENCHMARK_2026-09-04.md`. It supersedes the rejected
+2026-08-27 automated result for the current runtime while preserving the older
+report as historical evidence.
 
 | Metric | Result |
 | --- | --- |
 | Attempts | 90 / 90 completed |
-| Successful | 89 |
-| Failed | 1 |
-| Critical failures | 1 — `PLACEHOLDER_MISMATCH` |
-| Success rate / quality score | 98.89% / 0.9889 |
-| Average latency | 41.06 seconds |
-| Recommendation | **REJECTED** |
+| Successful | 90 |
+| Failed | 0 |
+| Critical failures | 0 |
+| Success rate / quality score | 100% / 1.0 |
+| Average latency | 3.95 seconds |
+| Recommendation | `RECOMMENDED_DEFAULT` |
 
 ### Fresh quick benchmark
 
-A fresh real benchmark against Ollama 0.33.1 confirmed the full-run result:
+A fresh real benchmark against Ollama 0.33.2 confirmed the full-run result:
 
 | Metric | Result |
 | --- | --- |
-| Status / recommendation | `FAILED` / `REJECTED` |
-| Cases | 6 total; 5 successful; 1 failed |
-| Failed case | `quick_003_placeholders` |
-| Failure | Critical `PLACEHOLDER_MISMATCH` |
-| Average latency | 37.12 seconds |
+| Status / recommendation | `COMPLETED` / `RECOMMENDED_DEFAULT` |
+| Cases | 6 total; 6 successful; 0 failed |
+| Failed case | None |
+| Failure | None |
+| Average latency | 7.58 seconds |
 | Temperature | 0.1 |
 
-The provider is operational and five cases complete, but the candidate model
-cannot be accepted because placeholder preservation is a critical invariant.
+The placeholder case now passes without weakening the critical integrity
+validator.
 
 ### License evidence
 
 - `ollama show qwen3:1.7b --license` is recorded in the full benchmark as Apache
   License 2.0 with Alibaba Cloud copyright.
-- The candidate is rejected and is not selected or pinned as the application
-  default.
+- The candidate passed the automated gate and remains the user's persisted
+  translation selection; it is not hard-coded as a universal default.
 - `THIRD_PARTY_LICENSES.md` keeps model weights separate from application
   dependencies and requires exact license review when a model is selected.
-- The application model registry still reports the candidate license status as
-  unknown; selection must not occur until this is reconciled.
+- The local application model registry records `license_name=Apache-2.0` and
+  `license_status=APPROVED_FOR_PERSONAL_USE`.
 
 ## Backup and rollback verification
 
@@ -217,73 +220,38 @@ cannot be accepted because placeholder preservation is a critical invariant.
 
 **Severity:** High, release blocking
 
-The production Ollama provider and benchmark runners now execute correctly, but
-`qwen3:1.7b` fails both full and quick benchmarks on placeholder integrity. The
-failure is critical at the model-output level and correctly fails closed in the
-application. No alternative licensed candidate has an accepted full benchmark,
-and no human blind quality review has been completed.
+The production Ollama provider and benchmark runners execute correctly.
+`qwen3:1.7b` now passes both quick and full benchmarks with zero critical
+failures, and its local registry license record is reconciled. No human blind
+quality review has been completed, so final model acceptance remains open.
 
 Required remediation:
 
-1. Evaluate a better-suited locally installed, license-reviewed model or make a
-   separately scoped prompt/model-compatibility correction without weakening
-   placeholder validation.
-2. Require an accepted full benchmark with zero critical failures.
-3. Complete human blind translation-quality review.
-4. Record the selected model ID, license, attribution, and application registry
-   license status.
-5. Rerun M11-T18 from a clean locked environment.
+1. Complete human blind translation-quality review.
+2. Rerun M11-T18 from a clean locked environment.
 
 ### REL-HIGH-005 — Clean first-run startup does not initialize the schema
 
-**Severity:** High, release blocking
+**Status:** Remediated after this checklist snapshot; pending M11-T18 recertification
 
-Following `docs/SETUP.md` with a new external data root starts the API and
-creates an empty SQLite file, but neither the setup nor start script upgrades it
-to the current Alembic head. The first Projects request then fails with HTTP 500.
-Manual `alembic upgrade head` repairs the trial database, but this undocumented
-intervention is not an acceptable Personal MVP first-run experience.
-
-Required remediation:
-
-1. Define a safe, idempotent first-run migration policy with backup and
-   downgrade protections for existing databases.
-2. Integrate the policy into the supported setup/start workflow or fail startup
-   with an explicit actionable schema error before serving the UI.
-3. Add a clean-data-root runtime test that starts the supported stack and loads
-   the Projects page without manual database commands.
+Commit `885332d` adds safe startup migration behavior, setup/troubleshooting
+guidance, and Windows-script coverage. The complete M11-T18 rerun must verify it
+again from a fresh external data root.
 
 ### REL-HIGH-006 — Rendered workflow cannot progress beyond staged upload
 
-**Severity:** High, release blocking
+**Status:** Remediated after this checklist snapshot; pending M11-T18 recertification
 
-The Projects UI can create a database row but its project card has no link or
-open action. Direct navigation reveals only the upload component. The production
-upload endpoint writes a temporary staged file and returns `STAGED`; no
-production path calls `ImportService.store_original()` or dispatches document
-validation/analysis. Consequently the user cannot reach the implemented OCR,
-translation, review, reconstruction, export, benchmark, backup, or maintenance
-features through a complete application journey.
-
-Required remediation:
-
-1. Add an accessible project-open action and a canonical project workspace
-   navigation flow.
-2. Complete the immutable import transition from staged upload through PDF
-   validation, original-file persistence, document/page creation, and analysis
-   dispatch with idempotency and cleanup on failure.
-3. Connect the existing feature panels to the persisted project/document/job
-   state instead of exposing them only through isolated component tests.
-4. Add a browser E2E covering create project, import, analysis, OCR/translation,
-   review, reconstruction, export, checksum, backup, and restore.
+Commit `aecde17` and the subsequent import/runtime fixes connect the persisted
+workspace journey and add the canonical Playwright workflow. The complete
+M11-T18 rerun must recertify this path against the current runtime.
 
 ### REL-MEDIUM-002 — Canonical frontend E2E command is absent
 
-**Severity:** Medium, non-blocking for this review
+**Status:** Remediated after this checklist snapshot
 
-`pnpm e2e` is still not defined. The Python digital, scanned, backup/restore,
-and production runtime E2E suites were run directly and passed, but the documented
-single frontend E2E entrypoint remains unavailable.
+The root package now defines `pnpm e2e` as `playwright test`. Its current result
+belongs in the complete M11-T18 rerun.
 
 ### REL-MEDIUM-003 — Optional reflow native runtime is unavailable
 
@@ -297,15 +265,11 @@ task is completed.
 
 ### REL-MEDIUM-004 — System health UI is stale and hangs in development
 
-**Severity:** Medium
+**Status:** Remediated after this checklist snapshot; pending M11-T18 recertification
 
-The page checks only the simple API liveness endpoint and hard-codes the other
-components as `Not implemented`. In the supported development start mode,
-React's effect cleanup aborts the first request while the second effect observes
-the still-active controller and returns, leaving the page at `Checking`. The
-production system-health endpoint also reports placeholder component state
-rather than the actual running database, filesystem, worker, Ollama, and OCR
-readiness.
+Commits `ad0873e` and `4bb975e` fix Strict Mode request recovery and report real
+database, filesystem, worker, Ollama, and OCR readiness. The complete M11-T18
+rerun must recertify the rendered page.
 
 ## Known product limitations
 
@@ -317,18 +281,17 @@ readiness.
   formulas, unusual fonts, and dense layouts.
 - Reflow scenarios needing WeasyPrint are unavailable in the current locked
   environment; validated overlay paths remain available.
-- No local model is release-approved. The installed candidate must not be
-  silently selected.
-- RAM headroom was very low during the full benchmark, and NVIDIA VRAM was not
-  used according to the available telemetry.
+- `qwen3:1.7b` passes the automated model gate and is the user's persisted
+  translation selection, but human blind quality review remains required.
+- The current hardware detector does not populate GPU telemetry. During the
+  accepted rerun, `ollama ps` reported 100% GPU placement; formal peak RAM/VRAM
+  sampling was not captured.
 
 ## Required next action
 
 Do not declare the Personal MVP complete and do not create the rollback tag.
-Resolve REL-HIGH-005 and REL-HIGH-006 first through separately scoped first-run
-and end-to-end UI/runtime remediation tasks. Then resolve REL-HIGH-003 through a
-model-selection or prompt/model-compatibility task that preserves strict
-placeholder validation. After a complete browser UAT, an accepted full
-benchmark, and human blind review, rerun M11-T18. Address the stale health UI,
-missing `pnpm e2e` command, and optional WeasyPrint runtime in explicit scopes;
-they must not be bundled into this checklist-only task.
+Complete and record a human blind translation-quality review, then rerun the
+entire M11-T18 checklist from a clean locked environment. The rerun must include
+fresh-data-root startup, browser UAT, real system health, `pnpm e2e`, automated
+quality gates, repository cleanliness, and rollback readiness. Optional
+WeasyPrint support remains a separately scoped non-blocking decision.
