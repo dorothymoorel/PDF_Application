@@ -157,6 +157,13 @@ class TranslationValidator:
                 )
             )
             issues.extend(
+                validate_untranslated_source_fragments(
+                    source_segment,
+                    translated_segment,
+                    target_language=request.context.target_language,
+                )
+            )
+            issues.extend(
                 validate_suspicious_length(
                     source_segment,
                     translated_segment,
@@ -300,6 +307,28 @@ def validate_target_language(
             ValidationCode.TARGET_LANGUAGE_MISMATCH,
             translated.segment_id,
             "Translated text may not use the requested target language.",
+        ),
+    )
+
+
+def validate_untranslated_source_fragments(
+    source: TranslationRequestSegment,
+    translated: TranslatedSegment,
+    *,
+    target_language: str,
+) -> tuple[ValidationIssue, ...]:
+    _, source_language_markers = _language_markers(target_language)
+    if source_language_markers is None:
+        return ()
+    source_words = _words(_mask_placeholders(source.source_text))
+    translated_words = _words(_mask_placeholders(translated.translated_text))
+    if not source_words & source_language_markers & translated_words:
+        return ()
+    return (
+        _warning(
+            ValidationCode.UNTRANSLATED_SOURCE_FRAGMENT,
+            translated.segment_id,
+            "Translated text may contain an untranslated source-language fragment.",
         ),
     )
 

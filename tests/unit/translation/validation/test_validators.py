@@ -24,6 +24,7 @@ from transloka_translation.validation import (
     validate_suspicious_length,
     validate_target_language,
     validate_translation,
+    validate_untranslated_source_fragments,
     validate_url_integrity,
 )
 
@@ -205,6 +206,37 @@ def test_language_validator_warns_for_probable_source_language_output() -> None:
     assert issues[0].severity is ValidationSeverity.WARNING
 
 
+def test_untranslated_source_fragment_warns_for_leftover_english_marker() -> None:
+    issues = validate_untranslated_source_fragments(
+        make_source("The protected term sends a request."),
+        make_translation("The istilah terlindungi mengirim permintaan."),
+        target_language="id",
+    )
+
+    assert issue_codes(issues) == {ValidationCode.UNTRANSLATED_SOURCE_FRAGMENT}
+    assert issues[0].severity is ValidationSeverity.WARNING
+
+
+def test_untranslated_source_fragment_accepts_complete_translation() -> None:
+    issues = validate_untranslated_source_fragments(
+        make_source("The protected term sends a request."),
+        make_translation("Istilah terlindungi mengirim permintaan."),
+        target_language="id-ID",
+    )
+
+    assert issues == ()
+
+
+def test_untranslated_source_fragment_ignores_protected_values() -> None:
+    issues = validate_untranslated_source_fragments(
+        make_source(f"The {PLACEHOLDER} is retained."),
+        make_translation(f"{PLACEHOLDER} tetap dipertahankan."),
+        target_language="id",
+    )
+
+    assert issues == ()
+
+
 def test_empty_validator_accepts_nonempty_text() -> None:
     assert validate_empty_translation(make_translation("Hasil.")) == ()
 
@@ -303,6 +335,22 @@ def test_warning_does_not_masquerade_as_pass_but_remains_acceptable() -> None:
     assert report.accepted is True
     assert issue_codes(report.warnings) == {ValidationCode.NEGATION_MISMATCH}
     report.raise_for_critical()
+
+
+def test_aggregate_validator_warns_for_untranslated_source_fragment() -> None:
+    request = make_request(
+        ("segment_001",),
+        source_text="The protected term sends a request.",
+    )
+    response = make_response(
+        ("segment_001",),
+        translated_text="The istilah terlindungi mengirim permintaan.",
+    )
+
+    report = validate_translation(request, response)
+
+    assert report.accepted is True
+    assert ValidationCode.UNTRANSLATED_SOURCE_FRAGMENT in issue_codes(report.warnings)
 
 
 def test_validator_rejects_invalid_length_ratio_configuration() -> None:

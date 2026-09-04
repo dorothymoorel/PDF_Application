@@ -1,5 +1,6 @@
 import json
 import stat
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from pathlib import Path
@@ -53,6 +54,7 @@ from transloka_translation.providers import (
     ProviderHealthStatus,
     TranslationProviderError,
 )
+from transloka_worker.health import PersistedWorkerHeartbeat, WorkerStatus
 from transloka_worker.translation import (
     TRANSLATION_COMMAND_SCHEMA,
     DatabaseCancellationSignal,
@@ -100,6 +102,17 @@ class RecordingQueue:
 
     def enqueue(self, _job_id: str) -> None:
         return None
+
+
+class StaticWorkerHeartbeatStore:
+    def read(self) -> PersistedWorkerHeartbeat:
+        return PersistedWorkerHeartbeat(
+            worker_name="transloka-worker",
+            worker_identifier="test-worker",
+            status=WorkerStatus.RUNNING,
+            sequence=1,
+            recorded_at=time.time(),
+        )
 
 
 class RuntimeProvider:
@@ -183,6 +196,7 @@ def loader_fixture(
     application: FastAPI = create_app()
     application.state.ollama_provider = HealthyProvider()
     application.state.translation_queue = RecordingQueue()
+    application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore()
     with TestClient(application) as client:
         response = client.post(
             "/api/v1/projects",

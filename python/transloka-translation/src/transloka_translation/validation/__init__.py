@@ -17,6 +17,7 @@ from .validators import (
     validate_suspicious_length,
     validate_target_language,
     validate_translation,
+    validate_untranslated_source_fragments,
     validate_url_integrity,
 )
 
@@ -36,6 +37,7 @@ __all__ = [
     "validate_segment_mapping",
     "validate_suspicious_length",
     "validate_target_language",
+    "validate_untranslated_source_fragments",
     "validate_translation",
     "validate_url_integrity",
 ]
