@@ -91,12 +91,17 @@ describe("translation settings", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start translation" }));
 
     await waitFor(() => expect(client.startTranslation).toHaveBeenCalled());
+    expect(client.getTranslationReadiness).toHaveBeenCalledWith("prj_1", {
+      provider_type: "OLLAMA",
+      model_id: MODEL.id,
+    });
     const startTranslationSpy = client.startTranslation as unknown as {
       mock: { calls: readonly (readonly unknown[])[] };
     };
     const call = startTranslationSpy.mock.calls[0];
     expect(call?.[0]).toBe("prj_1");
     expect(call?.[2]).toMatchObject({
+      provider_type: "OLLAMA",
       model_id: MODEL.id,
       translation_style: "ACADEMIC",
       batch_size: 8,
@@ -105,5 +110,39 @@ describe("translation settings", () => {
     });
     expect(onStarted).toHaveBeenCalledWith("job_translation_1");
     expect(await screen.findByText("Translation started. Job: job_translation_1")).toBeTruthy();
+  });
+
+  it("requires explicit consent before sending selected text to Groq", async () => {
+    const client = clientWith();
+    render(<TranslationSettings client={client} models={[MODEL]} projectId="prj_1" />);
+
+    fireEvent.change(screen.getByLabelText("Translation provider"), {
+      target: { value: "GROQ" },
+    });
+
+    expect(screen.getByText("Cloud translation preview")).toBeTruthy();
+    expect(screen.getByRole("option", { name: "Qwen 3.8 27B (Preview)" })).toBeTruthy();
+    expect(screen.getByText(/Selected translation text is sent to Groq\./)).toBeTruthy();
+    expect(screen.queryByLabelText(/api key/i)).toBeNull();
+
+    const startButton = screen.getByRole("button", { name: "Start translation" });
+    expect(startButton).toHaveProperty("disabled", true);
+    fireEvent.click(screen.getByLabelText("I consent to send selected translation text to Groq."));
+    fireEvent.click(startButton);
+
+    await waitFor(() => expect(client.startTranslation).toHaveBeenCalled());
+    const cloudInput = {
+      provider_type: "GROQ",
+      model_id: null,
+      cloud_model_name: "qwen/qwen3.8-27b",
+      cloud_consent: true,
+    };
+    expect(client.getTranslationReadiness).toHaveBeenCalledWith("prj_1", cloudInput);
+    expect(client.startTranslation).toHaveBeenCalledWith(
+      "prj_1",
+      expect.stringContaining("translation-ui-prj_1-"),
+      expect.objectContaining(cloudInput),
+    );
+    expect(client.startTranslation.mock.calls[0]?.[2]).not.toHaveProperty("api_key");
   });
 });

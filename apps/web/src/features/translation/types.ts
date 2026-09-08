@@ -14,7 +14,14 @@ export type TranslationUiClient = Pick<
 
 export type TranslationSettings = Pick<
   StartTranslationInput,
-  "scope" | "model_id" | "translation_style" | "batch_size" | "context_mode"
+  | "scope"
+  | "provider_type"
+  | "model_id"
+  | "cloud_model_name"
+  | "cloud_consent"
+  | "translation_style"
+  | "batch_size"
+  | "context_mode"
 >;
 
 export type TranslationReadiness = {
@@ -35,6 +42,9 @@ export type TranslationStatus = {
   active_job_id: string | null;
   current_batch: number;
   total_batches: number;
+  unattempted_segments?: number | null;
+  provider_error_code?: string | null;
+  retry_after_seconds?: number | null;
 };
 
 export const TERMINAL_TRANSLATION_STATUSES = new Set([

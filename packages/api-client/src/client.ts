@@ -1,4 +1,4 @@
-import type { components, paths } from "./generated/schema";
+import type { components, operations, paths } from "./generated/schema";
 import {
   ACCEPT_HEADER,
   CLIENT_HEADER,
@@ -39,6 +39,9 @@ export type DocumentDetailResponse = components["schemas"]["DocumentDetailRespon
 export type CancelTranslationInput = components["schemas"]["CancelTranslationRequest"];
 export type RetryTranslationInput = components["schemas"]["RetryTranslationRequest"];
 export type StartTranslationInput = components["schemas"]["StartTranslationRequest"];
+export type TranslationReadinessOptions = NonNullable<
+  operations["get_translation_readiness"]["parameters"]["query"]
+>;
 
 export type ReconstructionMode = "OVERLAY" | "REFLOW" | "HYBRID";
 export type ReconstructionSettings = {
@@ -617,7 +620,21 @@ function isTranslationStatusResponse(value: unknown): value is TranslationStatus
     typeof data.progress === "number" &&
     Number.isFinite(data.progress) &&
     data.progress >= 0 &&
-    data.progress <= 1
+    data.progress <= 1 &&
+    (data.unattempted_segments === undefined ||
+      data.unattempted_segments === null ||
+      (typeof data.unattempted_segments === "number" &&
+        Number.isInteger(data.unattempted_segments) &&
+        data.unattempted_segments >= 0)) &&
+    (data.provider_error_code === undefined ||
+      data.provider_error_code === null ||
+      (typeof data.provider_error_code === "string" &&
+        ERROR_CODE_PATTERN.test(data.provider_error_code))) &&
+    (data.retry_after_seconds === undefined ||
+      data.retry_after_seconds === null ||
+      (typeof data.retry_after_seconds === "number" &&
+        Number.isFinite(data.retry_after_seconds) &&
+        data.retry_after_seconds >= 0))
   );
 }
 
@@ -924,11 +941,28 @@ function translationPath(projectId: string, suffix: string): string {
   return `/api/v1/projects/${projectId}/translation${suffix}`;
 }
 
-function translationReadinessPath(projectId: string): string {
+function translationReadinessPath(
+  projectId: string,
+  options: TranslationReadinessOptions,
+): string {
   if (!PROJECT_ID_PATTERN.test(projectId)) {
     throw new TypeError("Project ID must use the canonical prefixed UUID format.");
   }
-  return `/api/v1/projects/${projectId}/translation-readiness`;
+  const query = new URLSearchParams();
+  if (options.provider_type !== undefined) {
+    query.set("provider_type", options.provider_type);
+  }
+  if (options.model_id !== undefined && options.model_id !== null) {
+    query.set("model_id", options.model_id);
+  }
+  if (options.cloud_model_name !== undefined && options.cloud_model_name !== null) {
+    query.set("cloud_model_name", options.cloud_model_name);
+  }
+  if (options.cloud_consent !== undefined) {
+    query.set("cloud_consent", String(options.cloud_consent));
+  }
+  const suffix = query.toString();
+  return `/api/v1/projects/${projectId}/translation-readiness${suffix ? `?${suffix}` : ""}`;
 }
 
 function reconstructionPath(projectId: string, suffix: string): string {
@@ -1259,6 +1293,7 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
 
     getTranslationReadiness(
       projectId: string,
+      options: TranslationReadinessOptions = {},
       requestOptions: RequestOptions = {},
     ): Promise<ApiResult<TranslationReadinessResponse>> {
       return request(
@@ -1266,7 +1301,7 @@ export function createTransLokaClient(options: TransLokaClientOptions = {}) {
           invalidResponseMessage:
             "The API response did not match the generated translation readiness contract.",
           method: "GET",
-          path: translationReadinessPath(projectId),
+          path: translationReadinessPath(projectId, options),
           validate: isTranslationReadinessResponse,
         },
         requestOptions,

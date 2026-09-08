@@ -83,6 +83,42 @@ credential storage, automatic provider fallback, paid upgrade, or M11-T18 work.
 Generate and check the API client schema, run focused API/worker/orchestration/E2E
 tests plus Ruff and mypy, and do not stage or commit unless separately instructed.
 
+## CLOUD-03 - User setup and generated client
+
+Owner-authorized addition: 2026-09-07. Dependency: CLOUD-02 completed and verified.
+Objective: expose the approved optional Groq provider through the generated API client
+and translation UI while keeping local Ollama translation as the default.
+
+Exact allowed files:
+
+```text
+apps/web/src/features/translation/types.ts
+apps/web/src/features/translation/translation-settings.tsx
+apps/web/src/features/translation/translation-settings.test.tsx
+apps/web/src/features/translation/translation-progress.tsx
+apps/web/src/features/translation/translation-progress.test.tsx
+apps/web/features/workspace/project-workspace.tsx
+packages/api-client/src/client.ts
+packages/api-client/src/generated/schema.ts
+packages/api-client/tests/client.test.ts
+```
+
+Acceptance: Ollama remains the default provider. Groq is explicitly selected, marked
+as preview, and accompanied by a clear disclosure that selected translation text is
+sent to Groq. The user must explicitly consent before cloud readiness or start; the UI
+and client must not request, display, transmit, or persist an API key. Provider, model,
+and consent are sent through the existing readiness/start contracts. Quota and other
+provider-wide stops show truthful retry guidance, retry timing when available, and
+remaining unattempted work even when zero segments failed. The UI must never switch
+providers automatically.
+
+Tests must cover the local default, cloud disclosure and consent gate, absence of a key
+field, provider-aware readiness/start requests, provider-wide stop and retry rendering,
+and generated-client response validation. Generate and check the API schema, then run
+frontend/API-client tests, lint, typecheck, build, audit, and `git diff --check`. Do not
+add backend or worker changes, dependencies, migrations, live cloud requests, CLOUD-04
+evaluation, or M11-T18 work. Do not stage or commit unless separately instructed.
+
 ## TransLoka Personal MVP Atomic Task Backlog
 
 **Document Name:** `CODEX_TASKS.md`

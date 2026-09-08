@@ -12,6 +12,13 @@ import {
 const defaultClient = createTransLokaClient();
 const inputClass =
   "mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-950";
+type TranslationProvider = NonNullable<StartTranslationInput["provider_type"]>;
+type GroqModel = NonNullable<StartTranslationInput["cloud_model_name"]>;
+
+const GROQ_MODELS: readonly { value: GroqModel; label: string }[] = [
+  { value: "qwen/qwen3.8-27b", label: "Qwen 3.8 27B (Preview)" },
+  { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B" },
+];
 
 function startKey(projectId: string): string {
   return `translation-ui-${projectId}-${Date.now().toString(36)}`;
@@ -35,6 +42,9 @@ export function TranslationSettings({
     [models],
   );
   const [selectedModelId, setSelectedModelId] = useState(modelId ?? "");
+  const [provider, setProvider] = useState<TranslationProvider>("OLLAMA");
+  const [cloudModel, setCloudModel] = useState<GroqModel>("qwen/qwen3.8-27b");
+  const [cloudConsent, setCloudConsent] = useState(false);
   const [style, setStyle] = useState<NonNullable<StartTranslationInput["translation_style"]>>("PROFESSIONAL");
   const [scope, setScope] = useState<StartTranslationInput["scope"]>("FULL_DOCUMENT");
   const [batchSize, setBatchSize] = useState("5");
@@ -60,8 +70,12 @@ export function TranslationSettings({
     setError(null);
     setReadiness(null);
     setStartedJobId(null);
-    if (selectedModelId === "") {
+    if (provider === "OLLAMA" && selectedModelId === "") {
       setError("Select an installed local Ollama model before starting translation.");
+      return;
+    }
+    if (provider === "GROQ" && !cloudConsent) {
+      setError("Confirm cloud text sharing before starting Groq translation.");
       return;
     }
     const parsedBatchSize = Number(batchSize);
@@ -71,7 +85,15 @@ export function TranslationSettings({
     }
 
     setIsStarting(true);
-    const readinessResult = await client.getTranslationReadiness(projectId);
+    const providerInput = provider === "OLLAMA"
+      ? { provider_type: "OLLAMA" as const, model_id: selectedModelId }
+      : {
+          provider_type: "GROQ" as const,
+          model_id: null,
+          cloud_model_name: cloudModel,
+          cloud_consent: true,
+        };
+    const readinessResult = await client.getTranslationReadiness(projectId, providerInput);
     if (!readinessResult.ok) {
       setError(readinessResult.error.message);
       setIsStarting(false);
@@ -90,7 +112,7 @@ export function TranslationSettings({
       section_ids: null,
       page_ids: null,
       segment_ids: null,
-      model_id: selectedModelId,
+      ...providerInput,
       translation_style: style,
       batch_size: parsedBatchSize,
       context_mode: "STANDARD",
@@ -116,9 +138,11 @@ export function TranslationSettings({
       <div>
         <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Translation setup</p>
         <h2 className="mt-1 text-xl font-semibold text-slate-950" id="translation-settings-heading">
-          Start local translation
+          Start translation
         </h2>
-        <p className="mt-1 text-sm text-slate-600">Use a local Ollama model for this project.</p>
+        <p className="mt-1 text-sm text-slate-600">
+          Ollama stays local and is selected by default. Groq is an optional cloud preview.
+        </p>
       </div>
 
       <form
@@ -128,10 +152,40 @@ export function TranslationSettings({
         }}
       >
         <div>
+          <label className="text-sm font-medium text-slate-800" htmlFor="translation-provider">
+            Translation provider
+          </label>
+          <select
+            className={inputClass}
+            id="translation-provider"
+            onChange={(event) => {
+              setProvider(event.target.value as TranslationProvider);
+              setReadiness(null);
+              setError(null);
+            }}
+            value={provider}
+          >
+            <option value="OLLAMA">Ollama (local)</option>
+            <option value="GROQ">Groq Cloud (Preview)</option>
+          </select>
+        </div>
+
+        <div>
           <label className="text-sm font-medium text-slate-800" htmlFor="translation-model">
             Translation model
           </label>
-          {installedModels.length === 0 ? (
+          {provider === "GROQ" ? (
+            <select
+              className={inputClass}
+              id="translation-model"
+              onChange={(event) => setCloudModel(event.target.value as GroqModel)}
+              value={cloudModel}
+            >
+              {GROQ_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>{model.label}</option>
+              ))}
+            </select>
+          ) : installedModels.length === 0 ? (
             <p className="mt-2 rounded-lg border border-dashed border-slate-300 p-3 text-sm text-slate-600">
               No installed local models are available. Check Ollama and refresh the model list.
             </p>
@@ -150,6 +204,26 @@ export function TranslationSettings({
             </select>
           )}
         </div>
+
+        {provider === "GROQ" ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 p-4 text-sm text-amber-950">
+            <p className="font-semibold">Cloud translation preview</p>
+            <p className="mt-1">
+              Selected translation text is sent to Groq. TransLoka reads the API key from the
+              local process environment; this page never stores or displays it.
+            </p>
+            <label className="mt-3 flex items-start gap-2" htmlFor="translation-cloud-consent">
+              <input
+                checked={cloudConsent}
+                className="mt-1"
+                id="translation-cloud-consent"
+                onChange={(event) => setCloudConsent(event.target.checked)}
+                type="checkbox"
+              />
+              <span>I consent to send selected translation text to Groq.</span>
+            </label>
+          </div>
+        ) : null}
 
         <div className="grid gap-5 sm:grid-cols-2">
           <div>
@@ -203,7 +277,11 @@ export function TranslationSettings({
 
         <button
           className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
-          disabled={isStarting || installedModels.length === 0}
+          disabled={
+            isStarting ||
+            (provider === "OLLAMA" && installedModels.length === 0) ||
+            (provider === "GROQ" && !cloudConsent)
+          }
           type="submit"
         >
           {isStarting ? "Checking readiness…" : "Start translation"}

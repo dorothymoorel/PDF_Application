@@ -101,6 +101,29 @@ describe("translation progress", () => {
     );
   });
 
+  it("shows a provider stop with unattempted work even when no segments failed", async () => {
+    const client = clientWith(statusWith({
+      status: "FAILED",
+      failed_segments: 0,
+      unattempted_segments: 15,
+      provider_error_code: "RATE_LIMIT",
+      retry_after_seconds: 60,
+    }));
+    render(<TranslationProgress client={client} projectId="prj_1" />);
+    await settle();
+
+    expect(screen.getByText(
+      "The translation provider rate limit stopped this job. 15 segment(s) were not attempted. Try again in about 60 seconds.",
+    )).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Resume translation" }));
+    await settle();
+    expect(client.retryFailedTranslation).toHaveBeenCalledWith(
+      "prj_1",
+      expect.stringContaining("translation-ui-retry-prj_1-"),
+      { use_smaller_batch: false, use_selected_model: true },
+    );
+  });
+
   it("refreshes a stale terminal result when a sibling starts a new job", async () => {
     const failed = statusWith({ status: "FAILED", active_job_id: "job_old", failed_segments: 2 });
     const running = statusWith({ status: "RUNNING", active_job_id: "job_new", completed_segments: 9, progress: 0.45 });

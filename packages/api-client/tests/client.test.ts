@@ -565,6 +565,121 @@ describe("project client", () => {
   });
 });
 
+describe("translation client", () => {
+  it("sends the selected cloud provider and consent in the readiness query", async () => {
+    const payload = {
+      data: {
+        ready: true,
+        blocking_issues: [],
+        warnings: [],
+        segment_count: 10,
+        estimated_batches: 2,
+      },
+      meta: { request_id: "translation-readiness" },
+    } satisfies components["schemas"]["TranslationReadinessResponse"];
+    const fetchImplementation = vi.fn((input: string | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(jsonResponse(payload));
+    });
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+
+    await expect(client.getTranslationReadiness(project.id, {
+      provider_type: "GROQ",
+      cloud_model_name: "qwen/qwen3.8-27b",
+      cloud_consent: true,
+    })).resolves.toMatchObject({ ok: true });
+
+    expect(fetchImplementation.mock.calls[0]?.[0]).toBe(
+      "http://127.0.0.1:8000/api/v1/projects/" + project.id +
+        "/translation-readiness?provider_type=GROQ&cloud_model_name=qwen%2Fqwen3.8-27b&cloud_consent=true",
+    );
+  });
+
+  it("starts cloud translation without credential fields", async () => {
+    const payload = {
+      data: {
+        job_id: "job_00000000-0000-4000-8000-000000000004",
+        status: "QUEUED",
+      },
+      meta: { request_id: "translation-start" },
+    } satisfies components["schemas"]["TranslationJobResponse"];
+    const fetchImplementation = vi.fn((input: string | URL, init?: RequestInit) => {
+      void input;
+      void init;
+      return Promise.resolve(jsonResponse(payload, { status: 202 }));
+    });
+    const client = createTransLokaClient({ fetch: fetchImplementation });
+    const input = {
+      batch_size: 5,
+      cloud_consent: true,
+      cloud_model_name: "qwen/qwen3.8-27b",
+      context_mode: "STANDARD",
+      model_id: null,
+      page_ids: null,
+      provider_type: "GROQ",
+      retranslate_existing: false,
+      run_semantic_validation: false,
+      scope: "FULL_DOCUMENT",
+      section_ids: null,
+      segment_ids: null,
+      skip_locked_segments: true,
+      translation_style: "PROFESSIONAL",
+    } satisfies components["schemas"]["StartTranslationRequest"];
+
+    await expect(client.startTranslation(project.id, "cloud-start-1", input)).resolves.toMatchObject({
+      ok: true,
+    });
+
+    const call = fetchImplementation.mock.calls[0];
+    if (call === undefined) {
+      throw new Error("Expected the translation client to call fetch.");
+    }
+    const headers = new Headers(call[1]?.headers);
+    expect(call[0]).toBe(
+      "http://127.0.0.1:8000/api/v1/projects/" + project.id + "/translation/start",
+    );
+    expect(call[1]?.body).toBe(JSON.stringify(input));
+    expect(call[1]?.body).not.toContain("api_key");
+    expect(headers.get(IDEMPOTENCY_KEY_HEADER)).toBe("cloud-start-1");
+  });
+
+  it("accepts provider-stop status fields and rejects invalid counts", async () => {
+    const status = {
+      active_job_id: "job_00000000-0000-4000-8000-000000000004",
+      completed_segments: 5,
+      current_batch: 1,
+      failed_segments: 0,
+      progress: 0.25,
+      provider_error_code: "RATE_LIMIT",
+      retry_after_seconds: 60,
+      review_required_segments: 0,
+      status: "FAILED",
+      total_batches: 4,
+      total_segments: 20,
+      unattempted_segments: 15,
+    } satisfies components["schemas"]["TranslationStatusData"];
+    const client = createTransLokaClient({
+      fetch: () => Promise.resolve(jsonResponse({
+        data: status,
+        meta: { request_id: "translation-status" },
+      })),
+    });
+    const invalidClient = createTransLokaClient({
+      fetch: () => Promise.resolve(jsonResponse({
+        data: { ...status, unattempted_segments: -1 },
+        meta: { request_id: "invalid-translation-status" },
+      })),
+    });
+
+    await expect(client.getTranslationStatus(project.id)).resolves.toMatchObject({ ok: true });
+    await expect(invalidClient.getTranslationStatus(project.id)).resolves.toMatchObject({
+      ok: false,
+      error: { kind: "invalid-response" },
+    });
+  });
+});
+
 describe("job client", () => {
   it("gets, lists, and reads attempts using generated response contracts", async () => {
     const payloads = [

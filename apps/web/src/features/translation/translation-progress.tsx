@@ -27,6 +27,22 @@ function boundedProgress(value: number): number {
   return Math.max(0, Math.min(1, Number.isFinite(value) ? value : 0));
 }
 
+function providerStopMessage(status: TranslationStatus): string | null {
+  if (status.provider_error_code == null) {
+    return null;
+  }
+  const prefix = status.provider_error_code === "RATE_LIMIT"
+    ? "The translation provider rate limit stopped this job."
+    : status.provider_error_code === "AUTHENTICATION_FAILED"
+      ? "The translation provider rejected the local credential."
+      : "The translation provider stopped this job.";
+  const unattempted = status.unattempted_segments ?? 0;
+  const retry = status.retry_after_seconds == null
+    ? "Resume after the provider is available."
+    : `Try again in about ${Math.ceil(status.retry_after_seconds)} seconds.`;
+  return `${prefix} ${unattempted} segment(s) were not attempted. ${retry}`;
+}
+
 export function TranslationProgress({
   client = defaultClient,
   pollIntervalMs = 2_000,
@@ -115,7 +131,7 @@ export function TranslationProgress({
     const result = await client.retryFailedTranslation(
       projectId,
       retryKey(projectId),
-      { use_smaller_batch: true, use_selected_model: true },
+      { use_smaller_batch: status.failed_segments > 0, use_selected_model: true },
     );
     if (!mounted.current) {
       return;
@@ -195,6 +211,12 @@ export function TranslationProgress({
             </p>
           ) : null}
 
+          {providerStopMessage(status) !== null ? (
+            <p className="mt-4 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900" role="alert">
+              {providerStopMessage(status)}
+            </p>
+          ) : null}
+
           <div className="mt-6 flex flex-wrap items-center gap-3 border-t border-slate-100 pt-5">
             {!isTerminalTranslationStatus(status.status) ? (
               <button
@@ -213,7 +235,11 @@ export function TranslationProgress({
                 onClick={() => void retry()}
                 type="button"
               >
-                {pendingAction === "retry" ? "Retrying…" : "Retry failed segments"}
+                {pendingAction === "retry"
+                  ? "Retrying…"
+                  : (status.unattempted_segments ?? 0) > 0
+                    ? "Resume translation"
+                    : "Retry failed segments"}
               </button>
             ) : null}
           </div>
