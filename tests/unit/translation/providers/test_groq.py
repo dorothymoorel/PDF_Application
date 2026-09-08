@@ -89,6 +89,7 @@ def test_translate_uses_fixed_https_strict_schema_and_existing_contract(
     assert len(transport["calls"]) == 1
     assert sent.full_url == "https://api.groq.com/openai/v1/chat/completions"
     assert sent.get_header("Authorization") == "Bearer test-key-never-log"
+    assert sent.get_header("User-agent") == groq._USER_AGENT
     body = json.loads(sent.data)
     assert body["stream"] is False and "tools" not in body
     assert body["reasoning_effort"] == "none"

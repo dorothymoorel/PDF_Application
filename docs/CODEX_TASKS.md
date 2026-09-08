@@ -169,6 +169,25 @@ the project owner confirms the selected model. Do not add dependencies, change p
 source, send private document text, stage or commit evaluation results automatically, start
 M11-T18, or begin any later cloud task.
 
+### CLOUD-04 corrective amendment - Groq urllib compatibility
+
+Owner-authorized corrective amendment: 2026-09-08. A live account check established that
+the same valid key receives HTTP 200 through Windows HttpClient and HTTP 403 through
+Python's default `urllib` user agent. The Groq edge rejects `Python-urllib/<version>`.
+
+Additional allowed files for this corrective amendment only:
+
+```text
+python/transloka-translation/src/transloka_translation/providers/groq.py
+tests/unit/translation/providers/test_groq.py
+```
+
+Acceptance: requests retain the fixed host, disabled proxies and redirect refusal while
+sending a stable TransLoka User-Agent; no credential, prompt or response is logged. A
+mocked regression test verifies the header. The live CLOUD-04 evaluation must be retried
+only after focused checks pass. No dependency, proxy, model, fallback, credential-storage,
+or other production behavior changes are allowed.
+
 ## TransLoka Personal MVP Atomic Task Backlog
 
 **Document Name:** `CODEX_TASKS.md`

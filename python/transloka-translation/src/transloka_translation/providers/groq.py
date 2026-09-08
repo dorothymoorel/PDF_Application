@@ -29,6 +29,7 @@ from .base import (
 GROQ_MODELS = ("qwen/qwen3.8-27b", "openai/gpt-oss-120b")
 _BASE_URL = "https://api.groq.com/openai/v1"
 _MAX_BYTES = 1024 * 1024
+_USER_AGENT = "TransLoka/1.0"
 
 
 def _error(code: ProviderErrorCode, *, retryable: bool = False) -> TranslationProviderError:
@@ -201,6 +202,7 @@ class GroqTranslationProvider:
                 "Authorization": f"Bearer {key}",
                 "Content-Type": "application/json",
                 "Accept": "application/json",
+                "User-Agent": _USER_AGENT,
             },
         )
         opener = build_opener(ProxyHandler({}), _RejectRedirects())
