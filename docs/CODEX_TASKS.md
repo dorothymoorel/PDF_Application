@@ -119,6 +119,56 @@ frontend/API-client tests, lint, typecheck, build, audit, and `git diff --check`
 add backend or worker changes, dependencies, migrations, live cloud requests, CLOUD-04
 evaluation, or M11-T18 work. Do not stage or commit unless separately instructed.
 
+## CLOUD-04 - Account smoke and translation evaluation
+
+Owner-authorized addition: 2026-09-08. Dependencies: CLOUD-01 through CLOUD-03
+completed and verified. Objective: validate one explicitly selected allowlisted Groq
+model against the project owner's account before any real-document cloud trial.
+
+Exact allowed files:
+
+```text
+tests/fixtures/translation/cloud_translation_evaluation_en_id_v1.json
+tests/performance/cloud_translation_evaluation.py
+tests/unit/benchmark/test_cloud_translation_evaluation.py
+docs/releases/CLOUD_TRANSLATION_EVALUATION_2026-09-08.md
+docs/releases/evidence/CLOUD_TRANSLATION_EVALUATION_2026-09-08.json
+```
+
+Acceptance: the user supplies `GROQ_API_KEY` through the current process environment;
+the key is never accepted as a command argument, printed, written, or committed. The
+runner queries provider metadata first and stops without a translation request when the
+explicitly selected allowlisted model is unavailable. There is no model or provider
+fallback. The versioned fixture contains exactly 50 synthetic or public-domain English
+segments with Indonesian references and covers general prose, glossary constraints,
+placeholders, long sentences, formatting markers, numbers, and instruction-like source
+text. The user's book or other private document is not used for connectivity testing.
+
+The evaluation records aggregate and per-case completion, schema/placeholder validation,
+latency, retry and rate-limit behavior, and human-review findings without storing prompt
+or response bodies. Input and output token counts use the existing deterministic estimator
+and are labelled estimates because the current provider contract does not expose billed
+Groq usage. The report must distinguish measured facts, estimates, and reviewer judgment;
+it must not declare the provider production-ready solely because the smoke test completes.
+
+Required verification:
+
+```powershell
+uv run pytest tests/unit/benchmark/test_cloud_translation_evaluation.py -q
+uv run pytest tests/unit/translation/providers/test_groq.py -q
+uv run ruff check tests/performance/cloud_translation_evaluation.py tests/unit/benchmark/test_cloud_translation_evaluation.py
+uv run ruff format --check tests/performance/cloud_translation_evaluation.py tests/unit/benchmark/test_cloud_translation_evaluation.py
+uv run mypy tests/performance/cloud_translation_evaluation.py
+uv run python tests/performance/cloud_translation_evaluation.py --model "qwen/qwen3.8-27b" --output "docs/releases/evidence/CLOUD_TRANSLATION_EVALUATION_2026-09-08.json"
+git diff --check
+git status --porcelain
+```
+
+The live command may run only after `GROQ_API_KEY` is present in the current process and
+the project owner confirms the selected model. Do not add dependencies, change production
+source, send private document text, stage or commit evaluation results automatically, start
+M11-T18, or begin any later cloud task.
+
 ## TransLoka Personal MVP Atomic Task Backlog
 
 **Document Name:** `CODEX_TASKS.md`
