@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import math
-from collections import defaultdict
+from collections import defaultdict, deque
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -52,6 +52,7 @@ from transloka_reconstruction.hybrid import (
 )
 from transloka_reconstruction.overlay import (
     CoverRegion,
+    OverlayLayoutError,
     OverlayPageGenerator,
     OverlayText,
     TextAlignment,
@@ -68,6 +69,10 @@ class ReconstructionWorkerError(RuntimeError):
     pass
 
 
+class SourceStyleAlignmentError(OverlayLayoutError):
+    """Translation changed mixed-style text without a reviewed style mapping."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReconstructionBlockInput:
     block_id: str
@@ -76,6 +81,21 @@ class ReconstructionBlockInput:
     translated_text: str | None
     source_geometry: Mapping[str, object]
     source_style: Mapping[str, object] | None = None
+    layout_source_text: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceRun:
+    text: str
+    box: CoverRegion
+    font_name: str
+    font_size: float
+
+
+@dataclass(frozen=True, slots=True)
+class _SourceLine:
+    box: CoverRegion
+    runs: tuple[_SourceRun, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -441,6 +461,15 @@ class ReconstructionRenderer:
                 strategies.append((block.block_id, "PRESERVE"))
                 continue
             x, y, width, height = _pdf_geometry(block.source_geometry, page)
+            if "source_lines" in (block.source_style or {}):
+                line_texts, mapping = self._source_line_overlay(block, page)
+                texts.extend(line_texts)
+                font_mappings.append((block.block_id, mapping))
+                covers.append(
+                    CoverRegion(x, y, width, height, source_text=block.source_text or None)
+                )
+                strategies.append((block.block_id, "OVERLAY"))
+                continue
             font_size = _font_size(block.source_style, block.source_geometry, height)
             text_x, text_width, alignment = _text_box(block, page, x, width)
             style = block.source_style or {}
@@ -490,6 +519,106 @@ class ReconstructionRenderer:
             tuple(strategies),
             tuple(font_mappings),
         )
+
+    def _source_line_overlay(
+        self, block: ReconstructionBlockInput, page: ReconstructionPageInput
+    ) -> tuple[tuple[OverlayText, ...], dict[str, object]]:
+        from reportlab.pdfbase.pdfmetrics import stringWidth  # type: ignore[import-untyped]
+
+        lines = _source_typography(block, page)
+        target = block.translated_text or ""
+        source = (
+            block.layout_source_text if block.layout_source_text is not None else block.source_text
+        )
+        unchanged = " ".join(target.split()) == " ".join(source.split())
+        reference = lines[0].runs[0]
+        # Ignore extraction roundoff only; keep the recorded sizes for rendering.
+        if not unchanged and any(
+            run.font_name != reference.font_name
+            or not math.isclose(run.font_size, reference.font_size, rel_tol=0, abs_tol=1e-6)
+            for line in lines
+            for run in line.runs
+        ):
+            raise SourceStyleAlignmentError(
+                "Translated mixed-style text requires reviewed source-to-target style alignment."
+            )
+        texts: list[OverlayText] = []
+        mappings: list[dict[str, object]] = []
+        # Newlines supplied by the translation remain hard breaks. Words can wrap
+        # only into the existing visual lines, with their original indent and Y.
+        pending: deque[str | None] = deque()
+        for index, paragraph in enumerate(target.strip().splitlines()):
+            if index:
+                pending.append(None)
+            pending.extend(paragraph.split())
+        block_box = CoverRegion(*_pdf_geometry(block.source_geometry, page))
+        for line_index, line in enumerate(lines):
+            for run_index, run in enumerate(line.runs if unchanged else line.runs[:1]):
+                fallback = _font_name({"font_name": run.font_name})
+                font = self._font_catalog.resolve(
+                    run.font_name, run.text if unchanged else target, fallback=fallback
+                )
+                box = run.box if unchanged else line.box
+                width = box.width if unchanged else block_box.right - box.x
+                if unchanged:
+                    text = run.text
+                else:
+                    if not pending:
+                        break
+                    words: list[str] = []
+                    used_width = 0.0
+                    space_width = stringWidth(" ", font.name, run.font_size)
+                    while pending and pending[0] is not None:
+                        word = pending[0]
+                        added_width = stringWidth(word, font.name, run.font_size)
+                        if words:
+                            added_width += space_width
+                        if used_width + added_width > width + 0.001:
+                            break
+                        words.append(cast(str, pending.popleft()))
+                        used_width += added_width
+                    if not words and pending[0] is not None:
+                        raise OverlayLayoutError("A translated word exceeds its source line width.")
+                    if pending and pending[0] is None:
+                        pending.popleft()
+                    text = " ".join(words)
+                    if not text:
+                        continue
+                texts.append(
+                    OverlayText(
+                        text,
+                        box.x,
+                        box.y,
+                        width=width,
+                        height=box.height,
+                        font_name=font.name,
+                        font_size_pt=run.font_size,
+                        text_id=block.block_id,
+                    )
+                )
+                mappings.append(
+                    {
+                        **font.metadata(),
+                        "line_index": line_index,
+                        "run_index": run_index,
+                        "font_size": run.font_size,
+                    }
+                )
+        if not unchanged and pending:
+            raise OverlayLayoutError("Translated text exceeds the available source lines.")
+        if not texts:
+            raise OverlayLayoutError("Source line rendering requires non-empty translated text.")
+        metadata = dict(mappings[0])
+        metadata["layout"] = "SOURCE_STYLE_RUNS" if unchanged else "SOURCE_LINES"
+        metadata["runs"] = mappings
+        metadata["warnings"] = sorted(
+            {
+                warning
+                for mapping in mappings
+                for warning in cast(list[str], mapping.get("warnings", []))
+            }
+        )
+        return tuple(texts), metadata
 
     @staticmethod
     def _reflow(
@@ -768,6 +897,7 @@ def _load_page(session: Session, page: DocumentPage) -> ReconstructionPageInput:
                 translated_text=translated,
                 source_geometry=_geometry_json(block.source_geometry_json),
                 source_style=_style_json(block.style_json),
+                layout_source_text=block.source_text,
             )
         )
     return ReconstructionPageInput(
@@ -801,6 +931,76 @@ def _style_json(value: str | None) -> Mapping[str, object]:
     if not isinstance(parsed, dict):
         raise ReconstructionWorkerError("A reconstruction block style is invalid.")
     return cast(dict[str, object], parsed)
+
+
+def _source_typography(
+    block: ReconstructionBlockInput, page: ReconstructionPageInput
+) -> tuple[_SourceLine, ...]:
+    raw_lines = (block.source_style or {}).get("source_lines")
+    source = block.layout_source_text if block.layout_source_text is not None else block.source_text
+    source_lines = source.splitlines()
+    if not isinstance(raw_lines, list) or not raw_lines or len(raw_lines) != len(source_lines):
+        raise ReconstructionWorkerError("Source typography lines do not match the original text.")
+    block_box = CoverRegion(*_pdf_geometry(block.source_geometry, page))
+    lines: list[_SourceLine] = []
+    previous_bottom = block_box.top
+    for raw_line, source_line in zip(raw_lines, source_lines, strict=True):
+        if not isinstance(raw_line, dict):
+            raise ReconstructionWorkerError("Source typography line is invalid.")
+        box = _typography_box(raw_line.get("source_geometry"), page, block_box)
+        if box.top > previous_bottom + 0.1:
+            raise ReconstructionWorkerError("Source typography lines overlap or are out of order.")
+        previous_bottom = box.y
+        raw_runs = raw_line.get("style_runs")
+        if not isinstance(raw_runs, list) or not raw_runs:
+            raise ReconstructionWorkerError("Source typography runs are missing.")
+        words = source_line.split(" ")
+        runs: list[_SourceRun] = []
+        expected_start = 0
+        previous_right = box.x
+        for raw_run in raw_runs:
+            if not isinstance(raw_run, dict):
+                raise ReconstructionWorkerError("Source typography run is invalid.")
+            start, end = raw_run.get("word_start"), raw_run.get("word_end")
+            if (
+                type(start) is not int
+                or type(end) is not int
+                or start != expected_start
+                or not start < end <= len(words)
+            ):
+                raise ReconstructionWorkerError("Source typography word ranges are invalid.")
+            run_box = _typography_box(raw_run.get("source_geometry"), page, box)
+            if run_box.x < previous_right - 0.1:
+                raise ReconstructionWorkerError(
+                    "Source typography runs overlap or are out of order."
+                )
+            name = raw_run.get("font_name")
+            if not isinstance(name, str) or not name.strip() or raw_run.get("upright") is not True:
+                raise ReconstructionWorkerError(
+                    "Source typography font or orientation is unsupported."
+                )
+            size = _finite_geometry(raw_run.get("font_size"), positive=True)
+            if size > run_box.height + 0.01:
+                raise OverlayLayoutError("Source font size exceeds its line height.")
+            runs.append(_SourceRun(" ".join(words[start:end]), run_box, name, size))
+            previous_right, expected_start = run_box.right, end
+        if expected_start != len(words):
+            raise ReconstructionWorkerError("Source typography word ranges are incomplete.")
+        lines.append(_SourceLine(box, tuple(runs)))
+    return tuple(lines)
+
+
+def _typography_box(
+    value: object, page: ReconstructionPageInput, parent: CoverRegion
+) -> CoverRegion:
+    if not isinstance(value, dict) or value.get("coordinate_system") != "PDF_POINT_TOP_LEFT":
+        raise ReconstructionWorkerError("Source typography geometry is invalid.")
+    box = CoverRegion(*_pdf_geometry(value, page))
+    if not parent.contains_point(box.x, box.y, tolerance=0.1) or not parent.contains_point(
+        box.right, box.top, tolerance=0.1
+    ):
+        raise ReconstructionWorkerError("Source typography geometry is outside its parent region.")
+    return box
 
 
 def _pdf_geometry(

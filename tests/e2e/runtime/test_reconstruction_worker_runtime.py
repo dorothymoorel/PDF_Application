@@ -53,6 +53,8 @@ from transloka_core.database.models.reconstruction import (
     TargetPageMapping,
 )
 from transloka_core.storage.local import LocalFileStorage
+from transloka_documents.extraction import extract_digital_text
+from transloka_worker.analysis import _style_json
 from transloka_worker.queue import create_huey, resolve_queue_configuration
 from transloka_worker.reconstruction import (
     DatabaseReconstructionRequestLoader,
@@ -86,10 +88,12 @@ SEGMENT_ID = _id("seg_", 205)
 
 
 @pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
+@pytest.mark.parametrize("typography", [False, True])
 def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     mode: str,
+    typography: bool,
 ) -> None:
     initial_artifacts = _database_artifacts()
     data_root = tmp_path / "production reconstruction runtime"
@@ -115,7 +119,9 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
         project_id = cast(str, project_response.json()["data"]["id"])
         factory = cast(sessionmaker[Session], application.state.session_factory)
         storage = LocalFileStorage(application.state.settings.data_directories)
-        source_pdf = _seed_reconstruction_inputs(factory, storage, project_id)
+        source_pdf = _seed_reconstruction_inputs(
+            factory, storage, project_id, typography=typography
+        )
 
         start = client.post(
             f"/api/v1/projects/{project_id}/reconstruction/start",
@@ -203,6 +209,9 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
             assert font_mapping["resolved_family"] == "Helvetica"
             assert font_mapping["embedding_status"] == "SYSTEM_REFERENCE"
             assert font_mapping["warnings"] == []
+            if typography:
+                assert font_mapping["layout"] == "SOURCE_LINES"
+                assert [run["line_index"] for run in font_mapping["runs"]] == [0, 1]
             document = session.get(Document, DOCUMENT_ID)
             assert job is not None and job.status == JobStatus.COMPLETED.value
             assert attempt is not None and attempt.status == JobAttemptStatus.COMPLETED.value
@@ -227,6 +236,8 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
         )
         assert TRANSLATED_TEXT in output_text
         assert SOURCE_TEXT not in output_text
+        if typography:
+            assert output_text.count(TRANSLATED_TEXT) == 2
         assert hashlib.sha256(output_pdf).hexdigest() == export_checksum
         with storage.open_read(f"projects/{project_id}/original/{ORIGINAL_FILE_ID}.pdf") as source:
             assert source.read() == source_pdf
@@ -235,9 +246,25 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
 
 
 def _seed_reconstruction_inputs(
-    factory: sessionmaker[Session], storage: LocalFileStorage, project_id: str
+    factory: sessionmaker[Session],
+    storage: LocalFileStorage,
+    project_id: str,
+    *,
+    typography: bool = False,
 ) -> bytes:
-    source_pdf = _pdf_bytes()
+    source_pdf = _pdf_bytes(typography=typography)
+    style_json = None
+    source_text = SOURCE_TEXT
+    translated_text = TRANSLATED_TEXT
+    if typography:
+        extracted = extract_digital_text(BytesIO(source_pdf))
+        page = extracted.pages[0]
+        assert len(page.block_candidates) == 1
+        source_text = page.block_candidates[0].source_text
+        assert source_text == f"{SOURCE_TEXT}\n{SOURCE_TEXT}"
+        style_json = _style_json(page, page.block_candidates[0])
+        translated_text = f"{TRANSLATED_TEXT}\n{TRANSLATED_TEXT}"
+    normalized_source = " ".join(source_text.split())
     storage_key = f"projects/{project_id}/original/{ORIGINAL_FILE_ID}.pdf"
     temporary = storage.write_temporary(BytesIO(source_pdf))
     artifact = storage.commit(temporary, storage_key, immutable=True)
@@ -323,19 +350,19 @@ def _seed_reconstruction_inputs(
                 semantic_role=SemanticRole.BODY_TEXT.value,
                 page_reading_order=0,
                 global_reading_order=0,
-                source_text=SOURCE_TEXT,
-                normalized_source_text=SOURCE_TEXT,
+                source_text=source_text,
+                normalized_source_text=normalized_source,
                 source_geometry_json=json.dumps(
                     {
                         "coordinate_system": "PDF_POINT_TOP_LEFT",
                         "x": 72,
                         "y": 52,
                         "width": 320,
-                        "height": 30,
+                        "height": 60 if typography else 30,
                     }
                 ),
                 target_geometry_json=None,
-                style_json=None,
+                style_json=style_json,
                 detail_json=None,
                 status=DocumentStatus.TRANSLATED.value,
                 confidence=0.99,
@@ -351,15 +378,15 @@ def _seed_reconstruction_inputs(
                 section_id=None,
                 segment_order=0,
                 global_order=0,
-                source_text=SOURCE_TEXT,
-                native_text=SOURCE_TEXT,
+                source_text=normalized_source,
+                native_text=normalized_source,
                 ocr_text=None,
-                resolved_source_text=SOURCE_TEXT,
-                normalized_source_text=SOURCE_TEXT,
-                protected_source_text=SOURCE_TEXT,
-                machine_translation=TRANSLATED_TEXT,
-                reviewed_translation=TRANSLATED_TEXT,
-                final_text=TRANSLATED_TEXT,
+                resolved_source_text=normalized_source,
+                normalized_source_text=normalized_source,
+                protected_source_text=normalized_source,
+                machine_translation=translated_text,
+                reviewed_translation=translated_text,
+                final_text=translated_text,
                 source_language="en",
                 target_language="id",
                 status=SegmentStatus.APPROVED.value,
@@ -379,10 +406,12 @@ def _seed_reconstruction_inputs(
     return source_pdf
 
 
-def _pdf_bytes() -> bytes:
+def _pdf_bytes(*, typography: bool = False) -> bytes:
     output = BytesIO()
     canvas = Canvas(output, pagesize=(612, 792))
     canvas.drawString(72, 720, SOURCE_TEXT)
+    if typography:
+        canvas.drawString(72, 700, SOURCE_TEXT)
     canvas.save()
     return output.getvalue()
 

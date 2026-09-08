@@ -16,8 +16,10 @@ from reportlab.lib.utils import ImageReader  # type: ignore[import-untyped]
 from reportlab.pdfbase import pdfmetrics  # type: ignore[import-untyped]
 from reportlab.pdfbase.ttfonts import TTFont  # type: ignore[import-untyped]
 from reportlab.pdfgen.canvas import Canvas  # type: ignore[import-untyped]
+from transloka_documents.extraction import extract_digital_text
 from transloka_reconstruction.fonts.reportlab import ReportLabFontCatalog
 from transloka_reconstruction.overlay import OverlayLayoutError
+from transloka_worker.analysis import _geometry_json, _style_json
 from transloka_worker.reconstruction import (
     LoadedReconstructionJob,
     ReconstructionBlockInput,
@@ -25,6 +27,7 @@ from transloka_worker.reconstruction import (
     ReconstructionPageInput,
     ReconstructionRenderer,
     ReconstructionWorkerError,
+    SourceStyleAlignmentError,
 )
 
 
@@ -596,3 +599,231 @@ def test_explicit_reflow_still_uses_document_renderer(
         hybrid_paragraph, command=_command(mode="REFLOW", settings=_settings("REFLOW"))
     )
     assert ReconstructionRenderer().render(loaded).pages[0].strategy == "REFLOW"
+
+
+def _typography_job(*, mixed: bool = False, mode: str = "OVERLAY") -> LoadedReconstructionJob:
+    source = BytesIO()
+    canvas = Canvas(source, pagesize=(400, 420))
+    canvas.setFont("Helvetica", 12)
+    for x, baseline, text in (
+        (52, 350, "First source sentence stays inside its region."),
+        (30, 333, "Second source sentence keeps the original spacing."),
+        (30, 310, "Last source sentence stays in the same paragraph."),
+    ):
+        canvas.drawString(x, baseline, text)
+    if mixed:
+        text = canvas.beginText(30, 210)
+        text.setFont("Helvetica", 12)
+        text.textOut("Mixed ")
+        text.setFont("Helvetica-Bold", 12)
+        text.textOut("bold ")
+        text.setFont("Helvetica-Oblique", 11)
+        text.textOut("italic words")
+        canvas.drawText(text)
+    canvas.drawImage(ImageReader(Image.new("RGB", (48, 32), "#249f70")), 30, 40, 96, 64)
+    canvas.setStrokeColorRGB(0, 0.4, 0.8)
+    canvas.rect(20, 20, 360, 100, stroke=1, fill=0)
+    canvas.save()
+    source_pdf = source.getvalue()
+    page = extract_digital_text(BytesIO(source_pdf)).pages[0]
+    blocks = tuple(
+        ReconstructionBlockInput(
+            block_id=_id("blk_", 400 + index),
+            block_type="PARAGRAPH",
+            # Model the loader's segment text, whose visual newlines are gone.
+            source_text=candidate.normalized_text,
+            layout_source_text=candidate.source_text,
+            translated_text=(
+                candidate.normalized_text
+                if mixed
+                else "Kalimat pertama tetap jelas.\nKalimat kedua masih rapi.\nKalimat terakhir terjaga."
+            ),
+            source_geometry=json.loads(_geometry_json(candidate.geometry)),
+            source_style=json.loads(cast(str, _style_json(page, candidate))),
+        )
+        for index, candidate in enumerate(page.block_candidates)
+    )
+    assert len(blocks) == (2 if mixed else 1)
+    return LoadedReconstructionJob(
+        job_id=_id("job_", 401),
+        reconstruction_job_id=_id("rcj_", 402),
+        project_id=PROJECT_ID,
+        document_id=DOCUMENT_ID,
+        source_pdf=source_pdf,
+        pages=(ReconstructionPageInput(PAGE_ID, 1, 400, 420, "DIGITAL", 1, blocks),),
+        selected_page_ids=(PAGE_ID,),
+        command=_command(mode=mode, settings=_settings(mode)),
+        critical_warnings=(),
+    )
+
+
+def _typography_raster(pdf: bytes) -> Image.Image:
+    with pdfium.PdfDocument(pdf) as document:
+        page = document[0]
+        bitmap = page.render(scale=2)
+        try:
+            return cast(Image.Image, bitmap.to_pil().convert("RGB").copy())
+        finally:
+            bitmap.close()
+            page.close()
+
+
+@pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
+def test_source_lines_preserve_irregular_spacing_and_indent(mode: str, tmp_path: Path) -> None:
+    job = _typography_job(mode=mode)
+    checksum = sha256(job.source_pdf).hexdigest()
+    result = ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+    with pdfplumber.open(BytesIO(result.pdf_bytes)) as document:
+        page = document.pages[0]
+        assert (page.width, page.height) == (400, 420)
+        assert "Kalimat pertama tetap jelas." in (page.extract_text() or "")
+        assert "source sentence" not in (page.extract_text() or "")
+        assert {char["fontname"] for char in page.chars} == {"Helvetica"}
+        assert {char["size"] for char in page.chars} == {12}
+        for top, x in [(60.484, 52), (77.484, 30), (100.484, 30)]:
+            chars = [char for char in page.chars if abs(char["top"] - top) < 0.01]
+            assert chars
+            assert min(char["x0"] for char in chars) == pytest.approx(x)
+        assert len({round(char["top"], 3) for char in page.chars}) == 3
+    assert sha256(job.source_pdf).hexdigest() == checksum
+    assert [image.data for image in PdfReader(BytesIO(job.source_pdf)).pages[0].images] == [
+        image.data for image in PdfReader(BytesIO(result.pdf_bytes)).pages[0].images
+    ]
+    assert result.pages[0].font_mappings[0][1]["layout"] == "SOURCE_LINES"
+    before, after = _typography_raster(job.source_pdf), _typography_raster(result.pdf_bytes)
+    region = (0, 500, 800, 840)
+    assert ImageChops.difference(before.crop(region), after.crop(region)).getbbox() is None
+    before.save(tmp_path / "source.png")
+    after.save(tmp_path / "translation.png")
+
+
+def test_translation_without_newlines_wraps_only_into_source_lines() -> None:
+    job = _typography_job()
+    page = job.pages[0]
+    target = "Kalimat terjemahan tetap berada di area asli. " * 2
+    job = replace(
+        job, pages=(replace(page, blocks=(replace(page.blocks[0], translated_text=target),)),)
+    )
+    result = ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+    with pdfplumber.open(BytesIO(result.pdf_bytes)) as document:
+        output = document.pages[0]
+        assert (output.extract_text() or "").split() == target.split()
+        tops = {round(char["top"], 3) for char in output.chars}
+        assert 1 < len(tops) <= 3
+        assert tops <= {60.484, 77.484, 100.484}
+        assert {char["size"] for char in output.chars} == {12}
+
+
+def test_source_runs_preserve_mixed_styles_for_unchanged_text(tmp_path: Path) -> None:
+    job = _typography_job(mixed=True)
+    result = ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+    with pdfplumber.open(BytesIO(result.pdf_bytes)) as document:
+        chars = document.pages[0].chars
+        assert {char["fontname"] for char in chars} == {
+            "Helvetica",
+            "Helvetica-Bold",
+            "Helvetica-Oblique",
+        }
+        italic = [char for char in chars if char["fontname"] == "Helvetica-Oblique"]
+        assert {char["size"] for char in italic} == {11}
+    assert result.pages[0].font_mappings[-1][1]["layout"] == "SOURCE_STYLE_RUNS"
+    before, after = _typography_raster(job.source_pdf), _typography_raster(result.pdf_bytes)
+    assert ImageChops.difference(before, after).getbbox() is None
+    before.save(tmp_path / "mixed-source.png")
+    after.save(tmp_path / "mixed-output.png")
+
+
+@pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
+@pytest.mark.parametrize("font_size", [11.04, 11.1, 9.6])
+def test_fractional_source_font_sizes_ignore_extraction_roundoff(
+    mode: str, font_size: float
+) -> None:
+    source = BytesIO()
+    canvas = Canvas(source, pagesize=(400, 420))
+    canvas.setFont("Helvetica", font_size)
+    for baseline in (270, 250, 230):
+        canvas.drawString(30, baseline, "A source sentence with the same font size.")
+    canvas.save()
+    source_pdf = source.getvalue()
+    checksum = sha256(source_pdf).hexdigest()
+    extracted = extract_digital_text(BytesIO(source_pdf)).pages[0]
+    assert len(extracted.block_candidates) == 1
+    candidate = extracted.block_candidates[0]
+    style = json.loads(cast(str, _style_json(extracted, candidate)))
+    sizes = {run["font_size"] for line in style["source_lines"] for run in line["style_runs"]}
+    assert len(sizes) > 1  # Same physical font size, different floating-point representations.
+    job = _typography_job(mode=mode)
+    target = "Baris satu.\nBaris dua.\nBaris tiga."
+    block = replace(
+        job.pages[0].blocks[0],
+        source_text=candidate.normalized_text,
+        layout_source_text=candidate.source_text,
+        source_geometry=json.loads(_geometry_json(candidate.geometry)),
+        source_style=style,
+        translated_text=target,
+    )
+    job = replace(job, source_pdf=source_pdf, pages=(replace(job.pages[0], blocks=(block,)),))
+    result = ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+    with pdfplumber.open(BytesIO(result.pdf_bytes)) as document:
+        page = document.pages[0]
+        assert (page.extract_text() or "").split() == target.split()
+        assert {char["fontname"] for char in page.chars} == {"Helvetica"}
+        assert all(char["size"] == pytest.approx(font_size, abs=1e-6, rel=0) for char in page.chars)
+    assert result.pages[0].font_mappings[0][1]["layout"] == "SOURCE_LINES"
+    assert sha256(job.source_pdf).hexdigest() == checksum
+
+
+@pytest.mark.parametrize("difference", [0.0001, 0.01, 1.0])
+def test_real_source_font_size_differences_still_require_alignment(difference: float) -> None:
+    job = _typography_job()
+    page, block = job.pages[0], job.pages[0].blocks[0]
+    style = json.loads(json.dumps(block.source_style))
+    style["source_lines"][1]["style_runs"][0]["font_size"] -= difference
+    job = replace(job, pages=(replace(page, blocks=(replace(block, source_style=style),)),))
+    with pytest.raises(SourceStyleAlignmentError, match="style alignment"):
+        ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+
+
+def test_changed_mixed_styles_require_alignment_even_with_same_word_count() -> None:
+    job = _typography_job(mixed=True)
+    page = job.pages[0]
+    mixed = replace(page.blocks[-1], translated_text="Campuran kata miring tebal")
+    job = replace(job, pages=(replace(page, blocks=(*page.blocks[:-1], mixed)),))
+    with pytest.raises(SourceStyleAlignmentError, match="style alignment"):
+        ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+
+
+@pytest.mark.parametrize("target", ["Terlalupanjang" * 60, "Kalimat panjang. " * 200])
+def test_source_line_overflow_never_truncates_or_shrinks(target: str) -> None:
+    job = _typography_job()
+    page = job.pages[0]
+    job = replace(
+        job, pages=(replace(page, blocks=(replace(page.blocks[0], translated_text=target),)),)
+    )
+    with pytest.raises(OverlayLayoutError, match="exceeds"):
+        ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+
+
+@pytest.mark.parametrize(
+    "defect", ["range", "font_size", "outside", "orientation", "lines", "overlap"]
+)
+def test_invalid_source_typography_is_rejected(defect: str) -> None:
+    job = _typography_job()
+    page, block = job.pages[0], job.pages[0].blocks[0]
+    style = json.loads(json.dumps(block.source_style))
+    run = style["source_lines"][0]["style_runs"][0]
+    if defect == "range":
+        run["word_end"] = True
+    elif defect == "font_size":
+        run["font_size"] = float("nan")
+    elif defect == "outside":
+        run["source_geometry"]["x"] = 350
+    elif defect == "orientation":
+        run["upright"] = False
+    elif defect == "lines":
+        style["source_lines"] = []
+    else:
+        style["source_lines"][1]["source_geometry"]["y"] = 61
+    job = replace(job, pages=(replace(page, blocks=(replace(block, source_style=style),)),))
+    with pytest.raises(ReconstructionWorkerError):
+        ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)

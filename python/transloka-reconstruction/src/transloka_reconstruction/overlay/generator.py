@@ -320,12 +320,15 @@ def _wrap_paragraphs(
         current = words[0]
         for word in words[1:]:
             candidate = f"{current} {word}"
-            if canvas.stringWidth(candidate, text.font_name, text.font_size_pt) <= text.width:
+            if (
+                canvas.stringWidth(candidate, text.font_name, text.font_size_pt)
+                <= text.width + 0.01
+            ):
                 current = candidate
             else:
                 lines.append(current)
                 current = word
-        if canvas.stringWidth(current, text.font_name, text.font_size_pt) > text.width:
+        if canvas.stringWidth(current, text.font_name, text.font_size_pt) > text.width + 0.01:
             raise OverlayLayoutError(
                 f"Text {text.text_id or '<anonymous>'} contains a word wider than its box."
             )

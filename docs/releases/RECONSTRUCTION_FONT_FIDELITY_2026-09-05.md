@@ -220,13 +220,86 @@ Verification for this follow-up:
 - `uv run mypy .`: passed (383 source files).
 - `git diff --check`: passed.
 
+### Authorized follow-up: bounded per-line and source-run rendering
+
+Review date: 2026-09-08. Follow-up label: REL-FID-03.
+
+OVERLAY and the bounded HYBRID path now consume REL-FID-02 `source_lines`.
+Uniform-style translations use the original line positions, indents, font and
+font size, wrapping only within the original block and available source lines.
+Explicit translated newlines remain hard breaks. Oversized words or paragraphs
+raise a layout error before publication; there is no clipping, font shrinking,
+extra page or whole-page fallback. Legacy blocks without this metadata keep
+their existing renderer, and explicit REFLOW is unchanged.
+
+For unchanged text, each source style run is rendered at its recorded geometry
+with its own font and size. Changed mixed-style text requires a reviewed
+source-to-target alignment that the current IR does not contain. It raises
+`SourceStyleAlignmentError`; equal source/target word counts are not evidence
+of alignment. This is a bounded implementation, not general translated inline
+bold/italic support. Invalid ranges, non-finite sizes, out-of-order/overlapping
+lines or runs, out-of-parent geometry and unsupported orientation are rejected.
+
+The loader retains the raw block text separately from normalized segment text
+so stored source-word ranges remain valid. Per-line/run font mappings are saved
+in the existing reconstruction metadata field. The shared overlay wrapper also
+uses the renderer's existing 0.01-point width tolerance: floating-point noise
+previously wrapped an exactly fitting source run into a spurious second line.
+
+Changed files: the reconstruction worker, shared overlay generator, existing
+worker integration test, existing reconstruction runtime E2E test, and this
+report. No dependency, migration, API or frontend changes. Existing document
+rows were not reanalyzed, services were not restarted and user jobs were untouched.
+
+Verification:
+
+- `uv run pytest tests/unit/reconstruction tests/integration/reconstruction tests/security/reconstruction tests/integration/worker/test_reconstruction_runtime.py tests/e2e/runtime/test_reconstruction_worker_runtime.py tests/integration/api/test_reconstruction.py tests/golden tests/unit/documents tests/integration/worker/test_analysis_runtime.py -q`:
+  **226 passed, 5 skipped in 68.56 seconds**. Skips require optional WeasyPrint.
+- After adding a newline-free wrapping regression,
+  `uv run pytest tests/integration/worker/test_reconstruction_runtime.py -q`:
+  **28 passed**. All translated words remain present in the source line slots.
+- Real API/queue/worker tests cover both modes with and without stored line
+  metadata, raw multiline text versus normalized segments, persisted run
+  mappings, completed exports and byte-identical original storage.
+- Raster pairs were visually inspected: irregular spacing and indentation are
+  retained; artwork pixels and image bytes are unchanged. The unchanged-text
+  mixed regular/bold/italic fixture is pixel-identical to its source.
+- Ruff check, Ruff format check (374 files), mypy (383 source files), and
+  `git diff --check`: passed.
+
+The full Python and frontend suites were not rerun. No stage, commit or push
+was performed for this follow-up. These fixtures do not establish fidelity for
+the user's entire book or parity with DeepL.
+
+#### REL-FID-03 review correction: fractional font-size roundoff
+
+The review reproduced false mixed-style failures on uniform 11.04-, 11.1- and
+9.6-point text. Extracting three lines across different PDF coordinates produced
+slightly different floating-point sizes (for example, `11.04000000000002` and
+`11.039999999999992`). Exact tuple equality incorrectly rejected translation.
+
+The existing style guard now compares sizes against the first run with
+`math.isclose(rel_tol=0, abs_tol=1e-6)`. Font names still match exactly and
+recorded sizes are retained for rendering; no metadata is rounded or rewritten.
+Only extraction noise is tolerated, not a general style-alignment fallback.
+
+The six real-PDF regressions failed before the fix in OVERLAY/HYBRID. After the
+fix, the worker integration suite passes **37 tests**, including rejection of
+real size differences of 0.0001, 0.01 and 1 point and existing mixed-font cases.
+Ruff check, Ruff format check (374 files), mypy (383 source files), and
+`git diff --check` pass. This correction changes only the worker, its existing
+integration tests and this report; no stage, commit, push or service restart.
+The broader reconstruction/analysis command listed above was rerun after this
+correction: **236 passed, 5 skipped in 58.91 seconds** (optional WeasyPrint).
+
 ## Remaining fidelity work
 
 - Source-only embedded fonts need a separately reviewed reuse path. CFF outlines
   and non-first faces in TrueType collections are not implemented by this adapter.
-- Source line and mixed-style run metadata are now persisted, but reconstruction
-  still selects and renders one style per block. Precise kerning/tracking,
-  rotations and complex shaping remain follow-ups.
+- Source lines and unchanged-text style runs are now rendered. Translated mixed
+  styles still need explicit source-to-target alignment; they are not guessed
+  from word counts. Precise kerning/tracking, rotations and complex shaping
+  remain follow-ups.
 - Automatic whole-page HYBRID reflow is now replaced by bounded block wrapping.
   Background-aware text replacement and overflow fitting remain follow-ups.
   Scanned PDFs cannot recover an original font file from pixels.
