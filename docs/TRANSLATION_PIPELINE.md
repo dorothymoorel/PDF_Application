@@ -1,5 +1,11 @@
 # TRANSLATION PIPELINE
 
+## Approved cloud exception - 2026-09-07
+
+Optional Groq inference is authorized after explicit enablement and consent. Reuse existing prompts, segment response validation, placeholder/glossary checks and review protection. CLOUD-01 implements only the provider adapter: one transport attempt, typed errors and optional Retry-After metadata. CLOUD-02 owns bounded retry/pacing, stop-on-quota behavior, durable provider snapshots and resume. Production still uses Ollama until that wiring is implemented. A cloud model does not change PDF layout reconstruction.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Translation Processing Specification
 
 **Document Name:** `TRANSLATION_PIPELINE.md`  

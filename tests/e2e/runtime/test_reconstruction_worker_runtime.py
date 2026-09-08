@@ -46,6 +46,7 @@ from transloka_core.database.models.jobs import (
 from transloka_core.database.models.pages import DocumentPage, PageType
 from transloka_core.database.models.projects import Project, ProjectStatus
 from transloka_core.database.models.reconstruction import (
+    ReconstructionBlock,
     ReconstructionJob,
     ReconstructionPage,
     ReconstructionStatus,
@@ -84,9 +85,11 @@ BLOCK_ID = _id("blk_", 204)
 SEGMENT_ID = _id("seg_", 205)
 
 
+@pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
 def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    mode: str,
 ) -> None:
     initial_artifacts = _database_artifacts()
     data_root = tmp_path / "production reconstruction runtime"
@@ -105,7 +108,7 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
                 "target_language": "id",
                 "document_type": "TECHNICAL_BOOK",
                 "translation_style": "PROFESSIONAL",
-                "reconstruction_mode": "OVERLAY",
+                "reconstruction_mode": mode,
             },
         )
         assert project_response.status_code == 201, project_response.text
@@ -117,7 +120,7 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
         start = client.post(
             f"/api/v1/projects/{project_id}/reconstruction/start",
             headers={**CLIENT_HEADERS, "Idempotency-Key": "production-reconstruction-e2e"},
-            json={"mode": "OVERLAY", "page_ids": [PAGE_ID]},
+            json={"mode": mode, "page_ids": [PAGE_ID]},
         )
         assert start.status_code == 202, start.text
         job_id = cast(str, start.json()["data"]["job_id"])
@@ -188,6 +191,18 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
                 else select(TargetPageMapping).where(TargetPageMapping.id == "missing")
             )
             project = session.get(Project, project_id)
+            rendered_block = session.scalar(
+                select(ReconstructionBlock).where(
+                    ReconstructionBlock.block_id == BLOCK_ID,
+                )
+            )
+            assert rendered_block is not None
+            assert rendered_block.strategy == ("REFLOW" if mode == "HYBRID" else "OVERLAY")
+            assert rendered_block.font_mapping_json is not None
+            font_mapping = json.loads(rendered_block.font_mapping_json)
+            assert font_mapping["resolved_family"] == "Helvetica"
+            assert font_mapping["embedding_status"] == "SYSTEM_REFERENCE"
+            assert font_mapping["warnings"] == []
             document = session.get(Document, DOCUMENT_ID)
             assert job is not None and job.status == JobStatus.COMPLETED.value
             assert attempt is not None and attempt.status == JobAttemptStatus.COMPLETED.value
@@ -196,6 +211,7 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
             assert export is not None and export.status == ExportStatus.COMPLETED.value
             assert export.file_id is not None
             assert page is not None and page.status == ReconstructionStatus.COMPLETED.value
+            assert page.strategy == "OVERLAY"
             assert mapping is not None and mapping.target_page_number == 1
             assert project is not None and project.status == ProjectStatus.READY_FOR_EXPORT.value
             assert document is not None and document.status == DocumentStatus.RECONSTRUCTED.value

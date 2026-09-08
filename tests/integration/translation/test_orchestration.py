@@ -18,6 +18,7 @@ from transloka_translation.providers import (
     TranslationProviderError,
 )
 from transloka_translation.schemas import TranslationContext
+from transloka_translation.validation import ValidationCode
 
 
 def _operation(
@@ -88,6 +89,28 @@ def test_fake_success_persists_restored_segment() -> None:
     assert len(provider.requests) == 1
 
 
+def test_rejected_batch_records_failed_attempt_and_specific_validation_codes() -> None:
+    provider: FakeTranslationProvider[object, str] = FakeTranslationProvider(
+        response=_response(("s1", "Pada masa depan."), ("s2", "Aman."))
+    )
+    store = InMemoryTranslationRunStore()
+    result = asyncio.run(
+        TranslationOrchestrator(provider, store).run(
+            _operation(_segment("s1", "In the 2000s."), _segment("s2", "Safe."))
+        )
+    )
+    assert result.status is TranslationRunStatus.FAILED
+    assert result.failed_segment_ids == ("s1", "s2")
+    assert store.results == []
+    assert len(store.attempts) == 1
+    assert store.attempts[0].status == "FAILED"
+    assert store.attempts[0].error_code == "VALIDATION_FAILED"
+    assert [(i.code, i.segment_id) for i in store.attempts[0].validation_issues] == [
+        (ValidationCode.NUMBER_MISMATCH, "s1")
+    ]
+    assert all(f.validation_codes == (ValidationCode.NUMBER_MISMATCH,) for f in result.failures)
+
+
 def test_protection_and_restoration_preserve_url() -> None:
     provider = _ProtectedEchoProvider()
     store = InMemoryTranslationRunStore()
@@ -143,7 +166,7 @@ def test_partial_failure_identifies_only_failed_batch() -> None:
         [
             _response(("s1", "Satu")),
             TranslationProviderError(
-                ProviderErrorCode.TIMEOUT, "provider timed out", retryable=True
+                ProviderErrorCode.CONTENT_REJECTED, "provider rejected content"
             ),
         ]
     )
@@ -160,7 +183,7 @@ def test_partial_failure_identifies_only_failed_batch() -> None:
     assert result.status is TranslationRunStatus.PARTIALLY_COMPLETED
     assert result.completed_segment_ids == ("s1",)
     assert result.failed_segment_ids == ("s2",)
-    assert result.failures[0].code == ProviderErrorCode.TIMEOUT.value
+    assert result.failures[0].code == ProviderErrorCode.CONTENT_REJECTED.value
 
 
 def test_orchestrator_reports_progress_after_each_batch() -> None:
@@ -184,7 +207,7 @@ def test_orchestrator_reports_progress_after_each_batch() -> None:
 
     asyncio.run(orchestrator.run(operation))
 
-    assert updates == [(1, 2), (2, 2)]
+    assert updates == [(0, 2), (1, 2), (2, 2)]
 
 
 def test_provider_timeout_marks_segment_failed() -> None:
@@ -197,8 +220,60 @@ def test_provider_timeout_marks_segment_failed() -> None:
     result = asyncio.run(orchestrator.run(_operation(_segment("s1", "One"))))
 
     assert result.status is TranslationRunStatus.FAILED
-    assert result.failed_segment_ids == ("s1",)
-    assert result.failures[0].code == "TIMEOUT"
+    assert result.failed_segment_ids == ()
+    assert result.unattempted_segment_ids == ("s1",)
+    assert result.provider_error_code == "TIMEOUT"
+
+
+def test_provider_wide_failure_retries_only_current_batch_then_stops() -> None:
+    provider = _ScriptedProvider(
+        [
+            TranslationProviderError(
+                ProviderErrorCode.RATE_LIMIT,
+                "quota reached",
+                retryable=True,
+                retry_after_seconds=0.0,
+            )
+            for _ in range(3)
+        ]
+    )
+    store = InMemoryTranslationRunStore()
+    operation = _operation(
+        _segment("s1", "One", order=0),
+        _segment("s2", "Two", order=1),
+        limits=BatchLimits(max_segments=1),
+    )
+
+    result = asyncio.run(TranslationOrchestrator(provider, store).run(operation))
+
+    assert provider.calls == 3
+    assert result.status is TranslationRunStatus.FAILED
+    assert result.failed_segment_ids == ()
+    assert result.unattempted_segment_ids == ("s1", "s2")
+    assert result.provider_error_code == "RATE_LIMIT"
+    assert store.attempts[0].retry_after_seconds == 0.0
+
+
+def test_retry_after_beyond_wait_budget_stops_without_sleeping() -> None:
+    provider = _ScriptedProvider(
+        [
+            TranslationProviderError(
+                ProviderErrorCode.RATE_LIMIT,
+                "quota reached",
+                retryable=True,
+                retry_after_seconds=60.0,
+            )
+        ]
+    )
+
+    result = asyncio.run(
+        TranslationOrchestrator(provider, InMemoryTranslationRunStore()).run(
+            _operation(_segment("s1", "One"))
+        )
+    )
+
+    assert provider.calls == 1
+    assert result.retry_after_seconds == 60.0
 
 
 @dataclass

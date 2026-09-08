@@ -1,5 +1,11 @@
 # TECH STACK DECISIONS
 
+## Approved cloud exception - 2026-09-07
+
+Optional Groq text inference is approved following the owner request of 2026-09-07 and the existing Add Cloud AI Provider criteria. Use the TranslationProvider contract with stdlib HTTPS, fixed api.groq.com endpoints, environment credentials, bounded I/O and no redirects/proxies. Keep remote Ollama validation intact. Qwen 3.8 27B is a preview evaluation candidate; access, free account tier and translation quality require later validation. Existing local-only claims apply to local mode; this is the sole outbound inference exception.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Local-First Personal MVP
 
 **Document Name:** `TECH_STACK_DECISIONS.md`  

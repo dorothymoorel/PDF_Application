@@ -1,5 +1,11 @@
 # IMPLEMENTATION PLAN
 
+## Approved cloud exception - 2026-09-07
+
+Execute CLOUD-01 (governance and isolated Groq adapter), then CLOUD-02 (API/worker persistence and resume), CLOUD-03 (user setup/client), and CLOUD-04 (account smoke and evaluation). These owner-authorized tasks are separate from the original M milestones and do not imply M11-T18 execution. Exact CLOUD-01 scope and acceptance are registered in CODEX_TASKS.md; dependent scopes are described in the dated design and must be frozen in the registry before their implementation.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Personal MVP Technical Delivery Plan
 
 **Document Name:** `IMPLEMENTATION_PLAN.md`

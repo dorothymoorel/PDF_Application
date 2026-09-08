@@ -53,6 +53,7 @@ _LABELLED_CITATION_PATTERN = re.compile(
 )
 _VERSION_PATTERN = re.compile(r"(?<![\w])v?\d+(?:\.\d+){2,}(?![\w])", re.IGNORECASE)
 _DATE_PATTERN = re.compile(r"(?<![\w])\d{1,4}[-/]\d{1,2}[-/]\d{1,4}(?![\w])")
+_DECADE_PATTERN = re.compile(r"(?<!\w)(\d{3}0)(?:['’]?s|-?an)(?!\w)", re.IGNORECASE)
 _NUMBER_PATTERN = re.compile(
     r"(?i)(?<![\w])"
     r"(?P<currency>(?:USD|IDR|EUR|GBP|JPY|Rp|[$€£¥])\s*)?"
@@ -406,6 +407,10 @@ def _number_inventory(text: str) -> Counter[str]:
         for match in pattern.finditer(masked):
             occupied.append(match.span())
             inventory.append(f"{kind}:{match.group(0).casefold()}")
+    for match in _DECADE_PATTERN.finditer(masked):
+        if not any(_overlaps(match.span(), span) for span in occupied):
+            occupied.append(match.span())
+            inventory.append(f"NUMBER::{match.group(1)}:")
     for match in _NUMBER_PATTERN.finditer(masked):
         if any(_overlaps(match.span(), span) for span in occupied):
             continue

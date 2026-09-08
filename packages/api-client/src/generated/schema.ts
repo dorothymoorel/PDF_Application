@@ -2982,6 +2982,10 @@ export interface components {
              * @default 5
              */
             batch_size: number;
+            /** Cloud Consent */
+            cloud_consent?: boolean | null;
+            /** Cloud Model Name */
+            cloud_model_name?: ("qwen/qwen3.8-27b" | "openai/gpt-oss-120b") | null;
             /**
              * Context Mode
              * @default STANDARD
@@ -2989,9 +2993,11 @@ export interface components {
              */
             context_mode: "NONE" | "STANDARD" | "EXTENDED";
             /** Model Id */
-            model_id: string;
+            model_id?: string | null;
             /** Page Ids */
             page_ids?: string[] | null;
+            /** Provider Type */
+            provider_type?: ("OLLAMA" | "GROQ") | null;
             /**
              * Retranslate Existing
              * @default false
@@ -3152,6 +3158,10 @@ export interface components {
             failed_segments: number;
             /** Progress */
             progress: number;
+            /** Provider Error Code */
+            provider_error_code?: string | null;
+            /** Retry After Seconds */
+            retry_after_seconds?: number | null;
             /** Review Required Segments */
             review_required_segments: number;
             /** Status */
@@ -3160,6 +3170,8 @@ export interface components {
             total_batches: number;
             /** Total Segments */
             total_segments: number;
+            /** Unattempted Segments */
+            unattempted_segments?: number | null;
         };
         /** TranslationStatusResponse */
         TranslationStatusResponse: {
@@ -7005,7 +7017,12 @@ export interface operations {
     };
     get_translation_readiness: {
         parameters: {
-            query?: never;
+            query?: {
+                provider_type?: "OLLAMA" | "GROQ";
+                model_id?: string | null;
+                cloud_model_name?: ("qwen/qwen3.8-27b" | "openai/gpt-oss-120b") | null;
+                cloud_consent?: boolean;
+            };
             header?: never;
             path: {
                 project_id: string;

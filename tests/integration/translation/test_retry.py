@@ -122,7 +122,7 @@ def test_successful_prior_segment_is_preserved_during_retry() -> None:
     provider = _ScriptedProvider(
         [
             "echo",
-            TranslationProviderError(ProviderErrorCode.TIMEOUT, "timeout", retryable=True),
+            TranslationProviderError(ProviderErrorCode.INVALID_RESPONSE, "invalid response"),
             "echo",
         ]
     )
@@ -144,7 +144,7 @@ def test_successful_prior_segment_is_preserved_during_retry() -> None:
 
 def test_retry_stops_at_max_attempt_and_marks_manual_review() -> None:
     provider = _ScriptedProvider(
-        [TranslationProviderError(ProviderErrorCode.TIMEOUT, "timeout", retryable=True)]
+        [TranslationProviderError(ProviderErrorCode.INVALID_RESPONSE, "invalid response")]
     )
     coordinator = _coordinator(
         provider,

@@ -9,6 +9,7 @@ from transloka_translation.schemas import (
     TranslationGlossaryEntry,
     TranslationStyle,
 )
+from transloka_translation.validation import ValidationCode
 
 
 class TranslationRunStatus(StrEnum):
@@ -39,6 +40,7 @@ class TranslationSegmentInput:
     segment_order: int = 0
     context: BatchContext = BatchContext()
     locked: bool = False
+    expected_revision: int | None = None
 
     def __post_init__(self) -> None:
         if type(self.segment_id) is not str or not self.segment_id.strip():
@@ -61,6 +63,10 @@ class TranslationSegmentInput:
             raise ValueError("Segment order values must be non-negative integers.")
         if type(self.context) is not BatchContext or type(self.locked) is not bool:
             raise TypeError("Invalid segment context or locked value.")
+        if self.expected_revision is not None and (
+            type(self.expected_revision) is not int or self.expected_revision < 0
+        ):
+            raise ValueError("expected_revision must be a non-negative integer or None.")
 
 
 @dataclass(frozen=True, slots=True)
@@ -128,6 +134,7 @@ class SegmentFailure:
     segment_id: str
     code: str
     message: str
+    validation_codes: tuple[ValidationCode, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -142,6 +149,9 @@ class TranslationRunResult:
     failures: tuple[SegmentFailure, ...] = ()
     warnings: tuple[str, ...] = ()
     attempt_count: int = 0
+    unattempted_segment_ids: tuple[str, ...] = ()
+    provider_error_code: str | None = None
+    retry_after_seconds: float | None = None
 
     @property
     def successful(self) -> bool:

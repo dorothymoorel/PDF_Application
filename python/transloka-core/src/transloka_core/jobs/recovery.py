@@ -6,15 +6,23 @@ from enum import StrEnum
 from pathlib import Path
 from uuid import NAMESPACE_URL, uuid5
 
-from sqlalchemy import select
+from sqlalchemy import case, func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_core.database import transaction_scope
+from transloka_core.database.models.document_ir import (
+    DocumentBlock,
+    DocumentSegment,
+    ReviewStatus,
+    SegmentStatus,
+)
 from transloka_core.database.models.jobs import (
     ApplicationJob,
     JobAttempt,
     JobAttemptStatus,
     JobStatus,
+    JobType,
 )
+from transloka_core.database.models.pages import DocumentPage
 
 DEFAULT_STALE_THRESHOLD = timedelta(minutes=5)
 _STALE_ERROR_CODE = "WORKER_HEARTBEAT_STALE"
@@ -117,7 +125,62 @@ class JobRecoveryService:
                         retry_available=row.retry_count < row.max_retries,
                     )
                 )
+        self._recover_translation_segments(recovery_time)
         return tuple(results)
+
+    def _recover_translation_segments(self, recovery_time: datetime) -> None:
+        terminal_statuses = (
+            JobStatus.COMPLETED.value,
+            JobStatus.COMPLETED_WITH_WARNINGS.value,
+            JobStatus.PARTIALLY_COMPLETED.value,
+            JobStatus.FAILED.value,
+            JobStatus.CANCELLED.value,
+            JobStatus.STALE.value,
+        )
+        document_jobs = select(ApplicationJob.id).where(
+            ApplicationJob.document_id == DocumentPage.document_id,
+            ApplicationJob.job_type == JobType.TRANSLATE_DOCUMENT.value,
+        )
+        orphaned_blocks = (
+            select(DocumentBlock.id)
+            .join(DocumentPage, DocumentPage.id == DocumentBlock.page_id)
+            .where(
+                document_jobs.where(ApplicationJob.status.in_(terminal_statuses)).exists(),
+                ~document_jobs.where(ApplicationJob.status.not_in(terminal_statuses)).exists(),
+            )
+        )
+        has_machine_text = (
+            func.trim(func.coalesce(DocumentSegment.machine_translation, ""), " \t\r\n") != ""
+        )
+        # Keep the active-job and review guards inside the UPDATE, not a pre-read:
+        # a job queued or a segment edited before this write must block recovery.
+        with transaction_scope(self._session_factory) as session:
+            session.execute(
+                update(DocumentSegment)
+                .where(
+                    DocumentSegment.block_id.in_(orphaned_blocks),
+                    DocumentSegment.status == SegmentStatus.TRANSLATING.value,
+                    DocumentSegment.is_locked == 0,
+                    DocumentSegment.review_status.in_(
+                        (ReviewStatus.NOT_REVIEWED.value, ReviewStatus.REVIEW_REQUIRED.value)
+                    ),
+                    func.coalesce(DocumentSegment.reviewed_translation, "") == "",
+                    func.coalesce(DocumentSegment.final_text, "") == "",
+                    func.trim(DocumentSegment.resolved_source_text, " \t\r\n") != "",
+                )
+                .values(
+                    status=case(
+                        (has_machine_text, SegmentStatus.NEEDS_REVIEW.value),
+                        else_=SegmentStatus.READY_FOR_TRANSLATION.value,
+                    ),
+                    review_status=case(
+                        (has_machine_text, ReviewStatus.REVIEW_REQUIRED.value),
+                        else_=DocumentSegment.review_status,
+                    ),
+                    updated_at=_format_timestamp(recovery_time),
+                )
+                .execution_options(synchronize_session=False)
+            )
 
     def _running_jobs(self) -> tuple[_Candidate, ...]:
         with self._session_factory() as session:

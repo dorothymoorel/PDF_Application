@@ -43,12 +43,12 @@ from transloka_core.jobs.progress import JobProgressService
 from transloka_core.repositories.files import StoredFilesRepository
 from transloka_core.storage.local import LocalFileStorage, LocalFileStorageError
 from transloka_quality.pdf import FinalPdfValidationReport, validate_final_pdf
+from transloka_reconstruction.fonts.reportlab import ReportLabFontCatalog
 from transloka_reconstruction.hybrid import (
     BlockDescriptor,
     BlockStrategy,
     HybridStrategyClassifier,
     PageDescriptor,
-    PageStrategy,
 )
 from transloka_reconstruction.overlay import (
     CoverRegion,
@@ -111,6 +111,7 @@ class RenderedPage:
     strategy: str
     block_strategies: tuple[tuple[str, str], ...]
     page_hash: str
+    font_mappings: tuple[tuple[str, dict[str, object]], ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,6 +317,9 @@ class DatabaseReconstructionRequestLoader:
 
 
 class ReconstructionRenderer:
+    def __init__(self, *, font_catalog: ReportLabFontCatalog | None = None) -> None:
+        self._font_catalog = font_catalog or ReportLabFontCatalog()
+
     def render(self, loaded: LoadedReconstructionJob) -> ReconstructionRenderResult:
         source_reader = PdfReader(BytesIO(loaded.source_pdf), strict=False)
         if len(source_reader.pages) < 1:
@@ -343,7 +347,7 @@ class ReconstructionRenderer:
                 _append_pdf(writer, sanitized)
                 target_page_number += 1
                 continue
-            page_pdf, strategy, block_strategies = self._render_page(loaded, page)
+            page_pdf, strategy, block_strategies, font_mappings = self._render_page(loaded, page)
             page_count = _append_pdf(writer, page_pdf)
             page_required = tuple(
                 block.translated_text for block in page.blocks if block.translated_text is not None
@@ -366,6 +370,7 @@ class ReconstructionRenderer:
                     strategy=strategy,
                     block_strategies=block_strategies,
                     page_hash=_sha256(page_pdf),
+                    font_mappings=font_mappings,
                 )
             )
             target_page_number += page_count
@@ -382,12 +387,12 @@ class ReconstructionRenderer:
         self,
         loaded: LoadedReconstructionJob,
         page: ReconstructionPageInput,
-    ) -> tuple[bytes, str, tuple[tuple[str, str], ...]]:
+    ) -> tuple[bytes, str, tuple[tuple[str, str], ...], tuple[tuple[str, dict[str, object]], ...]]:
         mode = cast(ReconstructionMode, loaded.command.mode)
         if mode is ReconstructionMode.OVERLAY:
             return self._overlay(loaded.source_pdf, page)
         if mode is ReconstructionMode.REFLOW:
-            return self._reflow(page)
+            return (*self._reflow(page), ())
         decision = HybridStrategyClassifier().classify_page(
             PageDescriptor(
                 page_id=page.page_id,
@@ -404,25 +409,33 @@ class ReconstructionRenderer:
             ),
             settings=cast(ReconstructionSettings, loaded.command.settings),
         )
+        reflow_blocks = {
+            block.block_id
+            for block in decision.block_decisions
+            if block.strategy is BlockStrategy.REFLOW
+        }
+        # Reflow translated paragraphs inside their source boxes. Escalating one
+        # block to whole-page reflow discards artwork and fixed source geometry.
+        # The overlay renderer measures with the output font and rejects overflow.
+        pdf, _, rendered_strategies, font_mappings = self._overlay(loaded.source_pdf, page)
         block_strategies = tuple(
-            (block.block_id, block.strategy.value) for block in decision.block_decisions
+            (
+                block_id,
+                "REFLOW" if strategy == "OVERLAY" and block_id in reflow_blocks else strategy,
+            )
+            for block_id, strategy in rendered_strategies
         )
-        if decision.strategy is PageStrategy.REFLOW or any(
-            block.strategy is BlockStrategy.REFLOW for block in decision.block_decisions
-        ):
-            pdf, _, _ = self._reflow(page)
-            return pdf, "REFLOW", block_strategies
-        pdf, _, _ = self._overlay(loaded.source_pdf, page)
-        return pdf, "OVERLAY", block_strategies
+        return pdf, "OVERLAY", block_strategies, font_mappings
 
-    @staticmethod
     def _overlay(
+        self,
         source_pdf: bytes,
         page: ReconstructionPageInput,
-    ) -> tuple[bytes, str, tuple[tuple[str, str], ...]]:
+    ) -> tuple[bytes, str, tuple[tuple[str, str], ...], tuple[tuple[str, dict[str, object]], ...]]:
         texts: list[OverlayText] = []
         covers: list[CoverRegion] = []
         strategies: list[tuple[str, str]] = []
+        font_mappings: list[tuple[str, dict[str, object]]] = []
         for block in page.blocks:
             if block.translated_text is None:
                 strategies.append((block.block_id, "PRESERVE"))
@@ -430,6 +443,17 @@ class ReconstructionRenderer:
             x, y, width, height = _pdf_geometry(block.source_geometry, page)
             font_size = _font_size(block.source_style, block.source_geometry, height)
             text_x, text_width, alignment = _text_box(block, page, x, width)
+            style = block.source_style or {}
+            source_font = style.get(
+                "font_name", style.get("font_postscript_name", style.get("font_family"))
+            )
+            fallback = _font_name(block.source_style)
+            font = self._font_catalog.resolve(
+                source_font if isinstance(source_font, str) and source_font.strip() else fallback,
+                block.translated_text,
+                fallback=fallback,
+            )
+            font_mappings.append((block.block_id, font.metadata()))
             texts.append(
                 OverlayText(
                     block.translated_text,
@@ -437,7 +461,7 @@ class ReconstructionRenderer:
                     y=y,
                     width=text_width,
                     height=height,
-                    font_name=_font_name(block.source_style),
+                    font_name=font.name,
                     font_size_pt=font_size,
                     leading_pt=_leading(block, font_size, height),
                     alignment=alignment,
@@ -464,6 +488,7 @@ class ReconstructionRenderer:
             ),
             "OVERLAY",
             tuple(strategies),
+            tuple(font_mappings),
         )
 
     @staticmethod
@@ -838,7 +863,8 @@ def _font_size(
 
 
 def _font_name(style: Mapping[str, object] | None) -> str:
-    value = (style or {}).get("font_name")
+    values = style or {}
+    value = values.get("font_name", values.get("font_postscript_name", values.get("font_family")))
     if not isinstance(value, str) or not value.strip():
         return "Helvetica"
     name = value.strip().removeprefix("/").split("+", 1)[-1]
@@ -862,8 +888,14 @@ def _font_name(style: Mapping[str, object] | None) -> str:
         return name
 
     lowered = name.casefold()
-    bold = any(marker in lowered for marker in ("bold", "semibold", "demi"))
-    italic = any(marker in lowered for marker in ("italic", "oblique"))
+    bold = (
+        values.get("bold") is True
+        or values.get("font_weight") in (600, 700, 800, 900)
+        or any(marker in lowered for marker in ("bold", "semibold", "demi"))
+    )
+    italic = values.get("italic") is True or any(
+        marker in lowered for marker in ("italic", "oblique")
+    )
     if any(marker in lowered for marker in ("courier", "mono", "consol")):
         return (
             "Courier-BoldOblique"
@@ -985,6 +1017,7 @@ def _persist_rendered_pages(
         )
         session.flush()
         strategies = dict(page.block_strategies)
+        font_mappings = dict(page.font_mappings)
         for block in source.blocks:
             strategy = strategies.get(block.block_id, "PRESERVE")
             session.add(
@@ -1005,7 +1038,13 @@ def _persist_rendered_pages(
                         if strategy == "REFLOW"
                         else ReconstructionBlockStatus.PLACED.value
                     ),
-                    font_mapping_json=None,
+                    font_mapping_json=(
+                        json.dumps(
+                            font_mappings[block.block_id], sort_keys=True, separators=(",", ":")
+                        )
+                        if block.block_id in font_mappings
+                        else None
+                    ),
                     overflow_json=None,
                     collision_json=None,
                     created_at=now,

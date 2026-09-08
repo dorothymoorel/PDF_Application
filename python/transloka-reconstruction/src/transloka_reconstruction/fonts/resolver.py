@@ -77,9 +77,14 @@ def _bool(value: object, field_name: str) -> bool:
 
 
 def _normalise_family(value: str) -> str:
-    value = value.removeprefix("/").strip().casefold()
-    value = re.sub(r"[-_, ]?(bold|italic|oblique|regular|medium|light|semibold)$", "", value)
-    return value
+    value = re.sub(r"^[A-Z]{6}\+", "", value.removeprefix("/").strip()).casefold()
+    value = re.sub(r"(?:ps)?mt$", "", value)
+    value = re.sub(
+        r"[-_, ]?(bolditalic|boldoblique|semibolditalic|semibold|bold|italic|oblique|regular|medium|light)$",
+        "",
+        value,
+    )
+    return re.sub(r"[-_, ]", "", value.removesuffix("ps"))
 
 
 def _required_glyphs(text: str) -> frozenset[str]:

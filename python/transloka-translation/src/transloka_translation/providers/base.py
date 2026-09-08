@@ -43,10 +43,12 @@ class TranslationProviderError(RuntimeError):
         message: str,
         *,
         retryable: bool = False,
+        retry_after_seconds: float | None = None,
     ) -> None:
         super().__init__(message)
         self.code = code
         self.retryable = retryable
+        self.retry_after_seconds = retry_after_seconds
 
 
 @runtime_checkable

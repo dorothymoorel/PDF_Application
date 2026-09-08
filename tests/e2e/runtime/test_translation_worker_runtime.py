@@ -106,13 +106,33 @@ class DeterministicProvider:
         )
 
 
+@pytest.mark.parametrize(
+    ("start_payload", "expected_provider", "expected_model"),
+    [
+        ({"model_id": MODEL_ID}, "OLLAMA", MODEL_ID),
+        (
+            {
+                "provider_type": "GROQ",
+                "cloud_model_name": "qwen/qwen3.8-27b",
+                "cloud_consent": True,
+            },
+            "GROQ",
+            "qwen/qwen3.8-27b",
+        ),
+    ],
+)
 def test_production_translation_runtime_crosses_api_queue_worker_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    start_payload: dict[str, object],
+    expected_provider: str,
+    expected_model: str,
 ) -> None:
     initial_artifacts = _database_artifacts()
     data_root = tmp_path / "production translation runtime"
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(data_root))
+    if expected_provider == "GROQ":
+        monkeypatch.setenv("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", "true")
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
 
     configuration = resolve_queue_configuration(data_root)
@@ -128,6 +148,7 @@ def test_production_translation_runtime_crosses_api_queue_worker_boundary(
     application = create_app()
     with TestClient(application) as client:
         application.state.ollama_provider = HealthyProvider()
+        application.state.groq_provider = HealthyProvider()
         project_response = client.post(
             "/api/v1/projects",
             headers=CLIENT_HEADERS,
@@ -141,7 +162,7 @@ def test_production_translation_runtime_crosses_api_queue_worker_boundary(
         start = client.post(
             f"/api/v1/projects/{project_id}/translation/start",
             headers={**CLIENT_HEADERS, "Idempotency-Key": "production-runtime-e2e"},
-            json={"model_id": MODEL_ID},
+            json=start_payload,
         )
         assert start.status_code == 202, start.text
         job_id = cast(str, start.json()["data"]["job_id"])
@@ -158,6 +179,7 @@ def test_production_translation_runtime_crosses_api_queue_worker_boundary(
         factory,
         configuration.directories.temporary,
         provider_factory=lambda _model_name: DeterministicProvider(),
+        cloud_provider_factory=lambda _model_name, _consent: DeterministicProvider(),
         worker_identifier="translation-runtime-e2e",
     )
     try:
@@ -191,6 +213,9 @@ def test_production_translation_runtime_crosses_api_queue_worker_boundary(
             assert job is not None and job.status == JobStatus.COMPLETED.value
             assert segment is not None
             assert segment.machine_translation == "Alur kerja dimulai."
+            batch = session.scalar(select(TranslationBatch))
+            assert batch is not None
+            assert (batch.provider_type, batch.model_id) == (expected_provider, expected_model)
             assert session.scalar(select(func.count()).select_from(TranslationBatch)) == 1
             assert session.scalar(select(func.count()).select_from(SegmentTranslation)) == 1
 

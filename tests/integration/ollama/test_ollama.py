@@ -782,6 +782,7 @@ def test_models_router_blocks_remote_configuration(
 ) -> None:
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(tmp_path_factory.mktemp("blocked-models-api")))
     monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "http://example.com:11434")
+    command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
 
     with TestClient(application) as client:

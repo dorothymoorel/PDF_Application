@@ -154,3 +154,14 @@ def test_invalid_descriptor_and_request_are_rejected() -> None:
         FontDescriptor(family_name=" ")
     with pytest.raises(ValueError, match="source_family"):
         FontRequest(source_family=" ")
+
+
+@pytest.mark.parametrize("source", ["ABCDEF+Calibri-BoldItalic", "/Calibri", "Calibri-Bold"])
+def test_pdf_subset_names_match_system_family(source: str) -> None:
+    result = FontResolver((_font("Calibri"),)).resolve(source, text="Hello")
+    assert result.stage is FontResolutionStage.SYSTEM
+
+
+def test_postscript_name_matches_spaced_family() -> None:
+    result = FontResolver((_font("Times New Roman"),)).resolve("TimesNewRomanPS-BoldMT")
+    assert result.stage is FontResolutionStage.SYSTEM

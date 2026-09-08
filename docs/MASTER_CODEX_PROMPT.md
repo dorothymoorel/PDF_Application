@@ -1,5 +1,11 @@
 # MASTER CODEX PROMPT
 
+## Approved cloud exception - 2026-09-07
+
+The owner requested optional free cloud translation on 2026-09-07. CLOUD-01 and its registered dependent tasks are a narrow exception to the earlier cloud-provider prohibitions in this prompt. Follow the updated MVP_SCOPE, TECH_STACK_DECISIONS and SECURITY addenda. Only opted-in Groq text inference is approved; local mode remains default. Never infer permission for document uploads, paid services, arbitrary endpoints, remote Ollama or unrelated cloud products.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Personal MVP Implementation Governance Prompt
 
 **Document Name:** `MASTER_CODEX_PROMPT.md`

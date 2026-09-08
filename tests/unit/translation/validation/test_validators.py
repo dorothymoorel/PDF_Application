@@ -120,6 +120,44 @@ def test_number_validator_rejects_added_number() -> None:
     assert issue_codes(issues) == {ValidationCode.NUMBER_MISMATCH}
 
 
+@pytest.mark.parametrize("suffix", ["s", "'s", "’s", "an", "-an"])
+def test_number_validator_preserves_decade_values_across_suffixes(suffix: str) -> None:
+    assert (
+        validate_number_integrity(
+            make_source(f"Growth in the 1950{suffix} was 1.5 times growth in the 2000s."),
+            make_translation("Pertumbuhan pada 1950-an adalah 1,5 kali pada 2000an."),
+        )
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    "translation",
+    [
+        "Pertumbuhan pada 1950an adalah 1,5 kali pada masa depan.",
+        "Pertumbuhan pada 1950-an adalah 1,5 kali pada 2010-an.",
+        "Pertumbuhan pada 1950-an adalah 1,5 kali pada 2000-an dan 2000-an.",
+    ],
+)
+def test_number_validator_rejects_lost_changed_or_added_decade(translation: str) -> None:
+    issues = validate_number_integrity(
+        make_source("Growth in the 1950s was 1.5 times growth in the 2000s."),
+        make_translation(translation),
+    )
+    assert issue_codes(issues) == {ValidationCode.NUMBER_MISMATCH}
+    assert issues[0].severity is ValidationSeverity.CRITICAL
+
+
+def test_decade_detection_does_not_count_inside_identifiers_or_placeholders() -> None:
+    assert (
+        validate_number_integrity(
+            make_source("ID1950s x2000an __TLK_TERM_1950_AA__"),
+            make_translation(""),
+        )
+        == ()
+    )
+
+
 @pytest.mark.parametrize("translated_text", ["Nilainya 11%.", "Nilainya 10.", "Nilainya EUR 10%."])
 def test_number_validator_rejects_altered_or_removed_number_metadata(
     translated_text: str,

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol, cast
@@ -81,6 +81,8 @@ class StoredAttempt:
     segment_ids: tuple[str, ...]
     error_code: str | None = None
     error_message: str | None = None
+    validation_issues: tuple[ValidationIssue, ...] = ()
+    retry_after_seconds: float | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -111,6 +113,8 @@ class TranslationRunStore(Protocol):
         status: str,
         error_code: str | None = None,
         error_message: str | None = None,
+        validation_issues: tuple[ValidationIssue, ...] = (),
+        retry_after_seconds: float | None = None,
     ) -> StoredAttempt: ...
 
     def record_result(
@@ -120,6 +124,8 @@ class TranslationRunStore(Protocol):
         translated_text_raw: str,
         translated_text_restored: str,
         report: ValidationReport,
+        *,
+        expected_revision: int | None = None,
     ) -> StoredSegmentResult: ...
 
     def finish_run(self, run: StoredRun, status: TranslationRunStatus) -> StoredRun: ...
@@ -164,6 +170,8 @@ class InMemoryTranslationRunStore:
         status: str,
         error_code: str | None = None,
         error_message: str | None = None,
+        validation_issues: tuple[ValidationIssue, ...] = (),
+        retry_after_seconds: float | None = None,
     ) -> StoredAttempt:
         attempt = StoredAttempt(
             attempt_id=f"tat_{uuid4()}",
@@ -172,6 +180,8 @@ class InMemoryTranslationRunStore:
             segment_ids=batch.segment_ids,
             error_code=error_code,
             error_message=error_message,
+            validation_issues=validation_issues,
+            retry_after_seconds=retry_after_seconds,
         )
         self.attempts.append(attempt)
         return attempt
@@ -183,6 +193,8 @@ class InMemoryTranslationRunStore:
         translated_text_raw: str,
         translated_text_restored: str,
         report: ValidationReport,
+        *,
+        expected_revision: int | None = None,
     ) -> StoredSegmentResult:
         del attempt
         result = StoredSegmentResult(
@@ -206,11 +218,18 @@ class IdempotencyConflictError(RuntimeError):
     """Raised when an idempotency key is reused for different source data."""
 
 
+class SegmentWriteConflictError(RuntimeError):
+    """Raised when a late model result would overwrite a user change."""
+
+
 class SqlAlchemyTranslationRunStore:
     """SQLAlchemy persistence adapter for the M7 translation tables."""
 
-    def __init__(self, session_factory: Any) -> None:
+    def __init__(
+        self, session_factory: Any, *, write_guard: Callable[[Any], None] | None = None
+    ) -> None:
         self._session_factory = session_factory
+        self._write_guard = write_guard
         self._run_metadata: dict[str, tuple[str, str]] = {}
 
     def find_by_idempotency_key(self, key: str) -> StoredRun | None:
@@ -261,6 +280,8 @@ class SqlAlchemyTranslationRunStore:
             status=TranslationRunStatus.CREATED,
         )
         with transaction_scope(self._session_factory) as session:
+            if self._write_guard is not None:
+                self._write_guard(session)
             settings = _settings_with_fingerprint(operation.settings_json, fingerprint)
             session.add(
                 TranslationBatch(
@@ -309,6 +330,8 @@ class SqlAlchemyTranslationRunStore:
         status: str,
         error_code: str | None = None,
         error_message: str | None = None,
+        validation_issues: tuple[ValidationIssue, ...] = (),
+        retry_after_seconds: float | None = None,
     ) -> StoredAttempt:
         from transloka_core.database import transaction_scope
         from transloka_core.database.models.translation import TranslationAttempt
@@ -320,8 +343,12 @@ class SqlAlchemyTranslationRunStore:
             segment_ids=batch.segment_ids,
             error_code=error_code,
             error_message=error_message,
+            validation_issues=validation_issues,
+            retry_after_seconds=retry_after_seconds,
         )
         with transaction_scope(self._session_factory) as session:
+            if self._write_guard is not None:
+                self._write_guard(session)
             provider_type, model_id = self._run_metadata.get(
                 run.run_id, ("translation", "translation")
             )
@@ -341,7 +368,9 @@ class SqlAlchemyTranslationRunStore:
                     retry_reason=None,
                     error_code=error_code,
                     error_message=error_message,
-                    provider_metadata_json=None,
+                    provider_metadata_json=_provider_metadata_json(
+                        validation_issues, retry_after_seconds
+                    ),
                     created_at=_now(),
                     completed_at=_now(),
                 )
@@ -355,7 +384,10 @@ class SqlAlchemyTranslationRunStore:
         translated_text_raw: str,
         translated_text_restored: str,
         report: ValidationReport,
+        *,
+        expected_revision: int | None = None,
     ) -> StoredSegmentResult:
+        from sqlalchemy import update
         from transloka_core.database import transaction_scope
         from transloka_core.database.models.document_ir import (
             DocumentSegment,
@@ -376,9 +408,41 @@ class SqlAlchemyTranslationRunStore:
             else TranslationValidationStatus.PASSED.value
         )
         with transaction_scope(self._session_factory) as session:
+            if self._write_guard is not None:
+                self._write_guard(session)
             segment = session.get(DocumentSegment, segment_id)
             if segment is None:
                 raise LookupError(f"Document segment not found: {segment_id}")
+            revision = segment.current_revision if expected_revision is None else expected_revision
+            written = session.scalar(
+                update(DocumentSegment)
+                .where(
+                    DocumentSegment.id == segment_id,
+                    DocumentSegment.current_revision == revision,
+                    DocumentSegment.is_locked == 0,
+                    DocumentSegment.status.not_in(("LOCKED", "APPROVED", "USER_EDITED")),
+                    DocumentSegment.review_status.not_in(("APPROVED", "EDITED")),
+                )
+                .values(
+                    machine_translation=translated_text_restored,
+                    status=(
+                        SegmentStatus.NEEDS_REVIEW.value
+                        if report.warnings
+                        else SegmentStatus.MACHINE_TRANSLATED.value
+                    ),
+                    review_status=(
+                        ReviewStatus.REVIEW_REQUIRED.value
+                        if report.warnings
+                        else ReviewStatus.NOT_REVIEWED.value
+                    ),
+                    updated_at=_now(),
+                )
+                .returning(DocumentSegment.id)
+            )
+            if written is None:
+                raise SegmentWriteConflictError(
+                    "The segment changed or was protected while translation was running."
+                )
             session.add(
                 SegmentTranslation(
                     id=result_id,
@@ -394,18 +458,6 @@ class SqlAlchemyTranslationRunStore:
                     created_at=_now(),
                 )
             )
-            segment.machine_translation = translated_text_restored
-            segment.status = (
-                SegmentStatus.NEEDS_REVIEW.value
-                if report.warnings
-                else SegmentStatus.MACHINE_TRANSLATED.value
-            )
-            segment.review_status = (
-                ReviewStatus.REVIEW_REQUIRED.value
-                if report.warnings
-                else ReviewStatus.NOT_REVIEWED.value
-            )
-            segment.updated_at = _now()
             for validator_type, status, details_json in _group_validation_issues(report.issues):
                 session.add(
                     TranslationValidation(
@@ -431,6 +483,8 @@ class SqlAlchemyTranslationRunStore:
         from transloka_core.database.models.translation import TranslationBatch
 
         with transaction_scope(self._session_factory) as session:
+            if self._write_guard is not None:
+                self._write_guard(session)
             row = session.get(TranslationBatch, run.run_id)
             if row is not None:
                 row.status = status.value
@@ -462,6 +516,24 @@ def _settings_with_fingerprint(settings_json: str, fingerprint: str) -> str:
         value = {"value": value}
     value["_operation_fingerprint"] = fingerprint
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+
+
+def _provider_metadata_json(
+    validation_issues: tuple[ValidationIssue, ...], retry_after_seconds: float | None
+) -> str | None:
+    metadata: dict[str, object] = {}
+    if validation_issues:
+        metadata["validation_issues"] = [
+            {
+                "code": issue.code.value,
+                "severity": issue.severity.value,
+                "segment_id": issue.segment_id,
+            }
+            for issue in validation_issues
+        ]
+    if retry_after_seconds is not None:
+        metadata["retry_after_seconds"] = retry_after_seconds
+    return json.dumps(metadata, sort_keys=True, separators=(",", ":")) if metadata else None
 
 
 def _group_validation_issues(

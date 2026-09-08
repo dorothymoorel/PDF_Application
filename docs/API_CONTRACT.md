@@ -1,5 +1,11 @@
 # API CONTRACT
 
+## Approved cloud exception - 2026-09-07
+
+CLOUD-01 adds an isolated adapter only; existing HTTP routes and schemas are unchanged. CLOUD-02 will add provider-aware readiness and a versioned worker command, preserving existing OLLAMA requests. Proposed fields provider_type, cloud_model_name and cloud_consent are not usable API fields yet. Keys must never enter API responses or job payloads. See the dated design for the proposed contract and rollout gates.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Local FastAPI Interface Specification
 
 **Document Name:** `API_CONTRACT.md`  

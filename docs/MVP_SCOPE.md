@@ -1,5 +1,11 @@
 # MVP SCOPE
 
+## Approved cloud exception - 2026-09-07
+
+Section 60 now permits optional Groq text translation under the owner's explicit cloud request (2026-09-07). This exception takes precedence over statements that all hosted inference is deferred. Local mode stays the default. Only selected text, necessary context and glossary/placeholder data may be sent after document/job consent; PDFs, images, OCR and storage remain local. No automatic upload, paid fallback or required cloud service is introduced.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Personal MVP Scope Control Specification
 
 **Document Name:** `MVP_SCOPE.md`

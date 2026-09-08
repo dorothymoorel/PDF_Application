@@ -168,6 +168,7 @@ export function TranslationProgress({
       ) : (
         <>
           <div className="mt-6">
+            <p className="mb-2 text-sm text-slate-600">Saved translations across the document</p>
             <div className="flex justify-between gap-4 text-sm font-medium text-slate-700">
               <span>
                 {status.completed_segments} of {status.total_segments} segments
@@ -181,7 +182,10 @@ export function TranslationProgress({
               value={Math.round(boundedProgress(status.progress) * 100)}
             />
             <p className="mt-2 text-sm text-slate-600">
-              Batch {status.current_batch} of {status.total_batches} · {status.failed_segments} failed · {status.review_required_segments} need review
+              {status.total_batches > 0
+                ? `Job batches processed: ${status.current_batch} of ${status.total_batches}`
+                : "Job batch count is not available yet"}
+              {" · "}{status.failed_segments} failed · {status.review_required_segments} need review
             </p>
           </div>
 

@@ -22,6 +22,7 @@ from transloka_translation.parsing import ResponseParseError, parse_translation_
 from transloka_translation.prompts import VersionedPromptBuilder
 from transloka_translation.providers import (
     CancellationSignal,
+    ProviderErrorCode,
     TranslationProviderError,
 )
 from transloka_translation.schemas import (
@@ -41,6 +42,7 @@ from .models import (
 )
 from .persistence import (
     IdempotencyConflictError,
+    SegmentWriteConflictError,
     StoredAttempt,
     StoredRun,
     TranslationRunStore,
@@ -53,6 +55,20 @@ class ProtectedBatch:
     batch: TranslationBatch
     request: TranslationRequest
     inventories: dict[str, tuple[ProtectedInventoryItem, ...]]
+
+
+_MAX_PROVIDER_ATTEMPTS = 3
+_MAX_RETRY_WAIT_SECONDS = 5.0
+_PROVIDER_WIDE_ERRORS = frozenset(
+    {
+        ProviderErrorCode.AUTHENTICATION_FAILED,
+        ProviderErrorCode.INVALID_REQUEST,
+        ProviderErrorCode.PROVIDER_UNAVAILABLE,
+        ProviderErrorCode.RATE_LIMIT,
+        ProviderErrorCode.TIMEOUT,
+        ProviderErrorCode.UNKNOWN_PROVIDER_ERROR,
+    }
+)
 
 
 class TranslationOrchestrator:
@@ -118,9 +134,14 @@ class TranslationOrchestrator:
         cancelled: list[str] = []
         failures: list[SegmentFailure] = []
         warnings: list[str] = []
+        unattempted: list[str] = []
+        provider_error_code: str | None = None
+        retry_after_seconds: float | None = None
         attempt_count = 0
+        revisions = {item.segment_id: item.expected_revision for item in operation.segments}
 
         total_batches = len(plan.batches)
+        self._emit_batch_progress(0, total_batches)
         for batch_number, batch in enumerate(plan.batches, start=1):
             if _is_cancelled(cancellation):
                 cancelled.extend(batch.segment_ids)
@@ -134,7 +155,9 @@ class TranslationOrchestrator:
                 prompt = (
                     self._prompt_builder or VersionedPromptBuilder(operation.prompt_version)
                 ).build(protected.request)
-                raw_response = await self._provider.translate(prompt, cancellation=cancellation)
+                raw_response = await _translate_with_retry(
+                    self._provider, prompt, cancellation=cancellation
+                )
                 if _is_cancelled(cancellation):
                     cancelled.extend(batch.segment_ids)
                     self._emit_batch_progress(batch_number, total_batches)
@@ -142,17 +165,31 @@ class TranslationOrchestrator:
                 response = _coerce_response(raw_response, protected.request.segment_ids)
                 report = validate_translation(protected.request, response)
                 attempt_status = "COMPLETED_WITH_WARNINGS" if report.warnings else "COMPLETED"
+                if not report.accepted:
+                    attempt_status = "FAILED"
                 attempt = self._store.record_attempt(
                     run,
                     attempt_number,
                     batch,
                     status=attempt_status,
+                    error_code="VALIDATION_FAILED" if not report.accepted else None,
+                    error_message="Translation integrity validation failed."
+                    if not report.accepted
+                    else None,
+                    validation_issues=report.issues,
                 )
                 if not report.accepted:
-                    issue_text = "; ".join(issue.message for issue in report.critical_issues)
+                    validation_codes = tuple(
+                        sorted({issue.code for issue in report.critical_issues})
+                    )
                     failed.extend(batch.segment_ids)
                     failures.extend(
-                        SegmentFailure(segment_id, "VALIDATION_FAILED", issue_text)
+                        SegmentFailure(
+                            segment_id,
+                            "VALIDATION_FAILED",
+                            "Translation integrity validation failed.",
+                            validation_codes,
+                        )
                         for segment_id in batch.segment_ids
                     )
                     continue
@@ -166,13 +203,23 @@ class TranslationOrchestrator:
                         if inventory
                         else translated.translated_text
                     )
-                    self._store.record_result(
-                        attempt,
-                        segment.segment_id,
-                        translated.translated_text,
-                        restored,
-                        report,
-                    )
+                    try:
+                        self._store.record_result(
+                            attempt,
+                            segment.segment_id,
+                            translated.translated_text,
+                            restored,
+                            report,
+                            expected_revision=revisions[segment.segment_id],
+                        )
+                    except SegmentWriteConflictError as error:
+                        failed.append(segment.segment_id)
+                        failures.append(
+                            SegmentFailure(
+                                segment.segment_id, "SEGMENT_REVISION_CONFLICT", str(error)
+                            )
+                        )
+                        continue
                     completed.append(segment.segment_id)
                 warnings.extend(issue.message for issue in report.warnings)
             except asyncio.CancelledError:
@@ -180,11 +227,6 @@ class TranslationOrchestrator:
                 if attempt is None:
                     self._store.record_attempt(run, attempt_number, batch, status="CANCELLED")
             except TranslationProviderError as error:
-                failed.extend(batch.segment_ids)
-                failures.extend(
-                    SegmentFailure(segment_id, error.code.value, str(error))
-                    for segment_id in batch.segment_ids
-                )
                 self._store.record_attempt(
                     run,
                     attempt_number,
@@ -192,6 +234,23 @@ class TranslationOrchestrator:
                     status="FAILED",
                     error_code=error.code.value,
                     error_message=str(error),
+                    retry_after_seconds=error.retry_after_seconds,
+                )
+                if error.code in _PROVIDER_WIDE_ERRORS:
+                    provider_error_code = error.code.value
+                    retry_after_seconds = error.retry_after_seconds
+                    unattempted.extend(batch.segment_ids)
+                    unattempted.extend(
+                        segment_id
+                        for remaining_batch in plan.batches[batch_number:]
+                        for segment_id in remaining_batch.segment_ids
+                    )
+                    self._emit_batch_progress(batch_number, total_batches)
+                    break
+                failed.extend(batch.segment_ids)
+                failures.extend(
+                    SegmentFailure(segment_id, error.code.value, str(error))
+                    for segment_id in batch.segment_ids
                 )
             except (ResponseParseError, ValueError) as error:
                 failed.extend(batch.segment_ids)
@@ -210,7 +269,11 @@ class TranslationOrchestrator:
             self._emit_batch_progress(batch_number, total_batches)
 
         locked = list(plan.excluded_locked_segment_ids)
-        final_status = _final_status(completed, failed, cancelled, warnings, len(locked))
+        final_status = (
+            TranslationRunStatus.FAILED
+            if provider_error_code is not None
+            else _final_status(completed, failed, cancelled, warnings, len(locked))
+        )
         self._store.finish_run(run, final_status)
         self._emit(final_status)
         return TranslationRunResult(
@@ -224,6 +287,9 @@ class TranslationOrchestrator:
             failures=tuple(failures),
             warnings=tuple(warnings),
             attempt_count=attempt_count,
+            unattempted_segment_ids=tuple(unattempted),
+            provider_error_code=provider_error_code,
+            retry_after_seconds=retry_after_seconds,
         )
 
     def _prepare_batch(
@@ -301,6 +367,39 @@ def _coerce_response(
 
 def _is_cancelled(signal: CancellationSignal | None) -> bool:
     return signal is not None and signal.is_cancelled
+
+
+async def _translate_with_retry(
+    provider: Any,
+    prompt: object,
+    *,
+    cancellation: CancellationSignal | None,
+) -> object:
+    for attempt_number in range(1, _MAX_PROVIDER_ATTEMPTS + 1):
+        try:
+            return await provider.translate(prompt, cancellation=cancellation)
+        except TranslationProviderError as error:
+            if not error.retryable or attempt_number == _MAX_PROVIDER_ATTEMPTS:
+                raise
+            delay = (
+                error.retry_after_seconds
+                if error.retry_after_seconds is not None
+                else 0.25 * (2 ** (attempt_number - 1))
+            )
+            if delay > _MAX_RETRY_WAIT_SECONDS:
+                raise
+            await _cancellable_sleep(delay, cancellation)
+    raise AssertionError("Provider retry loop did not return or raise.")
+
+
+async def _cancellable_sleep(seconds: float, cancellation: CancellationSignal | None) -> None:
+    remaining = max(0.0, seconds)
+    while remaining > 0:
+        if _is_cancelled(cancellation):
+            raise asyncio.CancelledError
+        interval = min(0.1, remaining)
+        await asyncio.sleep(interval)
+        remaining -= interval
 
 
 def _final_status(

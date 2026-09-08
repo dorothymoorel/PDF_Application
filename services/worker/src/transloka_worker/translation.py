@@ -7,10 +7,10 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Self, cast
+from typing import Any, Self, cast
 from uuid import NAMESPACE_URL, UUID, uuid5
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_core.database import transaction_scope
 from transloka_core.database.models.document_ir import (
@@ -31,8 +31,6 @@ from transloka_core.database.models.jobs import (
 from transloka_core.database.models.models import LocalModelRecord
 from transloka_core.database.models.pages import DocumentPage
 from transloka_core.database.models.projects import Project, ProjectStatus
-from transloka_core.jobs.cancellation import JobCancellationService
-from transloka_core.jobs.progress import JobProgressService
 from transloka_core.storage.local import LocalFileStorage
 from transloka_glossary.snapshots import (
     CompiledGlossaryRule,
@@ -48,6 +46,8 @@ from transloka_translation.orchestration import (
     TranslationRunStatus,
     TranslationSegmentInput,
 )
+from transloka_translation.providers import ProviderErrorCode, TranslationProviderError
+from transloka_translation.providers.groq import GROQ_MODELS, GroqTranslationProvider
 from transloka_translation.providers.ollama import OllamaTranslationProvider
 from transloka_translation.schemas import (
     TranslationContext,
@@ -55,7 +55,8 @@ from transloka_translation.schemas import (
     TranslationStyle,
 )
 
-TRANSLATION_COMMAND_SCHEMA = "transloka.translation.command.v1"
+TRANSLATION_COMMAND_SCHEMA_V1 = "transloka.translation.command.v1"
+TRANSLATION_COMMAND_SCHEMA = "transloka.translation.command.v2"
 _TRANSLATION_SCOPES = frozenset(
     {
         "FULL_DOCUMENT",
@@ -68,7 +69,7 @@ _TRANSLATION_SCOPES = frozenset(
 )
 _TRANSLATION_STYLES = frozenset({"ACADEMIC", "PROFESSIONAL", "NATURAL", "LITERAL"})
 _CONTEXT_MODES = frozenset({"NONE", "STANDARD", "EXTENDED"})
-_COMMAND_FIELDS = frozenset(
+_COMMAND_FIELDS_V1 = frozenset(
     {
         "schema",
         "project_id",
@@ -87,6 +88,14 @@ _COMMAND_FIELDS = frozenset(
         "glossary_snapshot_id",
     }
 )
+_COMMAND_FIELDS = _COMMAND_FIELDS_V1 | {
+    "provider_type",
+    "cloud_model_name",
+    "cloud_consent",
+    "cloud_consent_version",
+}
+_PROVIDER_TYPES = frozenset({"OLLAMA", "GROQ"})
+_CLOUD_CONSENT_VERSION = "cloud_text_sharing_v1"
 
 
 class TranslationWorkerError(RuntimeError):
@@ -101,7 +110,7 @@ class TranslationCommand:
     section_ids: tuple[str, ...]
     page_ids: tuple[str, ...]
     segment_ids: tuple[str, ...]
-    model_id: str
+    model_id: str | None
     translation_style: str
     batch_size: int
     context_mode: str
@@ -109,6 +118,10 @@ class TranslationCommand:
     skip_locked_segments: bool
     run_semantic_validation: bool
     glossary_snapshot_id: str
+    provider_type: str = "OLLAMA"
+    cloud_model_name: str | None = None
+    cloud_consent: bool = False
+    cloud_consent_version: str | None = None
 
     def __post_init__(self) -> None:
         _validate_identifier(self.project_id, "prj_")
@@ -116,8 +129,24 @@ class TranslationCommand:
         _validate_identifiers(self.section_ids, "sec_")
         _validate_identifiers(self.page_ids, "pag_")
         _validate_identifiers(self.segment_ids, "seg_")
-        _validate_identifier(self.model_id, "mdl_")
         _validate_identifier(self.glossary_snapshot_id, "gsn_")
+        if self.provider_type not in _PROVIDER_TYPES:
+            raise TranslationWorkerError("The translation command provider is invalid.")
+        if self.provider_type == "OLLAMA":
+            _validate_identifier(self.model_id, "mdl_")
+            if (
+                self.cloud_model_name is not None
+                or self.cloud_consent
+                or self.cloud_consent_version is not None
+            ):
+                raise TranslationWorkerError("The translation command provider fields conflict.")
+        elif (
+            self.model_id is not None
+            or self.cloud_model_name not in GROQ_MODELS
+            or self.cloud_consent is not True
+            or self.cloud_consent_version != _CLOUD_CONSENT_VERSION
+        ):
+            raise TranslationWorkerError("The cloud translation snapshot is invalid.")
         if self.scope not in _TRANSLATION_SCOPES:
             raise TranslationWorkerError("The translation command scope is invalid.")
         if self.translation_style not in _TRANSLATION_STYLES:
@@ -152,14 +181,23 @@ class TranslationCommand:
             "skip_locked_segments": self.skip_locked_segments,
             "run_semantic_validation": self.run_semantic_validation,
             "glossary_snapshot_id": self.glossary_snapshot_id,
+            "provider_type": self.provider_type,
+            "cloud_model_name": self.cloud_model_name,
+            "cloud_consent": self.cloud_consent,
+            "cloud_consent_version": self.cloud_consent_version,
         }
 
     @classmethod
     def from_payload_json(cls, value: str) -> Self:
         payload = _decode_translation_command(value)
-        if frozenset(payload) != _COMMAND_FIELDS:
-            raise TranslationWorkerError("The translation command fields are invalid.")
-        if payload["schema"] != TRANSLATION_COMMAND_SCHEMA:
+        schema = payload.get("schema")
+        if schema == TRANSLATION_COMMAND_SCHEMA_V1:
+            if frozenset(payload) != _COMMAND_FIELDS_V1:
+                raise TranslationWorkerError("The translation command fields are invalid.")
+        elif schema == TRANSLATION_COMMAND_SCHEMA:
+            if frozenset(payload) != _COMMAND_FIELDS:
+                raise TranslationWorkerError("The translation command fields are invalid.")
+        else:
             raise TranslationWorkerError("The translation command schema is unsupported.")
         try:
             return cls(
@@ -169,7 +207,7 @@ class TranslationCommand:
                 section_ids=_identifier_tuple(payload["section_ids"]),
                 page_ids=_identifier_tuple(payload["page_ids"]),
                 segment_ids=_identifier_tuple(payload["segment_ids"]),
-                model_id=_string_value(payload, "model_id"),
+                model_id=_optional_string_value(payload, "model_id"),
                 translation_style=_string_value(payload, "translation_style"),
                 batch_size=_integer_value(payload, "batch_size"),
                 context_mode=_string_value(payload, "context_mode"),
@@ -177,6 +215,26 @@ class TranslationCommand:
                 skip_locked_segments=_boolean_value(payload, "skip_locked_segments"),
                 run_semantic_validation=_boolean_value(payload, "run_semantic_validation"),
                 glossary_snapshot_id=_string_value(payload, "glossary_snapshot_id"),
+                provider_type=(
+                    _string_value(payload, "provider_type")
+                    if schema == TRANSLATION_COMMAND_SCHEMA
+                    else "OLLAMA"
+                ),
+                cloud_model_name=(
+                    _optional_string_value(payload, "cloud_model_name")
+                    if schema == TRANSLATION_COMMAND_SCHEMA
+                    else None
+                ),
+                cloud_consent=(
+                    _boolean_value(payload, "cloud_consent")
+                    if schema == TRANSLATION_COMMAND_SCHEMA
+                    else False
+                ),
+                cloud_consent_version=(
+                    _optional_string_value(payload, "cloud_consent_version")
+                    if schema == TRANSLATION_COMMAND_SCHEMA
+                    else None
+                ),
             )
         except (TypeError, KeyError):
             raise TranslationWorkerError("The translation command values are invalid.") from None
@@ -191,6 +249,9 @@ class LoadedTranslationJob:
     ollama_model_name: str
     operation: TranslationOperation | None
     selected_segment_ids: tuple[str, ...]
+    retry_count: int
+    provider_type: str = "OLLAMA"
+    cloud_consent: bool = False
 
 
 class DatabaseTranslationOperationLoader:
@@ -247,9 +308,14 @@ def _load_translation_job(
     ):
         raise TranslationWorkerError("The translation command state is inconsistent.")
 
-    model = session.get(LocalModelRecord, command.model_id)
-    if model is None or not model.is_installed:
-        raise TranslationWorkerError("The translation model is unavailable.")
+    if command.provider_type == "OLLAMA":
+        model = session.get(LocalModelRecord, command.model_id)
+        if model is None or not model.is_installed:
+            raise TranslationWorkerError("The translation model is unavailable.")
+        provider_model_name = model.ollama_model_name
+    else:
+        assert command.cloud_model_name is not None
+        provider_model_name = command.cloud_model_name
     if command.run_semantic_validation:
         raise TranslationWorkerError("Semantic validation is unavailable.")
 
@@ -299,9 +365,12 @@ def _load_translation_job(
         idempotency_key=job.idempotency_key,
         project_id=command.project_id,
         document_id=command.document_id,
-        ollama_model_name=model.ollama_model_name,
+        ollama_model_name=provider_model_name,
         operation=operation,
         selected_segment_ids=segment_ids,
+        retry_count=job.retry_count,
+        provider_type=command.provider_type,
+        cloud_consent=command.cloud_consent,
     )
 
 
@@ -353,6 +422,7 @@ def _build_translation_operation(
             segment_order=segment.segment_order,
             context=_batch_context(index, selected, title_text, command.context_mode),
             locked=False,
+            expected_revision=segment.current_revision,
         )
         for index, (segment, block, page, section) in enumerate(selected)
     )
@@ -369,9 +439,13 @@ def _build_translation_operation(
         document_id=command.document_id,
         section_id=command.section_ids[0] if len(command.section_ids) == 1 else None,
         glossary_snapshot_id=command.glossary_snapshot_id,
-        provider_type="OLLAMA",
-        model_id=command.model_id,
-        idempotency_key=job.idempotency_key,
+        provider_type=command.provider_type,
+        model_id=(command.model_id or command.cloud_model_name or ""),
+        idempotency_key=(
+            job.idempotency_key
+            if job.retry_count == 0
+            else f"{job.idempotency_key}:retry:{job.retry_count}"
+        ),
         context=TranslationContext(
             source_language=project.source_language,
             target_language=project.target_language,
@@ -430,8 +504,7 @@ def _segment_selected(
         SegmentStatus.NOT_TRANSLATABLE.value,
     }:
         return False
-    is_locked = bool(segment.is_locked) or segment.status == SegmentStatus.LOCKED.value
-    if is_locked and (command.skip_locked_segments or not command.retranslate_existing):
+    if _segment_is_protected(segment):
         return False
 
     if command.scope == "SECTION" and segment.section_id not in command.section_ids:
@@ -459,6 +532,55 @@ def _has_existing_translation(segment: DocumentSegment) -> bool:
             segment.reviewed_translation,
             segment.final_text,
         )
+    )
+
+
+def _segment_is_protected(segment: DocumentSegment) -> bool:
+    return (
+        bool(segment.is_locked)
+        or segment.status
+        in {
+            SegmentStatus.LOCKED.value,
+            SegmentStatus.APPROVED.value,
+            SegmentStatus.USER_EDITED.value,
+        }
+        or segment.review_status in {ReviewStatus.APPROVED.value, ReviewStatus.EDITED.value}
+    )
+
+
+def _loaded_revisions(loaded: LoadedTranslationJob) -> dict[str, int | None]:
+    return (
+        {item.segment_id: item.expected_revision for item in loaded.operation.segments}
+        if loaded.operation is not None
+        else {}
+    )
+
+
+def _write_segment_status(
+    session: Session,
+    segment_id: str,
+    revision: int | None,
+    status: str,
+    now: str,
+    *,
+    only_running: bool = True,
+) -> bool:
+    if revision is None:
+        return False
+    statement = update(DocumentSegment).where(
+        DocumentSegment.id == segment_id,
+        DocumentSegment.current_revision == revision,
+        DocumentSegment.is_locked == 0,
+        DocumentSegment.status.not_in(("LOCKED", "APPROVED", "USER_EDITED")),
+        DocumentSegment.review_status.not_in(("APPROVED", "EDITED")),
+    )
+    if only_running:
+        statement = statement.where(DocumentSegment.status == SegmentStatus.TRANSLATING.value)
+    return (
+        session.scalar(
+            statement.values(status=status, updated_at=now).returning(DocumentSegment.id)
+        )
+        is not None
     )
 
 
@@ -492,6 +614,13 @@ def _identifier_tuple(value: object) -> tuple[str, ...]:
 def _string_value(payload: dict[str, object], key: str) -> str:
     value = payload[key]
     if type(value) is not str:
+        raise TranslationWorkerError("The translation command values are invalid.")
+    return value
+
+
+def _optional_string_value(payload: dict[str, object], key: str) -> str | None:
+    value = payload[key]
+    if value is not None and type(value) is not str:
         raise TranslationWorkerError("The translation command values are invalid.")
     return value
 
@@ -543,9 +672,12 @@ def _validate_scope_selectors(command: TranslationCommand) -> None:
 
 
 class DatabaseCancellationSignal:
-    def __init__(self, session_factory: sessionmaker[Session], job_id: str) -> None:
+    def __init__(
+        self, session_factory: sessionmaker[Session], job_id: str, attempt_id: str | None = None
+    ) -> None:
         self._session_factory = session_factory
         self._job_id = job_id
+        self._attempt_id = attempt_id
 
     @property
     def is_cancelled(self) -> bool:
@@ -553,6 +685,14 @@ class DatabaseCancellationSignal:
             row = session.get(ApplicationJob, self._job_id)
             if row is None:
                 raise TranslationWorkerError("The translation job was not found.")
+            if self._attempt_id is not None:
+                attempt = session.get(JobAttempt, self._attempt_id)
+                if (
+                    attempt is None
+                    or attempt.status != JobAttemptStatus.RUNNING.value
+                    or row.status not in {"RUNNING", "CANCELLATION_REQUESTED", "CANCELLED"}
+                ):
+                    raise TranslationWorkerError("The translation attempt no longer owns the job.")
             return row.status in {
                 JobStatus.CANCELLATION_REQUESTED.value,
                 JobStatus.CANCELLED.value,
@@ -567,6 +707,7 @@ class ProductionTranslationJobRunner:
         temporary_root: Path,
         *,
         provider_factory: Callable[[str], object] | None = None,
+        cloud_provider_factory: Callable[[str, bool], object] | None = None,
         worker_identifier: str | None = None,
     ) -> None:
         if not isinstance(loader, DatabaseTranslationOperationLoader):
@@ -579,6 +720,13 @@ class ProductionTranslationJobRunner:
         self._provider_factory = provider_factory or (
             lambda model_name: OllamaTranslationProvider(model_name=model_name)
         )
+        self._cloud_provider_factory = cloud_provider_factory or (
+            lambda model_name, consent: GroqTranslationProvider(
+                enabled=True,
+                cloud_consent=consent,
+                model_name=model_name,
+            )
+        )
         self._worker_identifier = _worker_identifier(worker_identifier)
 
     def run(self, job_id: str) -> TranslationRunResult:
@@ -588,6 +736,7 @@ class ProductionTranslationJobRunner:
             session_factory=self._session_factory,
             temporary_root=self._temporary_root,
             provider_factory=self._provider_factory,
+            cloud_provider_factory=self._cloud_provider_factory,
             worker_identifier=self._worker_identifier,
         )
 
@@ -598,10 +747,12 @@ def _run_loaded_translation_job(
     session_factory: sessionmaker[Session],
     temporary_root: Path,
     provider_factory: Callable[[str], object],
+    cloud_provider_factory: Callable[[str, bool], object] | None = None,
     worker_identifier: str,
 ) -> TranslationRunResult:
+    attempt_id: str | None = None
     try:
-        _start_translation_job(session_factory, loaded, worker_identifier)
+        attempt_id = _start_translation_job(session_factory, loaded, worker_identifier)
         if loaded.operation is None:
             result = TranslationRunResult(
                 run_id=str(uuid5(NAMESPACE_URL, f"transloka:translation-noop:{loaded.job_id}")),
@@ -613,34 +764,117 @@ def _run_loaded_translation_job(
                 cancelled_segment_ids=(),
             )
         else:
-            progress = JobProgressService(session_factory)
+
+            def guard(session: Session) -> None:
+                _lock_translation_attempt(session, loaded.job_id, attempt_id)
 
             def report_progress(completed_batches: int, total_batches: int) -> None:
                 ratio = completed_batches / total_batches if total_batches else 0.0
-                progress.update(
-                    loaded.job_id,
-                    progress=min(0.99, max(0.0, ratio * 0.99)),
-                    current_stage=f"TRANSLATING_{completed_batches}_OF_{total_batches}",
-                )
+                with transaction_scope(session_factory) as session:
+                    guard(session)
+                    job = session.get(ApplicationJob, loaded.job_id)
+                    assert job is not None
+                    job.progress = min(0.99, max(0.0, ratio * 0.99))
+                    job.current_stage = f"TRANSLATING_{completed_batches}_OF_{total_batches}"
+                    job.result_json = json.dumps(
+                        {
+                            "schema": "transloka.translation.job-progress.v1",
+                            "current_batch": completed_batches,
+                            "total_batches": total_batches,
+                        }
+                    )
+                    job.heartbeat_at = _translation_timestamp()
 
             orchestrator = TranslationOrchestrator(
-                provider_factory(loaded.ollama_model_name),
-                SqlAlchemyTranslationRunStore(session_factory),
+                _translation_provider(
+                    loaded,
+                    provider_factory=provider_factory,
+                    cloud_provider_factory=cloud_provider_factory,
+                ),
+                SqlAlchemyTranslationRunStore(session_factory, write_guard=guard),
                 batch_progress_sink=report_progress,
             )
             result = asyncio.run(
                 orchestrator.run(
                     loaded.operation,
-                    cancellation=DatabaseCancellationSignal(session_factory, loaded.job_id),
+                    cancellation=DatabaseCancellationSignal(
+                        session_factory, loaded.job_id, attempt_id
+                    ),
                 )
             )
-        if result.status is TranslationRunStatus.CANCELLED:
-            JobCancellationService(session_factory, temporary_root).checkpoint(loaded.job_id)
-        _finish_translation_job(session_factory, loaded, result, worker_identifier)
+        _finish_translation_job(session_factory, loaded, result, worker_identifier, attempt_id)
         return result
     except Exception as exc:
-        _fail_translation_job(session_factory, loaded, exc, worker_identifier)
+        _fail_translation_job(session_factory, loaded, exc, worker_identifier, attempt_id)
         raise
+
+
+class _CloudEnabledProvider:
+    def __init__(self, provider: Any) -> None:
+        self._provider = provider
+
+    async def translate(self, request: object, *, cancellation: object = None) -> object:
+        if not _cloud_translation_enabled():
+            raise TranslationProviderError(
+                ProviderErrorCode.INVALID_REQUEST,
+                "Cloud translation was disabled before the request.",
+            )
+        return await self._provider.translate(request, cancellation=cancellation)
+
+
+def _translation_provider(
+    loaded: LoadedTranslationJob,
+    *,
+    provider_factory: Callable[[str], object],
+    cloud_provider_factory: Callable[[str, bool], object] | None,
+) -> object:
+    if loaded.provider_type == "OLLAMA":
+        return provider_factory(loaded.ollama_model_name)
+    factory = cloud_provider_factory or (
+        lambda model_name, consent: GroqTranslationProvider(
+            enabled=True,
+            cloud_consent=consent,
+            model_name=model_name,
+        )
+    )
+    return _CloudEnabledProvider(factory(loaded.ollama_model_name, loaded.cloud_consent))
+
+
+def _cloud_translation_enabled() -> bool:
+    return os.environ.get("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _lock_translation_attempt(
+    session: Session, job_id: str, attempt_id: str | None, *, allow_cancelled: bool = False
+) -> None:
+    statuses = [JobStatus.RUNNING.value, JobStatus.CANCELLATION_REQUESTED.value]
+    if allow_cancelled:
+        statuses.append(JobStatus.CANCELLED.value)
+    # The no-op UPDATE acquires SQLite's writer lock before any dependent write.
+    # Checking the attempt token also fences a stale worker after a job is retried.
+    owned = session.scalar(
+        update(ApplicationJob)
+        .where(
+            ApplicationJob.id == job_id,
+            ApplicationJob.status.in_(statuses),
+            select(JobAttempt.id)
+            .where(
+                JobAttempt.id == attempt_id,
+                JobAttempt.job_id == job_id,
+                JobAttempt.status == JobAttemptStatus.RUNNING.value,
+            )
+            .exists(),
+        )
+        .values(heartbeat_at=ApplicationJob.heartbeat_at)
+        .returning(ApplicationJob.id)
+    )
+    if owned is None:
+        raise TranslationWorkerError("The translation attempt no longer owns the job.")
 
 
 def _worker_identifier(value: str | None) -> str:
@@ -657,20 +891,15 @@ def _start_translation_job(
     session_factory: sessionmaker[Session],
     loaded: LoadedTranslationJob,
     worker_identifier: str,
-) -> None:
+) -> str:
     now = _translation_timestamp()
+    revisions = _loaded_revisions(loaded)
     with transaction_scope(session_factory) as session:
         job = session.get(ApplicationJob, loaded.job_id)
         project = session.get(Project, loaded.project_id)
         document = session.get(Document, loaded.document_id)
         if job is None or project is None or document is None:
             raise TranslationWorkerError("The translation lifecycle state is unavailable.")
-        if job.status not in {
-            JobStatus.QUEUED.value,
-            JobStatus.RETRYING.value,
-            JobStatus.RUNNING.value,
-        }:
-            raise TranslationWorkerError("The translation job is not executable.")
         attempts = list(
             session.scalars(
                 select(JobAttempt)
@@ -678,26 +907,76 @@ def _start_translation_job(
                 .order_by(JobAttempt.attempt_number)
             )
         )
-        if attempts and attempts[-1].status == JobAttemptStatus.RUNNING.value:
-            attempt = attempts[-1]
-            attempt.worker_identifier = worker_identifier
-        else:
-            statuses: dict[str, str] = {}
-            for segment_id in loaded.selected_segment_ids:
-                segment = session.get(DocumentSegment, segment_id)
-                if segment is None:
-                    raise TranslationWorkerError("A selected translation segment disappeared.")
-                statuses[segment_id] = segment.status
-            details = json.dumps(
-                {
-                    "schema": "transloka.translation.attempt-state.v1",
-                    "document_status": document.status,
-                    "project_status": project.status,
-                    "segment_statuses": statuses,
-                },
-                sort_keys=True,
-                separators=(",", ":"),
+        retry_attempt = (
+            attempts[-1]
+            if job.status == JobStatus.RETRYING.value
+            and attempts
+            and attempts[-1].status == JobAttemptStatus.RUNNING.value
+            and attempts[-1].worker_identifier is None
+            else None
+        )
+        ownership_predicate = (
+            select(JobAttempt.id)
+            .where(
+                JobAttempt.id == retry_attempt.id,
+                JobAttempt.job_id == loaded.job_id,
+                JobAttempt.status == JobAttemptStatus.RUNNING.value,
+                JobAttempt.worker_identifier.is_(None),
             )
+            .exists()
+            if retry_attempt is not None
+            else ~select(JobAttempt.id)
+            .where(
+                JobAttempt.job_id == loaded.job_id,
+                JobAttempt.status == JobAttemptStatus.RUNNING.value,
+            )
+            .exists()
+        )
+        claimed = session.scalar(
+            update(ApplicationJob)
+            .where(
+                ApplicationJob.id == loaded.job_id,
+                ApplicationJob.retry_count == loaded.retry_count,
+                ApplicationJob.status.in_(("QUEUED", "RETRYING", "RUNNING")),
+                ownership_predicate,
+            )
+            .values(status=JobStatus.RUNNING.value)
+            .returning(ApplicationJob.id)
+        )
+        if claimed is None:
+            raise TranslationWorkerError(
+                "The translation job is already owned or no longer executable."
+            )
+        statuses: dict[str, str] = {}
+        for segment_id in loaded.selected_segment_ids:
+            segment = session.get(DocumentSegment, segment_id)
+            if segment is None:
+                raise TranslationWorkerError("A selected translation segment disappeared.")
+            statuses[segment_id] = segment.status
+        details_value: dict[str, object] = {
+            "schema": "transloka.translation.attempt-state.v1",
+            "document_status": document.status,
+            "project_status": project.status,
+            "segment_statuses": statuses,
+        }
+        if retry_attempt is not None and retry_attempt.details_json:
+            try:
+                retry_details = json.loads(retry_attempt.details_json)
+            except (TypeError, ValueError):
+                retry_details = None
+            if isinstance(retry_details, dict) and isinstance(retry_details.get("retry"), dict):
+                details_value["retry"] = retry_details["retry"]
+        details = json.dumps(
+            details_value,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
+        if retry_attempt is not None:
+            attempt = retry_attempt
+            attempt.worker_identifier = worker_identifier
+            attempt.started_at = now
+            attempt.details_json = details
+        else:
             attempt_number = len(attempts) + 1
             attempt = JobAttempt(
                 id=str(
@@ -720,6 +999,7 @@ def _start_translation_job(
             session.add(attempt)
         job.status = JobStatus.RUNNING.value
         job.progress = 0.0
+        job.result_json = None
         job.current_stage = "TRANSLATING"
         job.started_at = job.started_at or now
         job.heartbeat_at = now
@@ -729,12 +1009,17 @@ def _start_translation_job(
         document.status = DocumentStatus.TRANSLATING.value
         document.updated_at = now
         for segment_id in loaded.selected_segment_ids:
-            segment = session.get(DocumentSegment, segment_id)
-            if segment is None:
-                raise TranslationWorkerError("A selected translation segment disappeared.")
-            segment.status = SegmentStatus.TRANSLATING.value
-            segment.updated_at = now
+            if not _write_segment_status(
+                session,
+                segment_id,
+                revisions.get(segment_id),
+                SegmentStatus.TRANSLATING.value,
+                now,
+                only_running=False,
+            ):
+                raise TranslationWorkerError("A selected translation segment changed before start.")
         session.flush()
+        return attempt.id
 
 
 def _finish_translation_job(
@@ -742,24 +1027,33 @@ def _finish_translation_job(
     loaded: LoadedTranslationJob,
     result: TranslationRunResult,
     worker_identifier: str,
+    attempt_id: str,
 ) -> None:
     now = _translation_timestamp()
+    revisions = _loaded_revisions(loaded)
     job_status = _translation_job_status(result.status)
     result_json = _translation_result_json(result)
     with transaction_scope(session_factory) as session:
+        _lock_translation_attempt(session, loaded.job_id, attempt_id, allow_cancelled=True)
         job = session.get(ApplicationJob, loaded.job_id)
         project = session.get(Project, loaded.project_id)
         document = session.get(Document, loaded.document_id)
         if job is None or project is None or document is None:
             raise TranslationWorkerError("The translation lifecycle state disappeared.")
-        attempt = _running_translation_attempt(session, loaded.job_id)
+        attempt = session.get(JobAttempt, attempt_id)
         assert attempt is not None
         previous = _attempt_state(attempt)
         progress = _terminal_progress(result, len(loaded.selected_segment_ids))
         job.status = job_status.value
         job.progress = progress
         job.current_stage = job_status.value
-        job.result_json = result_json
+        terminal_result = json.loads(result_json)
+        batch_progress = json.loads(job.result_json) if job.result_json else {}
+        if isinstance(batch_progress, dict):
+            for key in ("current_batch", "total_batches"):
+                if key in batch_progress:
+                    terminal_result[key] = batch_progress[key]
+        job.result_json = json.dumps(terminal_result, sort_keys=True, separators=(",", ":"))
         job.completed_at = now
         job.heartbeat_at = now
         if job_status is JobStatus.CANCELLED:
@@ -777,19 +1071,27 @@ def _finish_translation_job(
         document.updated_at = now
         failed_ids = set(result.failed_segment_ids)
         cancelled_ids = set(result.cancelled_segment_ids)
+        unattempted_ids = set(result.unattempted_segment_ids)
         previous_segments = previous.get("segment_statuses", {})
         for segment_id in failed_ids:
-            segment = session.get(DocumentSegment, segment_id)
-            if segment is not None:
-                segment.status = SegmentStatus.TRANSLATION_FAILED.value
-                segment.updated_at = now
+            _write_segment_status(
+                session,
+                segment_id,
+                revisions.get(segment_id),
+                SegmentStatus.TRANSLATION_FAILED.value,
+                now,
+            )
         if isinstance(previous_segments, dict):
-            for segment_id in cancelled_ids:
-                segment = session.get(DocumentSegment, segment_id)
+            for segment_id in cancelled_ids | unattempted_ids:
                 old_status = previous_segments.get(segment_id)
-                if segment is not None and isinstance(old_status, str):
-                    segment.status = old_status
-                    segment.updated_at = now
+                if isinstance(old_status, str):
+                    _write_segment_status(
+                        session,
+                        segment_id,
+                        revisions.get(segment_id),
+                        old_status,
+                        now,
+                    )
         _complete_translation_attempt(
             attempt,
             job_status,
@@ -806,8 +1108,10 @@ def _fail_translation_job(
     loaded: LoadedTranslationJob,
     error: Exception,
     worker_identifier: str,
+    attempt_id: str | None,
 ) -> None:
     now = _translation_timestamp()
+    revisions = _loaded_revisions(loaded)
     error_code = type(error).__name__.upper()[:100] or "TRANSLATIONWORKERERROR"
     raw_message = str(error).strip()
     error_message = (
@@ -817,10 +1121,31 @@ def _fail_translation_job(
     )
     try:
         with transaction_scope(session_factory) as session:
+            if attempt_id is None:
+                unclaimed = session.scalar(
+                    update(ApplicationJob)
+                    .where(
+                        ApplicationJob.id == loaded.job_id,
+                        ApplicationJob.retry_count == loaded.retry_count,
+                        ApplicationJob.status.in_(("QUEUED", "RETRYING")),
+                        ~select(JobAttempt.id)
+                        .where(
+                            JobAttempt.job_id == loaded.job_id,
+                            JobAttempt.status == "RUNNING",
+                        )
+                        .exists(),
+                    )
+                    .values(status=JobStatus.FAILED.value)
+                    .returning(ApplicationJob.id)
+                )
+                if unclaimed is None:
+                    return
+            else:
+                _lock_translation_attempt(session, loaded.job_id, attempt_id)
             job = session.get(ApplicationJob, loaded.job_id)
             if job is None:
                 return
-            attempt = _running_translation_attempt(session, loaded.job_id, required=False)
+            attempt = session.get(JobAttempt, attempt_id) if attempt_id is not None else None
             previous = _attempt_state(attempt) if attempt is not None else {}
             job.status = JobStatus.FAILED.value
             job.current_stage = JobStatus.FAILED.value
@@ -839,10 +1164,14 @@ def _fail_translation_job(
             previous_segments = previous.get("segment_statuses", {})
             if isinstance(previous_segments, dict):
                 for segment_id, old_status in previous_segments.items():
-                    segment = session.get(DocumentSegment, segment_id)
-                    if segment is not None and isinstance(old_status, str):
-                        segment.status = old_status
-                        segment.updated_at = now
+                    if isinstance(old_status, str):
+                        _write_segment_status(
+                            session,
+                            segment_id,
+                            revisions.get(segment_id),
+                            old_status,
+                            now,
+                        )
             if attempt is not None:
                 _complete_translation_attempt(
                     attempt,
@@ -855,22 +1184,6 @@ def _fail_translation_job(
             session.flush()
     except Exception:
         return
-
-
-def _running_translation_attempt(
-    session: Session,
-    job_id: str,
-    *,
-    required: bool = True,
-) -> JobAttempt | None:
-    attempt = session.scalars(
-        select(JobAttempt)
-        .where(JobAttempt.job_id == job_id)
-        .order_by(JobAttempt.attempt_number.desc())
-    ).first()
-    if required and (attempt is None or attempt.status != JobAttemptStatus.RUNNING.value):
-        raise TranslationWorkerError("The running translation attempt is unavailable.")
-    return attempt
 
 
 def _attempt_state(attempt: JobAttempt | None) -> dict[str, object]:
@@ -958,6 +1271,11 @@ def _terminal_progress(result: TranslationRunResult, selected_count: int) -> flo
 def _translation_result_error(
     result: TranslationRunResult,
 ) -> tuple[str | None, str | None]:
+    if result.provider_error_code is not None:
+        return (
+            result.provider_error_code,
+            "Translation stopped because the configured provider is unavailable.",
+        )
     if not result.failures:
         return None, None
     return (
@@ -976,12 +1294,31 @@ def _translation_result_json(result: TranslationRunResult) -> str:
             "failed_segment_ids": list(result.failed_segment_ids),
             "locked_segment_ids": list(result.locked_segment_ids),
             "cancelled_segment_ids": list(result.cancelled_segment_ids),
+            "unattempted_segment_ids": list(result.unattempted_segment_ids),
             "warning_count": len(result.warnings),
             "failures": [
-                {"segment_id": failure.segment_id, "code": failure.code}
+                {
+                    "segment_id": failure.segment_id,
+                    "code": failure.code,
+                    **(
+                        {"validation_codes": [code.value for code in failure.validation_codes]}
+                        if failure.validation_codes
+                        else {}
+                    ),
+                }
                 for failure in result.failures
             ],
             "attempt_count": result.attempt_count,
+            **(
+                {"provider_error_code": result.provider_error_code}
+                if result.provider_error_code is not None
+                else {}
+            ),
+            **(
+                {"retry_after_seconds": result.retry_after_seconds}
+                if result.retry_after_seconds is not None
+                else {}
+            ),
         },
         ensure_ascii=False,
         allow_nan=False,

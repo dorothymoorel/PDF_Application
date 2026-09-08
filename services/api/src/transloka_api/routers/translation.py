@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+import os
 import time
 from collections.abc import Iterator
 from dataclasses import replace
 from datetime import UTC, datetime
 from math import ceil
-from typing import Annotated, Any, Literal, Never, Protocol, cast
+from typing import Annotated, Any, Literal, Never, Protocol, Self, cast
 
-from fastapi import APIRouter, Depends, Header, Request, status
-from pydantic import BaseModel, ConfigDict, Field
+from fastapi import APIRouter, Depends, Header, Query, Request, status
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, sessionmaker
 from transloka_api.exception_handlers import TransLokaError
@@ -51,6 +52,7 @@ from transloka_core.jobs.retry import (
 from transloka_core.storage.local import LocalFileStorage
 from transloka_glossary.snapshots import GlossarySnapshotError, create_glossary_snapshot
 from transloka_translation.providers import ProviderHealthStatus
+from transloka_translation.providers.groq import GROQ_MODELS, GroqTranslationProvider
 from transloka_translation.providers.ollama import OllamaTranslationProvider
 from transloka_worker.health import PersistedWorkerHeartbeat, WorkerHeartbeatStore, WorkerStatus
 from transloka_worker.translation import TranslationCommand, TranslationWorkerError
@@ -113,6 +115,8 @@ TranslationScope = Literal[
     "SELECTED_SEGMENTS",
 ]
 ContextMode = Literal["NONE", "STANDARD", "EXTENDED"]
+TranslationProviderType = Literal["OLLAMA", "GROQ"]
+GroqModelName = Literal["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
 
 
 class StartTranslationRequest(BaseModel):
@@ -122,13 +126,31 @@ class StartTranslationRequest(BaseModel):
     section_ids: list[str] | None = None
     page_ids: list[str] | None = None
     segment_ids: list[str] | None = None
-    model_id: str = Field(min_length=1, max_length=200)
+    provider_type: TranslationProviderType | None = None
+    model_id: str | None = Field(default=None, min_length=1, max_length=200)
+    cloud_model_name: GroqModelName | None = None
+    cloud_consent: bool | None = None
     translation_style: TranslationStyle | None = None
     batch_size: int = Field(default=5, ge=1, le=100)
     context_mode: ContextMode = "STANDARD"
     retranslate_existing: bool = False
     skip_locked_segments: bool = True
     run_semantic_validation: bool = False
+
+    @model_validator(mode="after")
+    def validate_provider_selection(self) -> Self:
+        provider_type = self.provider_type or "OLLAMA"
+        if provider_type == "OLLAMA":
+            if self.model_id is None:
+                raise ValueError("model_id is required for the Ollama provider.")
+            if self.cloud_model_name is not None or self.cloud_consent is True:
+                raise ValueError("Cloud fields are invalid for the Ollama provider.")
+            return self
+        if self.model_id is not None:
+            raise ValueError("model_id is reserved for local Ollama models.")
+        if self.cloud_model_name is None or self.cloud_consent is not True:
+            raise ValueError("A Groq model and explicit cloud consent are required.")
+        return self
 
 
 class TranslationJobData(BaseModel):
@@ -151,6 +173,9 @@ class TranslationStatusData(BaseModel):
     active_job_id: str | None
     current_batch: int = Field(ge=0)
     total_batches: int = Field(ge=0)
+    unattempted_segments: int | None = Field(default=None, ge=0)
+    provider_error_code: str | None = None
+    retry_after_seconds: float | None = Field(default=None, ge=0.0)
 
 
 class TranslationStatusResponse(BaseModel):
@@ -200,8 +225,20 @@ async def get_translation_readiness(
     project_id: str,
     request: Request,
     session: Annotated[Session, Depends(_get_session)],
+    provider_type: Annotated[TranslationProviderType, Query()] = "OLLAMA",
+    model_id: Annotated[str | None, Query(min_length=1, max_length=200)] = None,
+    cloud_model_name: Annotated[GroqModelName | None, Query()] = None,
+    cloud_consent: Annotated[bool, Query()] = False,
 ) -> TranslationReadinessResponse:
-    readiness = await _collect_readiness(request, session, project_id)
+    readiness = await _collect_readiness(
+        request,
+        session,
+        project_id,
+        model_id,
+        provider_type=provider_type,
+        cloud_model_name=cloud_model_name,
+        cloud_consent=cloud_consent,
+    )
     return TranslationReadinessResponse(
         data=TranslationReadinessData(
             ready=not readiness.blockers,
@@ -232,7 +269,15 @@ async def start_translation(
     idempotency_key: Annotated[str, Header(alias="Idempotency-Key", min_length=1, max_length=200)],
     session: Annotated[Session, Depends(_get_session)],
 ) -> TranslationJobResponse:
-    readiness = await _collect_readiness(request, session, project_id, payload.model_id)
+    readiness = await _collect_readiness(
+        request,
+        session,
+        project_id,
+        payload.model_id,
+        provider_type=payload.provider_type or "OLLAMA",
+        cloud_model_name=payload.cloud_model_name,
+        cloud_consent=payload.cloud_consent is True,
+    )
     if any(issue.code == "WORKER_UNAVAILABLE" for issue in readiness.blockers):
         _raise_worker_unavailable()
     if readiness.blockers:
@@ -285,6 +330,12 @@ async def start_translation(
             skip_locked_segments=payload.skip_locked_segments,
             run_semantic_validation=payload.run_semantic_validation,
             glossary_snapshot_id=snapshot.id,
+            provider_type=payload.provider_type or "OLLAMA",
+            cloud_model_name=payload.cloud_model_name,
+            cloud_consent=payload.cloud_consent is True,
+            cloud_consent_version=(
+                "cloud_text_sharing_v1" if payload.cloud_consent is True else None
+            ),
         )
         if payload.scope == "FULL_DOCUMENT" and _idempotent_job(session, idempotency_key) is None:
             active_job = _active_full_document_job(session, project_id, document_id)
@@ -530,6 +581,10 @@ async def _collect_readiness(
     session: Session,
     project_id: str,
     requested_model_id: str | None = None,
+    *,
+    provider_type: TranslationProviderType = "OLLAMA",
+    cloud_model_name: GroqModelName | None = None,
+    cloud_consent: bool = False,
 ) -> _Readiness:
     project = _get_project(session, project_id)
     segment_count = _segment_count(session, project.active_document_id)
@@ -545,54 +600,88 @@ async def _collect_readiness(
         )
         or 0
     )
-    selected_model = cast(
-        LocalModelRecord | None,
-        session.scalar(
-            select(LocalModelRecord)
-            .where(LocalModelRecord.is_selected_translation == 1)
-            .order_by(LocalModelRecord.id)
-            .limit(1)
-        ),
-    )
     blockers: list[TranslationBlockingIssue] = []
-    if selected_model is None or not selected_model.is_installed:
-        blockers.append(
-            TranslationBlockingIssue(
-                code="OLLAMA_MODEL_NOT_SELECTED",
-                message="Select an installed local translation model.",
-            )
+    if provider_type == "OLLAMA":
+        selected_model = cast(
+            LocalModelRecord | None,
+            session.scalar(
+                select(LocalModelRecord)
+                .where(LocalModelRecord.is_selected_translation == 1)
+                .order_by(LocalModelRecord.id)
+                .limit(1)
+            ),
         )
-    elif requested_model_id is not None and selected_model.id != requested_model_id:
-        requested = cast(LocalModelRecord | None, session.get(LocalModelRecord, requested_model_id))
-        if requested is None or not requested.is_installed:
+        if selected_model is None or not selected_model.is_installed:
             blockers.append(
                 TranslationBlockingIssue(
                     code="OLLAMA_MODEL_NOT_SELECTED",
-                    message="The requested translation model is not installed and selected.",
+                    message="Select an installed local translation model.",
                 )
             )
-        else:
+        elif requested_model_id is not None and selected_model.id != requested_model_id:
+            requested = cast(
+                LocalModelRecord | None, session.get(LocalModelRecord, requested_model_id)
+            )
+            message = (
+                "The requested translation model is not installed and selected."
+                if requested is None or not requested.is_installed
+                else "Select the requested translation model before starting."
+            )
             blockers.append(
                 TranslationBlockingIssue(
                     code="OLLAMA_MODEL_NOT_SELECTED",
-                    message="Select the requested translation model before starting.",
+                    message=message,
                 )
             )
+        provider = getattr(request.app.state, "ollama_provider", None)
+        if provider is None:
+            provider = OllamaTranslationProvider()
+        unavailable_code = "OLLAMA_UNAVAILABLE"
+        unavailable_message = "The local Ollama service is unavailable."
+    else:
+        if not _cloud_translation_enabled():
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CLOUD_TRANSLATION_DISABLED",
+                    message="Cloud translation is disabled in this TransLoka process.",
+                )
+            )
+        if not cloud_consent:
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CLOUD_CONSENT_REQUIRED",
+                    message="Explicit consent is required before sharing translation text.",
+                )
+            )
+        if cloud_model_name not in GROQ_MODELS:
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="GROQ_MODEL_NOT_ALLOWED",
+                    message="Select an allowlisted Groq translation model.",
+                )
+            )
+        provider = getattr(request.app.state, "groq_provider", None)
+        if provider is None:
+            provider = GroqTranslationProvider(
+                enabled=_cloud_translation_enabled(),
+                cloud_consent=cloud_consent,
+                model_name=cloud_model_name,
+            )
+        unavailable_code = "GROQ_UNAVAILABLE"
+        unavailable_message = "Groq is unavailable or its credential is invalid."
 
-    provider = getattr(request.app.state, "ollama_provider", None)
-    if provider is None:
-        provider = OllamaTranslationProvider()
-    try:
-        health = await provider.health_check()
-    except Exception:
-        health = None
-    if health is None or health.status is not ProviderHealthStatus.AVAILABLE:
-        blockers.append(
-            TranslationBlockingIssue(
-                code="OLLAMA_UNAVAILABLE",
-                message="The local Ollama service is unavailable.",
+    if not blockers or provider_type == "OLLAMA":
+        try:
+            health = await provider.health_check()
+        except Exception:
+            health = None
+        if health is None or health.status is not ProviderHealthStatus.AVAILABLE:
+            blockers.append(
+                TranslationBlockingIssue(
+                    code=unavailable_code,
+                    message=unavailable_message,
+                )
             )
-        )
     if not _worker_available(request):
         blockers.append(
             TranslationBlockingIssue(
@@ -627,6 +716,15 @@ async def _collect_readiness(
         estimated_batches=ceil(segment_count / 5) if segment_count else 0,
         blockers=blockers,
     )
+
+
+def _cloud_translation_enabled() -> bool:
+    return os.environ.get("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
 
 
 def _worker_available(request: Request) -> bool:
@@ -791,42 +889,62 @@ def _active_full_document_job(
 
 def _status_response(session: Session, project: Project) -> TranslationStatusResponse:
     session.expire_all()
-    total_segments = _segment_count(session, project.active_document_id)
-    completed_segments = _count_segment_status(
-        session,
-        project.active_document_id,
-        {
-            SegmentStatus.MACHINE_TRANSLATED.value,
-            SegmentStatus.NEEDS_REVIEW.value,
-            SegmentStatus.USER_EDITED.value,
-            SegmentStatus.APPROVED.value,
-            SegmentStatus.LOCKED.value,
-        },
+    has_translation = (
+        (func.trim(func.coalesce(DocumentSegment.machine_translation, ""), " \t\r\n") != "")
+        | (func.trim(func.coalesce(DocumentSegment.reviewed_translation, ""), " \t\r\n") != "")
+        | (func.trim(func.coalesce(DocumentSegment.final_text, ""), " \t\r\n") != "")
     )
-    failed_segments = _count_segment_status(
-        session,
-        project.active_document_id,
-        {SegmentStatus.TRANSLATION_FAILED.value},
+    # One aggregate snapshot keeps numerator and denominator consistent during writes.
+    total_segments, completed_segments, failed_segments, review_required_segments = session.execute(
+        select(
+            func.count(),
+            func.count().filter(
+                DocumentSegment.status.in_(
+                    ("MACHINE_TRANSLATED", "NEEDS_REVIEW", "USER_EDITED", "APPROVED", "LOCKED")
+                ),
+                has_translation,
+            ),
+            func.count().filter(DocumentSegment.status == SegmentStatus.TRANSLATION_FAILED.value),
+            func.count().filter(DocumentSegment.status == SegmentStatus.NEEDS_REVIEW.value),
+        )
+        .select_from(DocumentSegment)
+        .join(DocumentBlock, DocumentBlock.id == DocumentSegment.block_id)
+        .join(DocumentPage, DocumentPage.id == DocumentBlock.page_id)
+        .where(
+            DocumentPage.document_id == project.active_document_id,
+            DocumentSegment.status.not_in(("IGNORED", "NOT_TRANSLATABLE")),
+        )
+    ).one()
+    # Display the active job, otherwise the newest terminal job for this document.
+    # Retry-target selection deliberately has different historical priorities.
+    job = session.scalar(
+        select(ApplicationJob)
+        .where(
+            ApplicationJob.project_id == project.id,
+            ApplicationJob.document_id == project.active_document_id,
+            ApplicationJob.job_type == JobType.TRANSLATE_DOCUMENT.value,
+        )
+        .order_by(
+            case(
+                (ApplicationJob.status.in_(("RUNNING", "RETRYING", "CANCELLATION_REQUESTED")), 0),
+                (ApplicationJob.status.in_(("CREATED", "QUEUED")), 1),
+                else_=2,
+            ),
+            ApplicationJob.created_at.desc(),
+            ApplicationJob.id.desc(),
+        )
+        .limit(1)
     )
-    review_required_segments = _count_segment_status(
-        session,
-        project.active_document_id,
-        {SegmentStatus.NEEDS_REVIEW.value},
-    )
-    job = _latest_job(session, project.id)
     if job is None:
         job_status = "NOT_STARTED"
-        progress = 0.0
         active_job_id = None
     else:
         job_status = _translation_status(job.status)
-        progress = job.progress
         active_job_id = job.id
-    total_batches = ceil(total_segments / 5) if total_segments else 0
-    current_batch = (
-        total_batches
-        if job_status in {"COMPLETED", "COMPLETED_WITH_WARNINGS"}
-        else int(progress * total_batches)
+    progress = completed_segments / total_segments if total_segments else 0.0
+    current_batch, total_batches = _persisted_batch_progress(job)
+    unattempted_segments, provider_error_code, retry_after_seconds = _persisted_provider_failure(
+        job
     )
     return TranslationStatusResponse(
         data=TranslationStatusData(
@@ -839,27 +957,49 @@ def _status_response(session: Session, project: Project) -> TranslationStatusRes
             active_job_id=active_job_id,
             current_batch=current_batch,
             total_batches=total_batches,
+            unattempted_segments=unattempted_segments,
+            provider_error_code=provider_error_code,
+            retry_after_seconds=retry_after_seconds,
         ),
         meta=ResponseMeta(request_id=_request_id()),
     )
 
 
-def _count_segment_status(session: Session, document_id: str | None, statuses: set[str]) -> int:
-    if document_id is None:
-        return 0
-    return int(
-        session.scalar(
-            select(func.count())
-            .select_from(DocumentSegment)
-            .join(DocumentBlock, DocumentBlock.id == DocumentSegment.block_id)
-            .join(DocumentPage, DocumentPage.id == DocumentBlock.page_id)
-            .where(
-                DocumentPage.document_id == document_id,
-                DocumentSegment.status.in_(tuple(statuses)),
-            )
-        )
-        or 0
-    )
+def _persisted_batch_progress(job: ApplicationJob | None) -> tuple[int, int]:
+    if job is None or not job.result_json or job.status in {"CREATED", "QUEUED", "RETRYING"}:
+        return 0, 0
+    try:
+        data = json.loads(job.result_json)
+    except (TypeError, ValueError):
+        return 0, 0
+    if not isinstance(data, dict):
+        return 0, 0
+    current, total = data.get("current_batch"), data.get("total_batches")
+    if type(current) is int and type(total) is int and 0 <= current <= total:
+        return current, total
+    return 0, 0
+
+
+def _persisted_provider_failure(
+    job: ApplicationJob | None,
+) -> tuple[int, str | None, float | None]:
+    if job is None or not job.result_json:
+        return 0, None, None
+    try:
+        data = json.loads(job.result_json)
+    except (TypeError, ValueError):
+        return 0, None, None
+    if not isinstance(data, dict):
+        return 0, None, None
+    identifiers = data.get("unattempted_segment_ids")
+    count = len(identifiers) if isinstance(identifiers, list) else 0
+    code = data.get("provider_error_code")
+    if not isinstance(code, str):
+        code = None
+    retry_after = data.get("retry_after_seconds")
+    if isinstance(retry_after, bool) or not isinstance(retry_after, (int, float)):
+        retry_after = None
+    return count, code, float(retry_after) if retry_after is not None else None
 
 
 def _translation_status(value: str) -> str:

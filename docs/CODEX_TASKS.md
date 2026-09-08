@@ -1,5 +1,88 @@
 # CODEX TASKS
 
+## CLOUD-01 - Governance and isolated Groq adapter
+
+Owner-authorized addition: 2026-09-07. This task is active independently of M11-T18.
+Objective: introduce an explicitly enabled Groq TranslationProvider and mocked tests.
+Dependencies: existing provider protocol, translation request/response schemas and
+prompt builder; the cloud exception in MVP_SCOPE, TECH_STACK_DECISIONS and SECURITY.
+
+Exact allowed files:
+
+```text
+docs/MVP_SCOPE.md
+docs/TECH_STACK_DECISIONS.md
+docs/SECURITY.md
+docs/MASTER_CODEX_PROMPT.md
+docs/API_CONTRACT.md
+docs/TRANSLATION_PIPELINE.md
+docs/IMPLEMENTATION_PLAN.md
+docs/CODEX_TASKS.md
+docs/releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md
+python/transloka-translation/src/transloka_translation/providers/groq.py
+python/transloka-translation/src/transloka_translation/providers/base.py
+tests/unit/translation/providers/test_groq.py
+tests/unit/translation/providers/test_contract.py
+```
+
+Acceptance: explicit enabled configuration; consent gate on translate; credentials
+read from environment at call time; fixed HTTPS endpoints, no proxies/redirects;
+1 MiB request/response bounds, logical total timeout and cancellation; strict
+response schema plus local segment validation; sanitized typed errors and optional
+Retry-After seconds. No automatic retries, provider switch, model downloads,
+SDK/dependency changes, API/worker wiring or live user-content requests in this task.
+
+Tests must exercise valid translation/model discovery, disabled/missing consent,
+missing/invalid key, malformed/duplicate JSON, truncated or refused completion,
+wrong/missing segment IDs, oversize bodies, 401/403/429/5xx, redirect refusal,
+timeout and cancellation/late-result discard. Existing Ollama tests must pass.
+Run Ruff check/format, mypy, provider/schema/parser tests and Ollama regression.
+Do not stage or commit unless separately instructed.
+
+CLOUD-03..04 are ordered follow-ups defined in
+[the design](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md); they are not part of
+CLOUD-02 completion. Register their final scopes before starting them.
+
+## CLOUD-02 - API/worker persistence and safe resume
+
+Owner-authorized addition: 2026-09-07. Dependency: CLOUD-01 completed and verified.
+Objective: wire the approved Groq adapter through the translation API and production
+worker while preserving local v1 commands, durable provider selection, review-safe
+resume and attempt fencing.
+
+Exact allowed files:
+
+```text
+docs/CODEX_TASKS.md
+docs/releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md
+services/api/src/transloka_api/routers/translation.py
+services/worker/src/transloka_worker/translation.py
+python/transloka-translation/src/transloka_translation/orchestration/models.py
+python/transloka-translation/src/transloka_translation/orchestration/service.py
+python/transloka-translation/src/transloka_translation/orchestration/persistence.py
+tests/integration/api/test_translation.py
+tests/integration/worker/test_translation_runtime.py
+tests/integration/translation/test_orchestration.py
+tests/e2e/runtime/test_translation_worker_runtime.py
+packages/api-client/src/generated/schema.ts
+```
+
+Acceptance: existing local requests and queued v1 commands remain compatible;
+readiness is provider-aware; the v2 command durably snapshots provider, model and
+consent without a credential or fabricated LocalModelRecord; persisted translation
+batches and attempts identify the real provider/model. A provider-wide operational
+failure stops further calls, records sanitized retry metadata and leaves remaining
+segments explicitly unattempted. Explicit retry creates a new durable run, skips
+completed/approved/locked segments and preserves user edits. Cancellation and stale
+attempt fencing remain effective.
+
+Transient provider transport errors receive at most three total network attempts per
+batch with cancellable bounded backoff; waits beyond the budget stop immediately and
+persist Retry-After metadata. Do not add a provider SDK, migration, UI selector,
+credential storage, automatic provider fallback, paid upgrade, or M11-T18 work.
+Generate and check the API client schema, run focused API/worker/orchestration/E2E
+tests plus Ruff and mypy, and do not stage or commit unless separately instructed.
+
 ## TransLoka Personal MVP Atomic Task Backlog
 
 **Document Name:** `CODEX_TASKS.md`

@@ -1,3 +1,4 @@
+import json
 import time
 from collections.abc import Iterator
 from pathlib import Path
@@ -303,6 +304,103 @@ def _readiness(client: TestClient, project_id: str) -> Any:
     return client.get(f"/api/v1/projects/{project_id}/translation-readiness")
 
 
+@pytest.mark.parametrize("batch_size", [1, 5, 10])
+@pytest.mark.parametrize("job_status", ["RUNNING", "FAILED", "COMPLETED"])
+def test_status_uses_saved_document_coverage_and_actual_job_batches(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    batch_size: int,
+    job_status: str,
+) -> None:
+    client, factory, project_id, _application = translation_api
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "coverage-test"},
+        json={"model_id": MODEL_ID, "batch_size": batch_size},
+    )
+    assert response.status_code == 202
+    job_id = response.json()["data"]["job_id"]
+    with transaction_scope(factory) as session:
+        source = dict(session.execute(select(DocumentSegment.__table__)).mappings().one())
+        for index in range(1, 6):
+            copied = dict(
+                source, id=_id("seg_", 200 + index), segment_order=index, global_order=index
+            )
+            if index <= 3:
+                copied.update(machine_translation="Hasil tersimpan.", status="MACHINE_TRANSLATED")
+            elif index == 4:
+                copied.update(status="LOCKED", is_locked=1)  # Locking source is not translation.
+            session.add(DocumentSegment(**copied))
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        job.status = job_status
+        job.progress = 0.0 if job_status != "COMPLETED" else 1.0
+        job.result_json = json.dumps({"current_batch": 2, "total_batches": 7})
+    status = client.get(f"/api/v1/projects/{project_id}/translation/status").json()["data"]
+    assert status["total_segments"] == 6
+    assert status["completed_segments"] == 3
+    assert status["progress"] == 0.5
+    assert (status["current_batch"], status["total_batches"]) == (2, 7)
+
+
+@pytest.mark.parametrize(
+    "batch_data",
+    [
+        None,
+        {},
+        {"current_batch": True, "total_batches": 2},
+        {"current_batch": 3, "total_batches": 2},
+    ],
+)
+def test_status_does_not_invent_unknown_batch_counts(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    batch_data: dict[str, object] | None,
+) -> None:
+    client, factory, project_id, _application = translation_api
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "unknown-batches"},
+        json={"model_id": MODEL_ID},
+    )
+    with transaction_scope(factory) as session:
+        job = session.get(ApplicationJob, response.json()["data"]["job_id"])
+        assert job is not None
+        job.status = "FAILED"
+        job.progress = 0.8
+        job.result_json = json.dumps(batch_data)
+    status = client.get(f"/api/v1/projects/{project_id}/translation/status").json()["data"]
+    assert (status["current_batch"], status["total_batches"]) == (0, 0)
+
+
+def test_status_newer_success_is_not_hidden_by_old_failure(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, _application = translation_api
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "old-failure"},
+        json={"model_id": MODEL_ID},
+    )
+    new_job_id = _id("job_", 999)
+    with transaction_scope(factory) as session:
+        job = session.get(ApplicationJob, response.json()["data"]["job_id"])
+        assert job is not None
+        job.status = "FAILED"
+        job.created_at = "2026-09-01T00:00:00.000Z"
+        session.flush()
+        copied = dict(session.execute(select(ApplicationJob.__table__)).mappings().one())
+        copied.update(
+            id=new_job_id,
+            idempotency_key="new-success",
+            status="COMPLETED",
+            created_at="2026-09-02T00:00:00.000Z",
+            progress=1.0,
+        )
+        session.add(ApplicationJob(**copied))
+    status = client.get(f"/api/v1/projects/{project_id}/translation/status").json()["data"]
+    assert status["active_job_id"] == new_job_id
+    assert status["status"] == "COMPLETED"
+
+
 def test_production_queue_is_owned_by_application_lifespan(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -525,6 +623,122 @@ def test_translation_start_fails_closed_when_queue_is_not_configured(
         assert session.scalars(select(ApplicationJob)).all() == []
 
 
+def test_cloud_translation_is_disabled_by_default(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, _, project_id, application = translation_api
+    application.state.groq_provider = HealthyProvider()
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "cloud-disabled"},
+        json={
+            "provider_type": "GROQ",
+            "cloud_model_name": "qwen/qwen3.8-27b",
+            "cloud_consent": True,
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "TRANSLATION_NOT_READY"
+    assert response.json()["error"]["details"]["blocking_issues"] == [
+        {
+            "code": "CLOUD_TRANSLATION_DISABLED",
+            "message": "Cloud translation is disabled in this TransLoka process.",
+        }
+    ]
+
+
+def test_cloud_readiness_does_not_require_a_local_model(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, factory, project_id, application = translation_api
+    monkeypatch.setenv("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", "true")
+    application.state.groq_provider = HealthyProvider()
+    with transaction_scope(factory) as session:
+        model = session.get(LocalModelRecord, MODEL_ID)
+        assert model is not None
+        model.is_selected_translation = 0
+
+    response = client.get(
+        f"/api/v1/projects/{project_id}/translation-readiness",
+        headers=CLIENT_HEADERS,
+        params={
+            "provider_type": "GROQ",
+            "cloud_model_name": "qwen/qwen3.8-27b",
+            "cloud_consent": "true",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["ready"] is True
+    assert response.json()["data"]["blocking_issues"] == []
+
+
+def test_cloud_translation_dispatches_durable_v2_snapshot_without_local_model(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    client, factory, project_id, application = translation_api
+    monkeypatch.setenv("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", "true")
+    application.state.groq_provider = HealthyProvider()
+    with factory() as session:
+        initial_models = len(list(session.scalars(select(LocalModelRecord))))
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "cloud-v2-snapshot"},
+        json={
+            "provider_type": "GROQ",
+            "cloud_model_name": "qwen/qwen3.8-27b",
+            "cloud_consent": True,
+            "batch_size": 3,
+        },
+    )
+
+    assert response.status_code == 202, response.text
+    with factory() as session:
+        job = session.get(ApplicationJob, response.json()["data"]["job_id"])
+        assert job is not None
+        command = TranslationCommand.from_payload_json(job.payload_json)
+        assert command.provider_type == "GROQ"
+        assert command.model_id is None
+        assert command.cloud_model_name == "qwen/qwen3.8-27b"
+        assert command.cloud_consent is True
+        assert command.cloud_consent_version == "cloud_text_sharing_v1"
+        assert len(list(session.scalars(select(LocalModelRecord)))) == initial_models
+        assert "GROQ_API_KEY" not in job.payload_json
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        {"provider_type": "GROQ", "cloud_model_name": "qwen/qwen3.8-27b"},
+        {
+            "provider_type": "GROQ",
+            "model_id": MODEL_ID,
+            "cloud_model_name": "qwen/qwen3.8-27b",
+            "cloud_consent": True,
+        },
+        {"provider_type": "OLLAMA", "model_id": MODEL_ID, "cloud_consent": True},
+    ],
+)
+def test_translation_rejects_conflicting_provider_fields(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    payload: dict[str, object],
+) -> None:
+    client, _, project_id, _ = translation_api
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "invalid-provider-fields"},
+        json=payload,
+    )
+
+    assert response.status_code == 422
+
+
 def test_translation_status_prefers_running_job_over_newer_queued_job(
     translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
 ) -> None:
@@ -572,7 +786,7 @@ def test_translation_status_prefers_running_job_over_newer_queued_job(
     assert response.status_code == 200
     assert response.json()["data"]["active_job_id"] == running_job_id
     assert response.json()["data"]["status"] == "TRANSLATING"
-    assert response.json()["data"]["progress"] == 0.5
+    assert response.json()["data"]["progress"] == 0.0  # No saved translation yet.
 
 
 def test_translation_cancel_and_retry_failed(

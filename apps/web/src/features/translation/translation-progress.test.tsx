@@ -52,6 +52,26 @@ afterEach(() => {
 });
 
 describe("translation progress", () => {
+  it("keeps document coverage visible when a job fails and batches are unknown", async () => {
+    render(<TranslationProgress projectId="prj_1" client={clientWith(statusWith({
+      status: "FAILED", completed_segments: 10, total_segments: 20, progress: 0.5,
+      current_batch: 0, total_batches: 0,
+    }))} />);
+    await settle();
+    expect(screen.getByText("50%")).toBeTruthy();
+    expect(screen.getByText("10 of 20 segments")).toBeTruthy();
+    expect(screen.getByText("Saved translations across the document")).toBeTruthy();
+    expect(screen.getByText(/Job batch count is not available yet/)).toBeTruthy();
+    expect(screen.queryByText(/Batch 0 of 0/)).toBeNull();
+  });
+
+  it("labels persisted batch counts as job work, separate from document coverage", async () => {
+    render(<TranslationProgress projectId="prj_1" client={clientWith(statusWith())} />);
+    await settle();
+    expect(screen.getByText(/Job batches processed: 2 of 5/)).toBeTruthy();
+    expect(screen.getByText("40%")).toBeTruthy();
+  });
+
   it("renders running progress and allows cancellation", async () => {
     const client = clientWith(statusWith());
     render(<TranslationProgress client={client} pollIntervalMs={10_000} projectId="prj_1" />);

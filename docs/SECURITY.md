@@ -1,5 +1,11 @@
 # SECURITY
 
+## Approved cloud exception - 2026-09-07
+
+The owner-authorized exception permits optional Groq text inference with explicit enablement and document/job consent. This takes precedence over blanket no-cloud-text statements only for that provider and purpose. Send only selected text and needed context/glossary; never upload source PDFs/images or absolute paths. API keys come from API/worker process environment, never frontend, plain SQLite, Git or logs. TLS verification, fixed host, response limits and sanitized errors are required. Revocation prevents new requests; cancellation discards late responses. Local server binding and remote Ollama restrictions remain in force.
+
+Design: [Optional Groq translation](releases/CLOUD_TRANSLATION_DESIGN_2026-09-07.md).
+
 ## TransLoka Local-First Security Specification
 
 **Document Name:** `SECURITY.md`
