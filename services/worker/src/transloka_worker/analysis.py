@@ -37,6 +37,8 @@ from transloka_documents.analysis import PdfAnalysisResult, analyze_pdf
 from transloka_documents.extraction import (
     DigitalTextExtractionResult,
     ExtractedPage,
+    ExtractedWord,
+    TextBlockCandidate,
     TextGeometry,
     extract_digital_text,
 )
@@ -415,7 +417,7 @@ def _persist_digital_page_ir(
                 normalized_source_text=candidate.normalized_text,
                 source_geometry_json=_geometry_json(candidate.geometry),
                 target_geometry_json=None,
-                style_json=_style_json(candidate.font_name, candidate.font_size),
+                style_json=_style_json(page, candidate),
                 detail_json=None,
                 status=DocumentStatus.STRUCTURED.value,
                 confidence=classification.confidence,
@@ -468,27 +470,76 @@ def _persist_digital_page_ir(
 
 
 def _geometry_json(geometry: TextGeometry) -> str:
+    return json.dumps(_geometry_data(geometry), separators=(",", ":"), sort_keys=True)
+
+
+def _style_json(page: ExtractedPage, candidate: TextBlockCandidate) -> str | None:
+    lines = []
+    for line_index in candidate.line_indexes:
+        line = page.lines[line_index]
+        words = tuple(page.words[index] for index in line.word_indexes)
+        lines.append(
+            {
+                "font_name": line.font_name,
+                "font_size": line.font_size,
+                "source_geometry": _geometry_data(line.geometry),
+                "style_runs": _style_runs(words),
+            }
+        )
+    if candidate.font_name is None and candidate.font_size is None and not lines:
+        return None
     return json.dumps(
         {
-            "coordinate_system": geometry.coordinate_system,
-            "height": geometry.height,
-            "width": geometry.width,
-            "x": geometry.x,
-            "y": geometry.y,
+            "font_name": candidate.font_name,
+            "font_size": candidate.font_size,
+            "source_lines": lines,
         },
         separators=(",", ":"),
         sort_keys=True,
     )
 
 
-def _style_json(font_name: str | None, font_size: float | None) -> str | None:
-    if font_name is None and font_size is None:
-        return None
-    return json.dumps(
-        {"font_name": font_name, "font_size": font_size},
-        separators=(",", ":"),
-        sort_keys=True,
-    )
+def _style_runs(words: tuple[ExtractedWord, ...]) -> list[dict[str, object]]:
+    runs: list[dict[str, object]] = []
+    start = 0
+    while start < len(words):
+        style = (words[start].font_name, words[start].font_size, words[start].upright)
+        end = start + 1
+        while end < len(words):
+            if (words[end].font_name, words[end].font_size, words[end].upright) != style:
+                break
+            end += 1
+        geometries = tuple(word.geometry for word in words[start:end])
+        runs.append(
+            {
+                "font_name": style[0],
+                "font_size": style[1],
+                "source_geometry": _union_geometry_data(geometries),
+                "upright": style[2],
+                "word_end": end,
+                "word_start": start,
+            }
+        )
+        start = end
+    return runs
+
+
+def _geometry_data(geometry: TextGeometry) -> dict[str, object]:
+    return {
+        "coordinate_system": geometry.coordinate_system,
+        "height": geometry.height,
+        "width": geometry.width,
+        "x": geometry.x,
+        "y": geometry.y,
+    }
+
+
+def _union_geometry_data(geometries: tuple[TextGeometry, ...]) -> dict[str, object]:
+    x = min(geometry.x for geometry in geometries)
+    y = min(geometry.y for geometry in geometries)
+    right = max(geometry.x + geometry.width for geometry in geometries)
+    bottom = max(geometry.y + geometry.height for geometry in geometries)
+    return _geometry_data(TextGeometry(x=x, y=y, width=right - x, height=bottom - y))
 
 
 def _semantic_role(block_type: BlockType) -> str | None:

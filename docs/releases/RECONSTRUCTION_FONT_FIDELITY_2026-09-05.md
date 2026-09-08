@@ -185,12 +185,48 @@ The full Python repository suite and frontend suite were not rerun in this
 backend-only follow-up. These controlled fixtures do not establish fidelity for
 the user's entire book or parity with DeepL.
 
+### Authorized follow-up: preserve per-line typography metadata
+
+Review date: 2026-09-08. Follow-up label: REL-FID-02.
+
+Digital analysis previously retained font and geometry data in memory for words,
+characters, and lines, then persisted only one block-level font name and size.
+The worker now keeps the existing block-level keys for compatibility and adds
+ordered `source_lines`. Each line records its source geometry, font name, font
+size, and contiguous `style_runs`; each run records source geometry, font name,
+font size, upright orientation, and a zero-based `word_start` (inclusive) /
+`word_end` (exclusive) range relative to that line's extracted words. The stored
+block `source_text` retains the visual line breaks and space-joined words used by
+these ranges. They refer to extracted source words, including fragments split at
+font changes, and do not imply a word-for-word mapping to the translation.
+
+This uses the existing valid `document_blocks.style_json` field. No schema,
+migration, dependency, API, extraction model, or source-PDF mutation is needed.
+The reconstruction renderer remains block-level in this follow-up; consuming the
+line/run metadata is separate work.
+The metadata is written by new digital analysis runs after loading the updated
+worker; existing document rows are not backfilled or reanalyzed by this repair.
+
+Verification for this follow-up:
+
+- `uv run pytest tests/golden tests/unit/documents tests/integration/worker/test_analysis_runtime.py tests/integration/worker/test_reconstruction_runtime.py -q`:
+  **47 passed**.
+- The production-path fixture verifies three ordered source lines at their
+  expected positions (20-point spacing), mixed regular/bold/italic runs at 12/11
+  points, run geometry measured from the fixture fonts, merged adjacent words of
+  the same style, source-word ranges, and byte-identical original PDF storage.
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: passed (374 files).
+- `uv run mypy .`: passed (383 source files).
+- `git diff --check`: passed.
+
 ## Remaining fidelity work
 
 - Source-only embedded fonts need a separately reviewed reuse path. CFF outlines
   and non-first faces in TrueType collections are not implemented by this adapter.
-- Font styles are currently selected from block metadata. Mixed styles within one
-  block, precise kerning/tracking, rotations and complex shaping remain follow-ups.
+- Source line and mixed-style run metadata are now persisted, but reconstruction
+  still selects and renders one style per block. Precise kerning/tracking,
+  rotations and complex shaping remain follow-ups.
 - Automatic whole-page HYBRID reflow is now replaced by bounded block wrapping.
   Background-aware text replacement and overflow fitting remain follow-ups.
   Scanned PDFs cannot recover an original font file from pixels.
