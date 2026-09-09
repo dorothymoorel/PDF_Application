@@ -26,6 +26,7 @@ from transloka_translation.providers import (
     TranslationProviderError,
 )
 from transloka_translation.schemas import (
+    TranslatedSegment,
     TranslationContext,
     TranslationPlaceholder,
     TranslationRequest,
@@ -152,17 +153,26 @@ class TranslationOrchestrator:
             attempt_number = attempt_count
             attempt: StoredAttempt | None = None
             try:
-                prompt = (
-                    self._prompt_builder or VersionedPromptBuilder(operation.prompt_version)
-                ).build(protected.request)
-                raw_response = await _translate_with_retry(
-                    self._provider, prompt, cancellation=cancellation
-                )
+                passthrough = _protected_only_segments(protected.request)
+                if len(passthrough) == len(protected.request.segments):
+                    response = _replace_protected_only_segments(
+                        TranslationResponse(segments=()), protected.request, passthrough
+                    )
+                else:
+                    prompt = (
+                        self._prompt_builder or VersionedPromptBuilder(operation.prompt_version)
+                    ).build(protected.request)
+                    raw_response = await _translate_with_retry(
+                        self._provider, prompt, cancellation=cancellation
+                    )
+                    response = _coerce_response(raw_response, protected.request.segment_ids)
+                    response = _replace_protected_only_segments(
+                        response, protected.request, passthrough
+                    )
                 if _is_cancelled(cancellation):
                     cancelled.extend(batch.segment_ids)
                     self._emit_batch_progress(batch_number, total_batches)
                     continue
-                response = _coerce_response(raw_response, protected.request.segment_ids)
                 report = validate_translation(protected.request, response)
                 attempt_status = "COMPLETED_WITH_WARNINGS" if report.warnings else "COMPLETED"
                 if not report.accepted:
@@ -363,6 +373,40 @@ def _coerce_response(
     if not isinstance(raw_response, str):
         raise ValueError("Provider response must be JSON text or TranslationResponse.")
     return parse_translation_response(raw_response, known_segment_ids=known_segment_ids)
+
+
+def _protected_only_segments(request: TranslationRequest) -> dict[str, str]:
+    placeholders: dict[str, list[str]] = {}
+    for item in request.placeholders:
+        placeholders.setdefault(item.segment_id, []).append(item.placeholder)
+    passthrough: dict[str, str] = {}
+    for segment in request.segments:
+        tokens = placeholders.get(segment.segment_id, [])
+        if not tokens:
+            continue
+        remainder = segment.source_text
+        for token in tokens:
+            remainder = remainder.replace(token, "")
+        if not any(character.isalnum() for character in remainder):
+            passthrough[segment.segment_id] = segment.source_text
+    return passthrough
+
+
+def _replace_protected_only_segments(
+    response: TranslationResponse,
+    request: TranslationRequest,
+    passthrough: dict[str, str],
+) -> TranslationResponse:
+    if not passthrough:
+        return response
+    translated = {item.segment_id: item.translated_text for item in response.segments}
+    translated.update(passthrough)
+    return TranslationResponse(
+        segments=tuple(
+            TranslatedSegment(segment.segment_id, translated[segment.segment_id])
+            for segment in request.segments
+        )
+    )
 
 
 def _is_cancelled(signal: CancellationSignal | None) -> bool:

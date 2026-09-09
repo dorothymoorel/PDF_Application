@@ -147,6 +147,48 @@ def test_protection_uses_unique_placeholders_across_batch_segments() -> None:
     ]
 
 
+def test_fully_protected_segment_is_restored_without_calling_provider() -> None:
+    provider: FakeTranslationProvider[object, str] = FakeTranslationProvider(response="unused")
+    store = InMemoryTranslationRunStore()
+
+    result = asyncio.run(
+        TranslationOrchestrator(provider, store).run(_operation(_segment("s1", "API / SDK")))
+    )
+
+    assert result.status is TranslationRunStatus.COMPLETED
+    assert provider.requests == ()
+    assert store.results[0].translated_text_raw != "API / SDK"
+    assert store.results[0].translated_text_restored == "API / SDK"
+
+
+class _MutatingProtectedOnlyProvider:
+    async def translate(self, request: object, *, cancellation: object = None) -> str:
+        del cancellation
+        source_data = request.source_data["source_data"]  # type: ignore[attr-defined]
+        segments = source_data["segments"]
+        return _response(
+            *(
+                (
+                    segment["segment_id"],
+                    f"{segment['source_text']}EXTRA" if segment["segment_id"] == "s1" else "Satu",
+                )
+                for segment in segments
+            )
+        )
+
+
+def test_fully_protected_segment_is_normalized_in_mixed_batch() -> None:
+    store = InMemoryTranslationRunStore()
+    result = asyncio.run(
+        TranslationOrchestrator(_MutatingProtectedOnlyProvider(), store).run(
+            _operation(_segment("s1", "API / SDK"), _segment("s2", "One", order=1))
+        )
+    )
+
+    assert result.status is TranslationRunStatus.COMPLETED
+    assert [item.translated_text_restored for item in store.results] == ["API / SDK", "Satu"]
+
+
 class _ScriptedProvider:
     def __init__(self, responses: list[str | TranslationProviderError]) -> None:
         self._responses = responses
