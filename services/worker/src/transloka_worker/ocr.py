@@ -35,6 +35,8 @@ from transloka_documents.ocr.orchestration import (
     OCRRunStatus,
 )
 
+from transloka_worker.ocr_materialization import materialize_ocr_outputs
+
 OCR_COMMAND_SCHEMA = "transloka.ocr.command.v1"
 _OCR_COMMAND_FIELDS = frozenset(
     {
@@ -450,6 +452,7 @@ def _finish_job(
             raise OCRWorkerError("The OCR job disappeared before completion.")
         if row.status == JobStatus.CANCELLED.value and status is not JobStatus.CANCELLED:
             return
+        materialize_ocr_outputs(session, request, result, now=now)
         row.status = status.value
         row.progress = progress
         row.current_stage = status.value
@@ -470,9 +473,8 @@ def _fail_job(
 ) -> None:
     now = _utc_now()
     error_code = type(error).__name__.upper()
-    error_message = str(error).strip() or "OCR job failed."
-    if not error_message.isprintable():
-        error_message = "OCR job failed."
+    # Database exceptions may include source text in their SQL parameters.
+    error_message = "OCR job failed."
     try:
         with transaction_scope(session_factory) as session:
             row = session.get(ApplicationJob, job_id)

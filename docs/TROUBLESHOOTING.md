@@ -181,6 +181,13 @@ Pastikan halaman memang scanned, renderer/OCR runtime tersedia, dan bahasa OCR
 sesuai. Confidence rendah bukan berarti raw OCR boleh dihapus. Bandingkan
 gambar halaman dengan raw OCR, lalu simpan correction pada resolved source.
 
+Jika job OCR lama selesai tetapi halaman scanned belum memiliki block/segmen,
+restart worker setelah pembaruan aplikasi, lalu jalankan OCR lagi pada dokumen
+yang sama. Halaman tanpa block akan diisi dari hasil OCR; halaman yang sudah
+memiliki block tidak ditimpa. Tidak perlu mengimpor ulang atau menghapus proyek.
+Job dengan teks OCR tanpa geometri yang dapat digunakan tidak dianggap berhasil
+mengisi IR; periksa kegagalan job sebelum melanjutkan translation.
+
 ## Translation berhenti, dibatalkan, atau perlu retry
 
 Periksa status job dan pesan readiness terlebih dahulu. Penyebab umum:

@@ -63,6 +63,18 @@ Preview dan thumbnail adalah salinan turunan. Sumber asli tetap immutable.
 
 ## 5. OCR dan koreksi sumber
 
+OCR yang berhasil mengisi block dan segmen sumber untuk halaman yang belum
+memiliki block. Halaman kosong tidak diberi segmen buatan. Hasil mentah tetap
+immutable, dan segmen ber-confidence rendah ditandai untuk review.
+Artefak raw menyimpan teks provider asli; teks OCR pada segmen dan panel review
+merupakan potongan hasil normalisasi, sehingga spasi dan pemisahan kalimat
+dapat berbeda. Penandaan review tidak otomatis menyetujui hasil OCR.
+
+Mengulang OCR tidak menggandakan atau menimpa block yang sudah ada, termasuk
+extraction digital, correction, dan terjemahan yang sudah direview. Hasil raw
+dari job baru tetap disimpan; gunakan koreksi resolved source untuk perubahan
+pada segmen yang sudah ada.
+
 Pada halaman yang membutuhkan OCR:
 
 1. bandingkan gambar halaman dengan **Raw OCR**;
