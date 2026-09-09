@@ -15,6 +15,15 @@ function success<T>(data: T) {
   };
 }
 
+function failure(message: string) {
+  return {
+    ok: false as const,
+    error: { kind: "network" as const, message },
+    status: null,
+    requestId: null,
+  };
+}
+
 const readiness: ReconstructionReadiness = {
   ready: true,
   blocking_issues: [],
@@ -88,6 +97,28 @@ describe("reconstruction workspace", () => {
     fireEvent.click(screen.getByRole("button", { name: "Start reconstruction" }));
     await settle();
     expect(client.startReconstruction).toHaveBeenCalled();
+  });
+
+  it("refreshes persisted progress after a completed result is reused", async () => {
+    const completed = statusWith({ status: "COMPLETED", progress: 1, completed_pages: 2, total_source_pages: 2, generated_target_pages: 2 });
+    const client = clientWith(completed);
+    vi.mocked(client.getReconstructionStatus)
+      .mockResolvedValueOnce(failure("The local API could not be reached."))
+      .mockResolvedValueOnce(success(completed));
+    vi.mocked(client.startReconstruction).mockResolvedValueOnce(
+      success({ job_id: "job_reconstruction_1", status: "COMPLETED" }),
+    );
+    render(<ReconstructionWorkspace client={client} projectId="prj_1" />);
+    await settle();
+
+    fireEvent.click(screen.getByRole("button", { name: "Start reconstruction" }));
+    await settle();
+    await settle();
+
+    expect(client.getReconstructionStatus).toHaveBeenCalledTimes(2);
+    expect(screen.getByText("Completed")).toBeTruthy();
+    expect(screen.getByText("100%")).toBeTruthy();
+    expect(screen.getByText(/2 of 2 source pages/)).toBeTruthy();
   });
 
   it("renders running progress and allows cancellation", async () => {

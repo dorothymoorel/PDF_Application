@@ -292,6 +292,117 @@ integration tests and this report; no stage, commit, push or service restart.
 The broader reconstruction/analysis command listed above was rerun after this
 correction: **236 passed, 5 skipped in 58.91 seconds** (optional WeasyPrint).
 
+### Authorized follow-up: bounded HYBRID overflow fitting
+
+Review date: 2026-09-08. Follow-up label: REL-FID-04.
+
+The visual trial exposed a remaining integration gap: valid translated text
+could overflow the original line slots even when the source block had enough
+vertical space. HYBRID already intentionally uses overlay composition to retain
+the source page; replacing it with whole-page reflow is not the repair.
+
+HYBRID now tries the exact source-line layout first. For uniform-style text that
+overflows, it rewraps inside the original block with the same resolved font,
+font size, and average source-line spacing. If that still fails, it expands
+horizontally only into space that ends before the next vertically overlapping
+text block or the page edge. The smallest fitting width is retained. Compact
+line spacing is attempted only after those source-spacing layouts fail. Font
+reduction is last, bounded by `maximum_font_reduction_percent` and
+`minimum_body_font_pt`. The existing ReportLab output renderer validates every
+candidate. Searches are bounded to 16 iterations with a 0.01-point interval. The
+default 10-percent reduction limit is unchanged; no global setting is relaxed.
+
+This fallback deliberately changes line placement or the target width within the
+affected block; it is not exact original line-spacing preservation. It does not
+move or cover neighboring text blocks, add pages, truncate text or fall back to
+whole-page reflow. Unresolved overflow remains a layout error identifying the
+block that requires review. Mixed-style translation and invalid typography still fail
+their existing validation rather than entering the fitting path. Explicit
+OVERLAY remains strict; legacy blocks without source lines and explicit REFLOW
+are unchanged.
+
+Fitted blocks persist `REWRAP`, `EXPAND_BOX`, `REDUCE_SPACING`, or `REDUCE_FONT` in
+`fit_strategy`, with source/output sizes and `SOURCE_LINE_LAYOUT_ADJUSTED` in
+font-mapping metadata. Expanded blocks also persist the new target geometry and
+`SOURCE_BOX_EXPANDED`. The page remains `OVERLAY` and fitted blocks are `REFLOW`.
+This metadata is not yet a dedicated UI warning or a new application-warning row.
+
+Changed files: the reconstruction worker and API router, their existing
+integration/E2E tests, the reconstruction workspace and its existing component
+test, and this report. No dependency, migration or API contract changes.
+
+Verification:
+
+- `uv run pytest tests/integration/worker/test_reconstruction_runtime.py tests/e2e/runtime/test_reconstruction_worker_runtime.py -q`:
+  **56 passed in 20.41 seconds**. Covers source-line spacing, rewrapping, the
+  smallest collision-bounded expansion,
+  largest permitted font, configured
+  limits, full selectable text, unchanged source checksum and unaffected artwork
+  raster, unchanged OVERLAY strictness, invalid/mixed-style rejection in both
+  modes, and persisted fitting metadata through the real API/queue/worker path.
+- The broader reconstruction/analysis command listed under REL-FID-03:
+  **251 passed, 5 skipped in 42.26 seconds**. Skips require optional WeasyPrint.
+- `uv run ruff check .`: passed.
+- `uv run ruff format --check .`: passed (374 files).
+- `uv run mypy .`: passed (383 source files).
+- `git diff --check`: passed.
+
+A read-only SQLite probe of the existing REL-FID-03 Visual Trial checked all six
+source-line blocks against the saved HYBRID settings (10-percent reduction,
+8-point minimum). One block retained source lines. Both paragraphs preserved
+their original 12-point font and 25.51-point source-line spacing by expanding to
+the smallest fitting widths. The page-two title and both page numbers likewise
+kept their original 20- and 10-point sizes through bounded horizontal expansion.
+
+After a controlled stack restart, live job
+`job_3c7f0a5d-32ca-4a33-b7e9-765015aeee31` completed through the real API,
+SQLite queue, worker, database, storage and export path. The two-page export
+checksum matches its `StoredFile`, all translated text is selectable, source
+font sizes are 10/12/20 points, and the measured paragraph line positions retain
+the 25.51-point spacing. Both rasterized pages were inspected: headings, body
+text, and complete page-number footers are legible without clipping or overlap.
+
+A preceding live rerun with the same implicit-page command hash as an existing
+completed result failed at 75 percent with `INTEGRITYERROR`. Repeating a completed
+reconstruction under a new idempotency key is therefore a separate deduplication
+defect. The successful live validation selected the same two pages explicitly,
+producing a distinct command hash; it did not hide or delete the failed job.
+
+That defect is now repaired at the shared API dispatch boundary. The command hash
+includes reconstruction settings version `rel-fid-04`, so a changed rendering
+engine does not reuse an output produced by an older engine. Once a hash has a
+completed result, a matching start request returns that existing application job
+and does not create or enqueue another job. The database uniqueness constraint
+remains unchanged as the final concurrency guard.
+
+The API regression suite passes **9 tests**. The broader reconstruction and
+analysis selection passes **252 tests with 5 optional WeasyPrint skips**. Ruff,
+format, mypy and `git diff --check` pass. After restarting the local stack, the
+formerly conflicting implicit-page request completed as
+`job_aaaf9fbb-5ef2-40e5-ba84-c79f6d9944ed`. Repeating it with a different
+idempotency key returned that same completed job, and a read-only database query
+found exactly one `rel-fid-04` row for its hash.
+
+The UI trial then exposed a stale placeholder: when the initial status request
+had failed and `POST /reconstruction/start` reused a completed job, the component
+displayed `Completed 0%` and `0 of 0`. Successful starts and page retries now
+restart the existing status poll instead of inventing empty progress data. The
+component regression passes **5 tests**; the full web suite passes **117 tests**,
+with web lint and typecheck also passing. A live repeat from the Reconstruction
+panel retained `Completed 100%`, `2 of 2 source pages`, `2 target pages`, and
+`0 warnings`.
+
+A hard reload also exposed a transient project-header failure while the local API
+was warming up. The initial read now retries exactly once after 500 ms only for
+network and timeout failures; API and validation errors remain final. Its focused
+component regression passes; the full web suite includes it in the 117 passing
+tests. Three consecutive live hard reloads restored
+the project name and `Ready For Export` state without manual refresh.
+
+No stage, commit or push. Existing untracked `graphify-out/` was left untouched.
+The local development stack remains running for user review. The full repository
+Python and frontend suites were not rerun.
+
 ## Remaining fidelity work
 
 - Source-only embedded fonts need a separately reviewed reuse path. CFF outlines
@@ -301,7 +412,9 @@ correction: **236 passed, 5 skipped in 58.91 seconds** (optional WeasyPrint).
   from word counts. Precise kerning/tracking, rotations and complex shaping
   remain follow-ups.
 - Automatic whole-page HYBRID reflow is now replaced by bounded block wrapping.
-  Background-aware text replacement and overflow fitting remain follow-ups.
+  Bounded uniform-style overflow fitting is implemented above; image-aware safe
+  regions, unresolved regions without horizontal room, and background-aware text
+  replacement remain follow-ups.
   Scanned PDFs cannot recover an original font file from pixels.
 - Font mappings are persisted; a dedicated user-facing font-warning view is not
   part of this repair.

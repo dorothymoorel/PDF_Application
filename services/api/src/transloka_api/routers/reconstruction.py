@@ -88,6 +88,7 @@ _TRANSLATED_DOCUMENT_STATUSES = {
     DocumentStatus.EXPORTED.value,
 }
 _PLACEHOLDER_WARNING_TYPES = {"PLACEHOLDER_MISSING", "PLACEHOLDER_RESTORATION_FAILED"}
+_RECONSTRUCTION_SETTINGS_VERSION = "rel-fid-04"
 
 
 class ReconstructionBlockingIssue(BaseModel):
@@ -373,8 +374,18 @@ def start_reconstruction(
     engine_settings = cast(EngineReconstructionSettings, command.settings)
     settings_json = json.dumps(engine_settings.to_dict(), sort_keys=True, separators=(",", ":"))
     reconstruction_hash = hashlib.sha256(
-        json.dumps(command.to_payload(), sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            {
+                "command": command.to_payload(),
+                "settings_version": _RECONSTRUCTION_SETTINGS_VERSION,
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
+    completed = _completed_reconstruction(session, project_id, reconstruction_hash)
+    if completed is not None:
+        return _job_response(completed)
     reconstruction_id = f"rcj_{uuid4()}"
     queue = _ReconstructionDispatchQueue(
         _session_factory(request),
@@ -746,7 +757,7 @@ class _ReconstructionDispatchQueue:
                     document_id=self._document_id,
                     application_job_id=job_id,
                     mode=self._mode,
-                    settings_version="m11-rem-11",
+                    settings_version=_RECONSTRUCTION_SETTINGS_VERSION,
                     settings_json=self._settings_json,
                     status=ReconstructionStatus.PREPARING.value,
                     progress=0.0,
@@ -1038,6 +1049,26 @@ def _active_reconstruction(session: Session, project_id: str) -> ApplicationJob 
             ApplicationJob.status.in_(tuple(_ACTIVE_JOB_STATUSES)),
         )
         .order_by(ApplicationJob.created_at.desc(), ApplicationJob.id.desc())
+        .limit(1)
+    )
+
+
+def _completed_reconstruction(
+    session: Session, project_id: str, reconstruction_hash: str
+) -> ApplicationJob | None:
+    completed = (JobStatus.COMPLETED.value, JobStatus.COMPLETED_WITH_WARNINGS.value)
+    return session.scalar(
+        select(ApplicationJob)
+        .join(
+            ReconstructionJob,
+            ReconstructionJob.application_job_id == ApplicationJob.id,
+        )
+        .where(
+            ReconstructionJob.project_id == project_id,
+            ReconstructionJob.reconstruction_hash == reconstruction_hash,
+            ReconstructionJob.status.in_(completed),
+            ApplicationJob.status.in_(completed),
+        )
         .limit(1)
     )
 

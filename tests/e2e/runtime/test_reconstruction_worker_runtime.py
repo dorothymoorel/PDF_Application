@@ -87,13 +87,22 @@ BLOCK_ID = _id("blk_", 204)
 SEGMENT_ID = _id("seg_", 205)
 
 
-@pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
-@pytest.mark.parametrize("typography", [False, True])
+@pytest.mark.parametrize(
+    ("mode", "typography", "expanded"),
+    [
+        ("OVERLAY", False, False),
+        ("HYBRID", False, False),
+        ("OVERLAY", True, False),
+        ("HYBRID", True, False),
+        ("HYBRID", True, True),
+    ],
+)
 def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
     mode: str,
     typography: bool,
+    expanded: bool,
 ) -> None:
     initial_artifacts = _database_artifacts()
     data_root = tmp_path / "production reconstruction runtime"
@@ -120,7 +129,7 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
         factory = cast(sessionmaker[Session], application.state.session_factory)
         storage = LocalFileStorage(application.state.settings.data_directories)
         source_pdf = _seed_reconstruction_inputs(
-            factory, storage, project_id, typography=typography
+            factory, storage, project_id, typography=typography, expanded=expanded
         )
 
         start = client.post(
@@ -208,8 +217,17 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
             font_mapping = json.loads(rendered_block.font_mapping_json)
             assert font_mapping["resolved_family"] == "Helvetica"
             assert font_mapping["embedding_status"] == "SYSTEM_REFERENCE"
-            assert font_mapping["warnings"] == []
-            if typography:
+            assert font_mapping["warnings"] == (
+                ["SOURCE_BOX_EXPANDED", "SOURCE_LINE_LAYOUT_ADJUSTED"] if expanded else []
+            )
+            assert rendered_block.fit_strategy == ("EXPAND_BOX" if expanded else None)
+            if expanded:
+                assert font_mapping["layout"] == "SOURCE_BLOCK_FIT"
+                assert font_mapping["font_size"] == font_mapping["source_font_size"] == 12
+                assert rendered_block.target_geometry_json is not None
+                target_geometry = json.loads(rendered_block.target_geometry_json)
+                assert target_geometry["width"] > 320
+            elif typography:
                 assert font_mapping["layout"] == "SOURCE_LINES"
                 assert [run["line_index"] for run in font_mapping["runs"]] == [0, 1]
             document = session.get(Document, DOCUMENT_ID)
@@ -237,7 +255,7 @@ def test_production_reconstruction_runtime_crosses_api_queue_worker_boundary(
         assert TRANSLATED_TEXT in output_text
         assert SOURCE_TEXT not in output_text
         if typography:
-            assert output_text.count(TRANSLATED_TEXT) == 2
+            assert " ".join(output_text.split()).count(TRANSLATED_TEXT) == (7 if expanded else 2)
         assert hashlib.sha256(output_pdf).hexdigest() == export_checksum
         with storage.open_read(f"projects/{project_id}/original/{ORIGINAL_FILE_ID}.pdf") as source:
             assert source.read() == source_pdf
@@ -251,6 +269,7 @@ def _seed_reconstruction_inputs(
     project_id: str,
     *,
     typography: bool = False,
+    expanded: bool = False,
 ) -> bytes:
     source_pdf = _pdf_bytes(typography=typography)
     style_json = None
@@ -264,6 +283,8 @@ def _seed_reconstruction_inputs(
         assert source_text == f"{SOURCE_TEXT}\n{SOURCE_TEXT}"
         style_json = _style_json(page, page.block_candidates[0])
         translated_text = f"{TRANSLATED_TEXT}\n{TRANSLATED_TEXT}"
+        if expanded:
+            translated_text = " ".join([TRANSLATED_TEXT] * 7)
     normalized_source = " ".join(source_text.split())
     storage_key = f"projects/{project_id}/original/{ORIGINAL_FILE_ID}.pdf"
     temporary = storage.write_temporary(BytesIO(source_pdf))

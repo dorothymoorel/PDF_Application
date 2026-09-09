@@ -87,6 +87,7 @@ export function ReconstructionWorkspace({
   const [status, setStatus] = useState<ReconstructionStatus | null>(null);
   const [previewMessage, setPreviewMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [statusRefresh, setStatusRefresh] = useState(0);
   const [pendingAction, setPendingAction] = useState<
     "preview" | "start" | "cancel" | "retry" | "export" | null
   >(null);
@@ -164,7 +165,7 @@ export function ReconstructionWorkspace({
       if (timer !== undefined) clearTimeout(timer);
       controller.abort();
     };
-  }, [client, pollIntervalMs, projectId]);
+  }, [client, pollIntervalMs, projectId, statusRefresh]);
 
   const currentSettings = useMemo(
     () => ({ ...settings, profile }),
@@ -226,19 +227,12 @@ export function ReconstructionWorkspace({
       setError(result.error.message);
       return;
     }
-    setStatus((current) => ({
-      ...(current ?? {
-        progress: 0,
-        completed_pages: 0,
-        total_source_pages: 0,
-        generated_target_pages: 0,
-        warning_count: 0,
-        critical_warning_count: 0,
-        active_job_id: null,
-      }),
-      status: result.data.data.status,
-      active_job_id: result.data.data.job_id,
-    }));
+    setStatus((current) =>
+      current === null
+        ? current
+        : { ...current, status: result.data.data.status, active_job_id: result.data.data.job_id },
+    );
+    setStatusRefresh((current) => current + 1);
   };
 
   const cancel = async () => {
@@ -275,6 +269,7 @@ export function ReconstructionWorkspace({
         ? current
         : { ...current, status: result.data.data.status, active_job_id: result.data.data.job_id },
     );
+    setStatusRefresh((current) => current + 1);
   };
 
   const createExport = async () => {

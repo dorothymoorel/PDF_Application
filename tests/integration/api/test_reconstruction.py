@@ -1,3 +1,4 @@
+import hashlib
 import json
 from collections.abc import Iterator
 from io import BytesIO
@@ -312,6 +313,45 @@ def test_reconstruction_start_and_duplicate_are_idempotent(
     assert repeated.json()["data"] == first.json()["data"]
 
 
+def test_reconstruction_start_reuses_completed_matching_result(
+    reconstruction_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+) -> None:
+    client, factory, project_id, application = reconstruction_api
+    queue = ReconstructionStateQueue(factory)
+    application.state.reconstruction_queue = queue
+    path = f"/api/v1/projects/{project_id}/reconstruction/start"
+
+    first = client.post(
+        path,
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "reconstruction-completed-1"},
+        json={"mode": "HYBRID"},
+    )
+    assert first.status_code == 202, first.text
+    job_id = first.json()["data"]["job_id"]
+    with transaction_scope(factory) as session:
+        job = session.get(ApplicationJob, job_id)
+        reconstruction = session.scalar(
+            select(ReconstructionJob).where(ReconstructionJob.application_job_id == job_id)
+        )
+        assert job is not None
+        assert reconstruction is not None
+        job.status = JobStatus.COMPLETED.value
+        reconstruction.status = ReconstructionStatus.COMPLETED.value
+
+    repeated = client.post(
+        path,
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "reconstruction-completed-2"},
+        json={"mode": "HYBRID"},
+    )
+
+    assert repeated.status_code == 202, repeated.text
+    assert repeated.json()["data"] == {"job_id": job_id, "status": "COMPLETED"}
+    assert queue.job_ids == [job_id]
+    with factory() as session:
+        assert len(session.scalars(select(ApplicationJob)).all()) == 1
+        assert len(session.scalars(select(ReconstructionJob)).all()) == 1
+
+
 def test_reconstruction_start_persists_versioned_command_before_enqueue(
     reconstruction_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
 ) -> None:
@@ -340,7 +380,15 @@ def test_reconstruction_start_persists_versioned_command_before_enqueue(
         assert command_payload["schema"] == "transloka.reconstruction.command.v1"
         assert command_payload["page_ids"] == [PAGE_ID]
         assert command_payload["settings"]["mode"] == "OVERLAY"
-        assert reconstruction.settings_version == "m11-rem-11"
+        assert reconstruction.settings_version == "rel-fid-04"
+        expected_hash = hashlib.sha256(
+            json.dumps(
+                {"command": command_payload, "settings_version": "rel-fid-04"},
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        assert reconstruction.reconstruction_hash == expected_hash
 
 
 def test_reconstruction_start_fails_closed_when_queue_is_not_configured(

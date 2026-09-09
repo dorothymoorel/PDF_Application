@@ -714,6 +714,136 @@ def test_translation_without_newlines_wraps_only_into_source_lines() -> None:
         assert {char["size"] for char in output.chars} == {12}
 
 
+def _expanded_footer_job(
+    mode: str = "HYBRID", *, right_limit: float | None = None, **limits: float
+) -> LoadedReconstructionJob:
+    stream = BytesIO()
+    canvas = Canvas(stream, pagesize=(400, 420))
+    canvas.setFont("Helvetica", 12)
+    canvas.drawString(30, 40, "Page 1 of 2")
+    canvas.setFillColorRGB(0, 0.5, 0.2)
+    canvas.rect(20, 150, 100, 80, stroke=0, fill=1)
+    canvas.save()
+    source = stream.getvalue()
+    extracted = extract_digital_text(BytesIO(source)).pages[0]
+    candidate = extracted.block_candidates[0]
+    job = _typography_job(mode=mode)
+    block = replace(
+        job.pages[0].blocks[0],
+        source_text=candidate.normalized_text,
+        layout_source_text=candidate.source_text,
+        translated_text="Halaman 1 dari 2",
+        source_geometry=json.loads(_geometry_json(candidate.geometry)),
+        source_style=json.loads(cast(str, _style_json(extracted, candidate))),
+    )
+    blocks: tuple[ReconstructionBlockInput, ...] = (block,)
+    if right_limit is not None:
+        blocks += (
+            replace(
+                block,
+                block_id=_id("blk_", 99),
+                source_text="",
+                translated_text=None,
+                source_style=None,
+                source_geometry={**block.source_geometry, "x": right_limit, "width": 10},
+            ),
+        )
+    return replace(
+        job,
+        source_pdf=source,
+        pages=(replace(job.pages[0], blocks=blocks),),
+        command=_command(mode=mode, settings={**_settings(mode), **limits}),
+    )
+
+
+def test_hybrid_fits_expanded_footer_with_largest_permitted_font() -> None:
+    right_limit = 100
+    job = _expanded_footer_job(
+        right_limit=right_limit, maximum_font_reduction_percent=50, minimum_body_font_pt=6
+    )
+    checksum = sha256(job.source_pdf).hexdigest()
+    result = ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
+    with pdfplumber.open(BytesIO(result.pdf_bytes)) as pdf:
+        assert pdf.pages[0].extract_text() == "Halaman 1 dari 2"
+        chars = pdf.pages[0].chars
+        size = chars[0]["size"]
+        box = job.pages[0].blocks[0].source_geometry
+        expected = (right_limit - cast(float, box["x"])) / pdfmetrics.stringWidth(
+            "Halaman 1 dari 2", "Helvetica", 1
+        )
+        assert size == pytest.approx(expected, abs=0.02)
+        assert 6 <= size <= 12
+        assert {char["fontname"] for char in chars} == {"Helvetica"}
+        assert min(char["x0"] for char in chars) >= cast(float, box["x"]) - 0.01
+        assert max(char["x1"] for char in chars) <= right_limit + 0.01
+    assert sha256(job.source_pdf).hexdigest() == checksum
+    before, after = _typography_raster(job.source_pdf), _typography_raster(result.pdf_bytes)
+    assert (
+        ImageChops.difference(before.crop((0, 0, 800, 600)), after.crop((0, 0, 800, 600))).getbbox()
+        is None
+    )
+    metadata = result.pages[0].font_mappings[0][1]
+    assert metadata["fit_strategy"] == "REDUCE_FONT"
+    assert cast(list[str], metadata["warnings"]) == [
+        "SOURCE_BOX_EXPANDED",
+        "SOURCE_LINE_LAYOUT_ADJUSTED",
+    ]
+    assert cast(dict[str, object], metadata["target_geometry"])["width"] == pytest.approx(
+        right_limit - cast(float, box["x"]), abs=0.02
+    )
+    assert result.pages[0].strategy == "OVERLAY"
+    assert result.pages[0].block_strategies[0][1] == "REFLOW"
+
+
+@pytest.mark.parametrize(
+    "limits",
+    [
+        {"maximum_font_reduction_percent": 0},
+        {"maximum_font_reduction_percent": 10},
+        {"maximum_font_reduction_percent": 50, "minimum_body_font_pt": 11},
+    ],
+)
+def test_hybrid_unresolved_overflow_respects_settings(limits: dict[str, float]) -> None:
+    with pytest.raises(OverlayLayoutError, match="configured font limit"):
+        ReconstructionRenderer().render(_expanded_footer_job("HYBRID", right_limit=92, **limits))
+
+
+def test_overlay_remains_strict_even_when_font_reduction_is_configured() -> None:
+    with pytest.raises(OverlayLayoutError, match="available source lines"):
+        ReconstructionRenderer().render(
+            _expanded_footer_job(
+                "OVERLAY", maximum_font_reduction_percent=50, minimum_body_font_pt=6
+            )
+        )
+
+
+def test_hybrid_expands_into_empty_horizontal_space_without_reducing_font() -> None:
+    job = _expanded_footer_job()
+    result = ReconstructionRenderer().render(job)
+    mapping = result.pages[0].font_mappings[0][1]
+    assert mapping["fit_strategy"] == "EXPAND_BOX"
+    assert mapping["font_size"] == mapping["source_font_size"] == 12
+    assert cast(float, cast(dict[str, object], mapping["target_geometry"])["width"]) > cast(
+        float, job.pages[0].blocks[0].source_geometry["width"]
+    )
+
+
+def test_hybrid_rewraps_inside_source_block_before_reducing_font() -> None:
+    job = _typography_job(mode="HYBRID")
+    page = job.pages[0]
+    target = "Satu.\nDua.\nTiga.\nEmpat."
+    job = replace(
+        job, pages=(replace(page, blocks=(replace(page.blocks[0], translated_text=target),)),)
+    )
+    result = ReconstructionRenderer().render(job)
+    with pdfplumber.open(BytesIO(result.pdf_bytes)) as pdf:
+        assert (pdf.pages[0].extract_text() or "").split() == target.split()
+        assert {char["size"] for char in pdf.pages[0].chars} == {12}
+    mapping = result.pages[0].font_mappings[0][1]
+    assert mapping["fit_strategy"] == "REWRAP"
+    assert mapping["leading"] == mapping["source_leading"] == 20
+
+
 def test_source_runs_preserve_mixed_styles_for_unchanged_text(tmp_path: Path) -> None:
     job = _typography_job(mixed=True)
     result = ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
@@ -784,8 +914,9 @@ def test_real_source_font_size_differences_still_require_alignment(difference: f
         ReconstructionRenderer(font_catalog=ReportLabFontCatalog(paths=())).render(job)
 
 
-def test_changed_mixed_styles_require_alignment_even_with_same_word_count() -> None:
-    job = _typography_job(mixed=True)
+@pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
+def test_changed_mixed_styles_require_alignment_even_with_same_word_count(mode: str) -> None:
+    job = _typography_job(mixed=True, mode=mode)
     page = job.pages[0]
     mixed = replace(page.blocks[-1], translated_text="Campuran kata miring tebal")
     job = replace(job, pages=(replace(page, blocks=(*page.blocks[:-1], mixed)),))
@@ -807,8 +938,9 @@ def test_source_line_overflow_never_truncates_or_shrinks(target: str) -> None:
 @pytest.mark.parametrize(
     "defect", ["range", "font_size", "outside", "orientation", "lines", "overlap"]
 )
-def test_invalid_source_typography_is_rejected(defect: str) -> None:
-    job = _typography_job()
+@pytest.mark.parametrize("mode", ["OVERLAY", "HYBRID"])
+def test_invalid_source_typography_is_rejected(defect: str, mode: str) -> None:
+    job = _typography_job(mode=mode)
     page, block = job.pages[0], job.pages[0].blocks[0]
     style = json.loads(json.dumps(block.source_style))
     run = style["source_lines"][0]["style_runs"][0]

@@ -73,6 +73,10 @@ class SourceStyleAlignmentError(OverlayLayoutError):
     """Translation changed mixed-style text without a reviewed style mapping."""
 
 
+class SourceLineOverflowError(OverlayLayoutError):
+    """Valid uniform typography cannot fit the translated text in source lines."""
+
+
 @dataclass(frozen=True, slots=True)
 class ReconstructionBlockInput:
     block_id: str
@@ -437,7 +441,9 @@ class ReconstructionRenderer:
         # Reflow translated paragraphs inside their source boxes. Escalating one
         # block to whole-page reflow discards artwork and fixed source geometry.
         # The overlay renderer measures with the output font and rejects overflow.
-        pdf, _, rendered_strategies, font_mappings = self._overlay(loaded.source_pdf, page)
+        pdf, _, rendered_strategies, font_mappings = self._overlay(
+            loaded.source_pdf, page, settings=cast(ReconstructionSettings, loaded.command.settings)
+        )
         block_strategies = tuple(
             (
                 block_id,
@@ -451,6 +457,8 @@ class ReconstructionRenderer:
         self,
         source_pdf: bytes,
         page: ReconstructionPageInput,
+        *,
+        settings: ReconstructionSettings | None = None,
     ) -> tuple[bytes, str, tuple[tuple[str, str], ...], tuple[tuple[str, dict[str, object]], ...]]:
         texts: list[OverlayText] = []
         covers: list[CoverRegion] = []
@@ -462,13 +470,20 @@ class ReconstructionRenderer:
                 continue
             x, y, width, height = _pdf_geometry(block.source_geometry, page)
             if "source_lines" in (block.source_style or {}):
-                line_texts, mapping = self._source_line_overlay(block, page)
+                try:
+                    line_texts, mapping = self._source_line_overlay(block, page)
+                except SourceLineOverflowError:
+                    if settings is None:
+                        raise
+                    line_texts, mapping = self._fit_source_block(block, page, settings)
                 texts.extend(line_texts)
                 font_mappings.append((block.block_id, mapping))
                 covers.append(
                     CoverRegion(x, y, width, height, source_text=block.source_text or None)
                 )
-                strategies.append((block.block_id, "OVERLAY"))
+                strategies.append(
+                    (block.block_id, "REFLOW" if mapping.get("fit_strategy") else "OVERLAY")
+                )
                 continue
             font_size = _font_size(block.source_style, block.source_geometry, height)
             text_x, text_width, alignment = _text_box(block, page, x, width)
@@ -578,7 +593,9 @@ class ReconstructionRenderer:
                         words.append(cast(str, pending.popleft()))
                         used_width += added_width
                     if not words and pending[0] is not None:
-                        raise OverlayLayoutError("A translated word exceeds its source line width.")
+                        raise SourceLineOverflowError(
+                            "A translated word exceeds its source line width."
+                        )
                     if pending and pending[0] is None:
                         pending.popleft()
                     text = " ".join(words)
@@ -605,7 +622,7 @@ class ReconstructionRenderer:
                     }
                 )
         if not unchanged and pending:
-            raise OverlayLayoutError("Translated text exceeds the available source lines.")
+            raise SourceLineOverflowError("Translated text exceeds the available source lines.")
         if not texts:
             raise OverlayLayoutError("Source line rendering requires non-empty translated text.")
         metadata = dict(mappings[0])
@@ -619,6 +636,132 @@ class ReconstructionRenderer:
             }
         )
         return tuple(texts), metadata
+
+    def _fit_source_block(
+        self,
+        block: ReconstructionBlockInput,
+        page: ReconstructionPageInput,
+        settings: ReconstructionSettings,
+    ) -> tuple[tuple[OverlayText, ...], dict[str, object]]:
+        # Called only after validated, uniform source typography overflows.
+        # Keep the entire block inside its original box, including unlisted artwork outside it.
+        source_lines = _source_typography(block, page)
+        reference = source_lines[0].runs[0]
+        source_leading = reference.font_size
+        if len(source_lines) > 1:
+            source_leading = sum(
+                abs(previous.box.y - current.box.y)
+                for previous, current in zip(source_lines, source_lines[1:], strict=False)
+            ) / (len(source_lines) - 1)
+        target = block.translated_text or ""
+        font = self._font_catalog.resolve(
+            reference.font_name, target, fallback=_font_name({"font_name": reference.font_name})
+        )
+        x, y, width, height = _pdf_geometry(block.source_geometry, page)
+        expanded_width = _available_horizontal_width(block, page)
+        generator = OverlayPageGenerator()
+
+        def candidate(size: float, text_width: float, leading: float) -> OverlayText:
+            text = OverlayText(
+                target,
+                x,
+                y,
+                width=text_width,
+                height=height,
+                font_name=font.name,
+                font_size_pt=size,
+                leading_pt=leading,
+                text_id=block.block_id,
+            )
+            # Use exactly the output renderer's wrapping and font metrics, not an estimate.
+            generator.build_overlay(page.width_points, page.height_points, texts=(text,))
+            return text
+
+        def narrowest_candidate(size: float, maximum_width: float, leading: float) -> OverlayText:
+            low, high = width, maximum_width
+            fitted = candidate(size, high, leading)
+            for _ in range(16):
+                if high - low <= 0.01:
+                    break
+                middle = (low + high) / 2
+                try:
+                    trial = candidate(size, middle, leading)
+                except OverlayLayoutError:
+                    low = middle
+                else:
+                    high, fitted = middle, trial
+            return fitted
+
+        size = reference.font_size
+        fitted = None
+        fitted_width = width
+        fitted_leading = source_leading
+        step = "REWRAP"
+        for candidate_step, candidate_width, candidate_leading in (
+            ("REWRAP", width, source_leading),
+            ("EXPAND_BOX", expanded_width, source_leading),
+            ("REDUCE_SPACING", width, size),
+            ("REDUCE_SPACING", expanded_width, size),
+        ):
+            try:
+                fitted = candidate(size, candidate_width, candidate_leading)
+            except OverlayLayoutError:
+                continue
+            else:
+                step = candidate_step
+                fitted_width = candidate_width
+                fitted_leading = candidate_leading
+                break
+        if fitted is None:
+            floor = min(
+                size,
+                max(
+                    settings.minimum_body_font_pt,
+                    size * (1 - settings.maximum_font_reduction_percent / 100),
+                ),
+            )
+            try:
+                fitted = candidate(floor, expanded_width, floor)
+            except OverlayLayoutError:
+                raise SourceLineOverflowError(
+                    f"Block {block.block_id} exceeds its source box at the configured font limit; "
+                    "layout review is required."
+                ) from None
+            low, high = floor, size
+            for _ in range(16):
+                if high - low <= 0.01:
+                    break
+                middle = (low + high) / 2
+                try:
+                    trial = candidate(middle, expanded_width, middle)
+                except OverlayLayoutError:
+                    high = middle
+                else:
+                    low, fitted = middle, trial
+            step = "REDUCE_FONT"
+            fitted_width = expanded_width
+            fitted_leading = fitted.font_size_pt
+        if fitted_width > width + 0.01:
+            fitted = narrowest_candidate(fitted.font_size_pt, fitted_width, fitted_leading)
+            fitted_width = cast(float, fitted.width)
+        metadata = font.metadata()
+        warnings = {"SOURCE_LINE_LAYOUT_ADJUSTED"}
+        if fitted_width > width + 0.01:
+            warnings.add("SOURCE_BOX_EXPANDED")
+        metadata.update(
+            {
+                "layout": "SOURCE_BLOCK_FIT",
+                "fit_strategy": step,
+                "source_font_size": size,
+                "font_size": fitted.font_size_pt,
+                "source_leading": source_leading,
+                "leading": fitted_leading,
+                "warnings": sorted(set(cast(list[str], metadata.get("warnings", []))) | warnings),
+            }
+        )
+        if fitted_width > width + 0.01:
+            metadata["target_geometry"] = {**block.source_geometry, "width": fitted_width}
+        return (fitted,), metadata
 
     @staticmethod
     def _reflow(
@@ -1040,6 +1183,21 @@ def _pdf_geometry(
     return x, y, width, height
 
 
+def _available_horizontal_width(
+    block: ReconstructionBlockInput,
+    page: ReconstructionPageInput,
+) -> float:
+    x, y, width, height = _pdf_geometry(block.source_geometry, page)
+    right_limit = page.width_points
+    for other in page.blocks:
+        if other.block_id == block.block_id:
+            continue
+        other_x, other_y, _, other_height = _pdf_geometry(other.source_geometry, page)
+        if other_y < y + height and y < other_y + other_height and other_x >= x + width - 0.01:
+            right_limit = min(right_limit, other_x)
+    return max(width, right_limit - x)
+
+
 def _finite_geometry(value: object, *, positive: bool = False) -> float:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         raise ReconstructionWorkerError("A reconstruction block geometry is invalid.")
@@ -1226,11 +1384,23 @@ def _persist_rendered_pages(
                     reconstruction_page_id=reconstruction_page_id,
                     block_id=block.block_id,
                     strategy=strategy,
-                    fit_strategy=None,
+                    fit_strategy=cast(
+                        str | None, font_mappings.get(block.block_id, {}).get("fit_strategy")
+                    ),
                     source_geometry_json=json.dumps(
                         block.source_geometry, sort_keys=True, separators=(",", ":")
                     ),
-                    target_geometry_json=None,
+                    target_geometry_json=(
+                        json.dumps(
+                            font_mappings[block.block_id]["target_geometry"],
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        if isinstance(
+                            font_mappings.get(block.block_id, {}).get("target_geometry"), Mapping
+                        )
+                        else None
+                    ),
                     status=(
                         ReconstructionBlockStatus.PRESERVED.value
                         if strategy == "PRESERVE"

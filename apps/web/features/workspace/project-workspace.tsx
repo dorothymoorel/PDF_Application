@@ -234,7 +234,15 @@ export function ProjectWorkspace({
     let timer: ReturnType<typeof setTimeout> | undefined;
     const controller = new AbortController();
     const load = async () => {
-      const projectResult = await client.getProject(projectId, { signal: controller.signal });
+      let projectResult = await client.getProject(projectId, { signal: controller.signal });
+      if (
+        !projectResult.ok &&
+        (projectResult.error.kind === "network" || projectResult.error.kind === "timeout")
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        if (!active) return;
+        projectResult = await client.getProject(projectId, { signal: controller.signal });
+      }
       if (!active) return;
       if (!projectResult.ok) {
         if (projectResult.error.kind !== "aborted") setError(errorMessage(projectResult));
