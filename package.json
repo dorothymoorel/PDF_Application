@@ -9,7 +9,7 @@
   },
   "scripts": {
     "lint": "eslint .",
-    "typecheck": "tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p packages/api-client/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json && tsc --noEmit -p packages/shared-config/tsconfig.json && tsc --noEmit -p tests/browser/tsconfig.json",
+    "typecheck": "pnpm --filter @transloka/web exec next typegen && tsc --noEmit -p tsconfig.json && tsc --noEmit -p apps/web/tsconfig.json && tsc --noEmit -p packages/api-client/tsconfig.json && tsc --noEmit -p packages/ui/tsconfig.json && tsc --noEmit -p packages/shared-config/tsconfig.json && tsc --noEmit -p tests/browser/tsconfig.json",
     "test": "pnpm -r --if-present run test",
     "build": "pnpm -r --if-present run build",
     "e2e": "playwright test"

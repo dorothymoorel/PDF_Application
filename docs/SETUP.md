@@ -127,6 +127,25 @@ Hentikan dari PowerShell lain pada repository yang sama:
 Jangan menghentikan semua process Node atau Python secara global. `stop.ps1`
 hanya memakai catatan process yang dibuat `start.ps1`.
 
+### Tanpa PowerShell (Linux/macOS, CI, atau sandbox)
+
+Script `.ps1` membutuhkan PowerShell dan Windows. Pada lingkungan tanpa
+PowerShell, jalankan komponen yang sama secara manual dari root repository,
+dengan `TRANSLOKA_DATA_DIR` absolut yang sudah di-set pada shell tersebut:
+
+```bash
+uv run --no-sync alembic upgrade head                     # migration sampai head
+pnpm --filter @transloka/web dev --hostname 127.0.0.1 --port 3000   # web
+uv run --no-sync transloka-api                            # API pada 127.0.0.1:8000
+uv run --no-sync python -m transloka_worker               # local worker
+```
+
+Jalankan migration lebih dulu; jika gagal, jangan menyalakan komponen lain.
+Web, API, dan worker masing-masing membutuhkan terminal sendiri, dan dihentikan
+dengan `Ctrl+C` pada terminal tersebut (bukan dengan mematikan semua process
+Node/Python). Backup restore memakai `fcntl` pada platform non-Windows dan
+`msvcrt` pada Windows; keduanya tersedia bawaan Python.
+
 ## 7. Jalankan Ollama lokal
 
 Jika Ollama belum berjalan, jalankan pada komputer yang sama:
