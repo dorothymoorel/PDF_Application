@@ -52,8 +52,14 @@ from transloka_core.jobs.retry import (
 from transloka_core.storage.local import LocalFileStorage
 from transloka_glossary.snapshots import GlossarySnapshotError, create_glossary_snapshot
 from transloka_translation.providers import ProviderHealthStatus
+from transloka_translation.providers.ctranslate2 import MODEL_ID as CT2_MODEL_ID
+from transloka_translation.providers.ctranslate2 import CTranslate2TranslationProvider
 from transloka_translation.providers.groq import GROQ_MODELS, GroqTranslationProvider
 from transloka_translation.providers.ollama import OllamaTranslationProvider
+from transloka_worker.ctranslate2 import (
+    CTranslate2ConfigurationError,
+    ctranslate2_settings_from_environment,
+)
 from transloka_worker.health import PersistedWorkerHeartbeat, WorkerHeartbeatStore, WorkerStatus
 from transloka_worker.translation import TranslationCommand, TranslationWorkerError
 
@@ -115,7 +121,7 @@ TranslationScope = Literal[
     "SELECTED_SEGMENTS",
 ]
 ContextMode = Literal["NONE", "STANDARD", "EXTENDED"]
-TranslationProviderType = Literal["OLLAMA", "GROQ"]
+TranslationProviderType = Literal["OLLAMA", "GROQ", "CTRANSLATE2"]
 GroqModelName = Literal["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]
 
 
@@ -140,6 +146,12 @@ class StartTranslationRequest(BaseModel):
     @model_validator(mode="after")
     def validate_provider_selection(self) -> Self:
         provider_type = self.provider_type or "OLLAMA"
+        if provider_type == "CTRANSLATE2":
+            if self.model_id != CT2_MODEL_ID:
+                raise ValueError(f"model_id must be {CT2_MODEL_ID} for CTranslate2.")
+            if self.cloud_model_name is not None or self.cloud_consent is True:
+                raise ValueError("Cloud fields are invalid for the CTranslate2 provider.")
+            return self
         if provider_type == "OLLAMA":
             if self.model_id is None:
                 raise ValueError("model_id is required for the Ollama provider.")
@@ -147,7 +159,7 @@ class StartTranslationRequest(BaseModel):
                 raise ValueError("Cloud fields are invalid for the Ollama provider.")
             return self
         if self.model_id is not None:
-            raise ValueError("model_id is reserved for local Ollama models.")
+            raise ValueError("model_id is reserved for local translation models.")
         if self.cloud_model_name is None or self.cloud_consent is not True:
             raise ValueError("A Groq model and explicit cloud consent are required.")
         return self
@@ -331,6 +343,11 @@ async def start_translation(
             run_semantic_validation=payload.run_semantic_validation,
             glossary_snapshot_id=snapshot.id,
             provider_type=payload.provider_type or "OLLAMA",
+            ctranslate2_settings=(
+                ctranslate2_settings_from_environment()
+                if payload.provider_type == "CTRANSLATE2"
+                else None
+            ),
             cloud_model_name=payload.cloud_model_name,
             cloud_consent=payload.cloud_consent is True,
             cloud_consent_version=(
@@ -638,6 +655,49 @@ async def _collect_readiness(
             provider = OllamaTranslationProvider()
         unavailable_code = "OLLAMA_UNAVAILABLE"
         unavailable_message = "The local Ollama service is unavailable."
+    elif provider_type == "CTRANSLATE2":
+        try:
+            ctranslate2_settings_from_environment()
+        except CTranslate2ConfigurationError:
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CTRANSLATE2_FALLBACK_INVALID",
+                    message="Configure a valid local Ollama fallback model and loopback endpoint.",
+                )
+            )
+        if not os.environ.get("TRANSLOKA_CT2_MODEL_DIR", "").strip():
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CTRANSLATE2_DISABLED",
+                    message="Configure the private CTranslate2 model directory to enable it.",
+                )
+            )
+        if requested_model_id is not None and requested_model_id != CT2_MODEL_ID:
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CTRANSLATE2_MODEL_NOT_ALLOWED",
+                    message=f"Select the {CT2_MODEL_ID} local translation model.",
+                )
+            )
+        if (project.source_language, project.target_language) != ("en", "id"):
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CTRANSLATE2_LANGUAGE_UNSUPPORTED",
+                    message="CTranslate2 supports only English to Indonesian translation.",
+                )
+            )
+        if cloud_model_name is not None or cloud_consent:
+            blockers.append(
+                TranslationBlockingIssue(
+                    code="CTRANSLATE2_PROVIDER_FIELDS_INVALID",
+                    message="Cloud fields are invalid for the CTranslate2 provider.",
+                )
+            )
+        provider = getattr(request.app.state, "ctranslate2_provider", None)
+        if provider is None:
+            provider = CTranslate2TranslationProvider()
+        unavailable_code = "CTRANSLATE2_UNAVAILABLE"
+        unavailable_message = "The private CTranslate2 model or runtime is unavailable."
     else:
         if not _cloud_translation_enabled():
             blockers.append(

@@ -27,8 +27,9 @@ uv run python --version
 ollama --version
 ```
 
-Ollama diperlukan untuk menerjemahkan dengan model lokal. Instalasi dependency
-dan test standar tidak mengunduh model Ollama secara diam-diam.
+Ollama diperlukan untuk jalur model default; pilot CT2 opt-in memakai runtime
+lokal terpisah. Instalasi dependency dan test standar tidak mengunduh model
+Ollama secara diam-diam.
 
 ## 2. Masuk ke repository
 
@@ -45,6 +46,11 @@ folder repository sebagai data root aplikasi.
 pnpm install --frozen-lockfile
 uv sync --locked
 ```
+
+Dependency [pilot OPUS-MT CTranslate2](CT2_LOCAL_PILOT.md) terpisah dan opt-in:
+`uv sync --locked --extra ct2` untuk inference, ditambah `--group ct2-convert`
+hanya saat konversi model. Setup standar tidak mengunduh bobot atau memasang
+runtime/converter pilot tersebut.
 
 `--frozen-lockfile` dan `--locked` memastikan dependency mengikuti lockfile.
 Jika perintah gagal karena tool belum ada, pasang tool tersebut lalu buka

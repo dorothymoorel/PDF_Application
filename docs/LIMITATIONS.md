@@ -50,7 +50,9 @@ Critical warning dapat memblokir export.
 
 ## Model dan resource
 
-- Ollama harus berjalan lokal dan model harus dipasang pengguna secara eksplisit.
+- Jalur default Ollama memerlukan service lokal dan model yang dipasang pengguna
+  secara eksplisit. Pilot OPUS-MT CT2 bersifat opt-in dan memakai bundle lokal
+  terverifikasi terpisah, tanpa service Ollama.
 - Tidak ada model universal yang dijamin paling cepat atau paling natural.
 - RAM, VRAM, CPU, GPU, quantization, context, batch, dan ukuran PDF sangat
   memengaruhi hasil.
@@ -59,6 +61,24 @@ Critical warning dapat memblokir export.
 - Model license harus ditinjau terpisah dari license Ollama.
 - Model output yang invalid, tidak menjaga placeholder, atau tidak menjaga
   segment ID tidak boleh disimpan sebagai successful translation.
+
+### Pilot OPUS-MT CT2
+
+[Pilot terverifikasi 2026-09-09](CT2_LOCAL_PILOT.md#hasil-pilot-terverifikasi--2026-09-09)
+menerima 300 dari 300 output nonempty untuk review, dengan nol critical
+validation issue dan inventori digit terjaga pada 66 dari 66 segmen bernomor.
+Provider memblokir seluruh 837 token yang mengandung digit pada shared vocabulary
+terverifikasi, sementara digit sumber diisolasi dan dikembalikan utuh. Masih ada
+34 warning negation, 11 untranslated, dan 1 target-language yang bersifat heuristik.
+Seluruh hasil tetap memerlukan review manusia, bukan automatic approval atau
+klaim akurasi terjemahan.
+
+Pengukuran 9,866 detik untuk 4.669 kata sumber (473,25 kata/detik,
+peak RSS proses sekitar 349 MiB) hanya mengukur adapter setelah warm-up.
+Estimasi linear 112,6 detik tidak mencakup pipeline PDF atau review; **full-book
+run belum dilakukan**. Uji API → queue → worker → SQLite yang terpisah baru
+membuktikan satu segmen sintetis tersimpan sebagai `NEEDS_REVIEW`, bukan
+penyelesaian dokumen atau fidelity export PDF.
 
 ## Data, backup, dan recovery
 

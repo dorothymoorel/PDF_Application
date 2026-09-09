@@ -89,6 +89,11 @@ class UnavailableProvider:
         return ProviderHealth(status=ProviderHealthStatus.UNAVAILABLE, detail="test")
 
 
+class UnexpectedProvider:
+    async def health_check(self) -> ProviderHealth:
+        pytest.fail("An unselected provider must not be contacted.")
+
+
 class RecordingQueue:
     name = "translation"
 
@@ -135,6 +140,7 @@ def translation_api(
 ) -> Iterator[tuple[TestClient, sessionmaker[Session], str, FastAPI]]:
     root = tmp_path / "translation api"
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
+    monkeypatch.delenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", raising=False)
     command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application = create_app()
     with TestClient(application) as client:
@@ -621,6 +627,222 @@ def test_translation_start_fails_closed_when_queue_is_not_configured(
     assert response.json()["error"]["code"] == "QUEUE_NOT_CONFIGURED"
     with factory() as session:
         assert session.scalars(select(ApplicationJob)).all() == []
+
+
+@pytest.mark.parametrize("configured", [None, "", "   "])
+def test_ctranslate2_is_disabled_without_explicit_provisioning(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+    configured: str | None,
+) -> None:
+    client, _, project_id, application = translation_api
+    if configured is None:
+        monkeypatch.delenv("TRANSLOKA_CT2_MODEL_DIR", raising=False)
+    else:
+        monkeypatch.setenv("TRANSLOKA_CT2_MODEL_DIR", configured)
+    application.state.ctranslate2_provider = UnexpectedProvider()
+    application.state.ollama_provider = UnexpectedProvider()
+    application.state.groq_provider = UnexpectedProvider()
+    selection = {"provider_type": "CTRANSLATE2", "model_id": "opus-mt-en-id-ct2-int8"}
+
+    readiness = client.get(
+        f"/api/v1/projects/{project_id}/translation-readiness",
+        headers=CLIENT_HEADERS,
+        params=selection,
+    )
+    assert readiness.status_code == 200
+    assert readiness.json()["data"]["ready"] is False
+    assert [issue["code"] for issue in readiness.json()["data"]["blocking_issues"]] == [
+        "CTRANSLATE2_DISABLED"
+    ]
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "ct2-disabled"},
+        json=selection,
+    )
+    assert response.status_code == 409
+    assert response.json()["error"]["code"] == "TRANSLATION_NOT_READY"
+    assert application.state.translation_queue.enqueued == []
+
+
+def test_ctranslate2_is_opt_in_and_dispatches_without_ollama_or_cloud(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, factory, project_id, application = translation_api
+    model_dir = tmp_path / "private-ct2-model"
+    monkeypatch.setenv("TRANSLOKA_CT2_MODEL_DIR", str(model_dir))
+    monkeypatch.delenv("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", raising=False)
+    application.state.ctranslate2_provider = HealthyProvider()
+    application.state.ollama_provider = UnavailableProvider()
+    application.state.groq_provider = UnexpectedProvider()
+    with transaction_scope(factory) as session:
+        model = session.get(LocalModelRecord, MODEL_ID)
+        assert model is not None
+        session.delete(model)
+
+    default_readiness = _readiness(client, project_id).json()["data"]
+    assert default_readiness["ready"] is False
+    assert "OLLAMA_UNAVAILABLE" in {issue["code"] for issue in default_readiness["blocking_issues"]}
+    application.state.ollama_provider = UnexpectedProvider()
+    selection = {"provider_type": "CTRANSLATE2", "model_id": "opus-mt-en-id-ct2-int8"}
+    readiness = client.get(
+        f"/api/v1/projects/{project_id}/translation-readiness",
+        headers=CLIENT_HEADERS,
+        params=selection,
+    )
+    assert readiness.status_code == 200
+    assert readiness.json()["data"]["ready"] is True
+
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "ct2-v2-snapshot"},
+        json={**selection, "scope": "UNTRANSLATED_ONLY", "batch_size": 3},
+    )
+    assert response.status_code == 202, response.text
+    job_id = response.json()["data"]["job_id"]
+    assert application.state.translation_queue.enqueued == [job_id]
+    with factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        command = TranslationCommand.from_payload_json(job.payload_json)
+        assert command.provider_type == "CTRANSLATE2"
+        assert command.model_id == "opus-mt-en-id-ct2-int8"
+        assert command.scope == "UNTRANSLATED_ONLY"
+        assert command.batch_size == 3
+        assert command.cloud_model_name is None
+        assert command.cloud_consent is False
+        assert command.cloud_consent_version is None
+        assert command.ctranslate2_settings is not None
+        assert command.ctranslate2_settings.to_payload()["fallback"] is None
+        assert str(model_dir) not in job.payload_json
+        assert list(session.scalars(select(LocalModelRecord))) == []
+
+
+@pytest.mark.parametrize(
+    ("blocker", "expected_code"),
+    [
+        ("model", "CTRANSLATE2_MODEL_NOT_ALLOWED"),
+        ("language", "CTRANSLATE2_LANGUAGE_UNSUPPORTED"),
+        ("cloud", "CTRANSLATE2_PROVIDER_FIELDS_INVALID"),
+        ("health", "CTRANSLATE2_UNAVAILABLE"),
+        ("provisioning", "CTRANSLATE2_UNAVAILABLE"),
+    ],
+)
+def test_ctranslate2_readiness_fails_closed(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    blocker: str,
+    expected_code: str,
+) -> None:
+    client, factory, project_id, application = translation_api
+    monkeypatch.setenv("TRANSLOKA_CT2_MODEL_DIR", str(tmp_path / "missing-model"))
+    application.state.ollama_provider = UnexpectedProvider()
+    application.state.groq_provider = UnexpectedProvider()
+    params = {"provider_type": "CTRANSLATE2", "model_id": "opus-mt-en-id-ct2-int8"}
+    if blocker == "health":
+        application.state.ctranslate2_provider = UnavailableProvider()
+    elif blocker != "provisioning":
+        application.state.ctranslate2_provider = UnexpectedProvider()
+    if blocker == "model":
+        params["model_id"] = MODEL_ID
+    elif blocker == "language":
+        with transaction_scope(factory) as session:
+            project = session.get(Project, project_id)
+            assert project is not None
+            project.source_language = "id"
+            project.target_language = "en"
+    elif blocker == "cloud":
+        params["cloud_consent"] = "true"
+
+    response = client.get(
+        f"/api/v1/projects/{project_id}/translation-readiness",
+        headers=CLIENT_HEADERS,
+        params=params,
+    )
+    assert response.status_code == 200
+    assert response.json()["data"]["ready"] is False
+    assert [issue["code"] for issue in response.json()["data"]["blocking_issues"]] == [
+        expected_code
+    ]
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [
+        {},
+        {"model_id": MODEL_ID},
+        {"model_id": "opus-mt-en-id-ct2-int8", "cloud_consent": True},
+        {"model_id": "opus-mt-en-id-ct2-int8", "cloud_model_name": "qwen/qwen3.8-27b"},
+    ],
+)
+def test_ctranslate2_start_rejects_invalid_provider_fields(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    fields: dict[str, object],
+) -> None:
+    client, _, project_id, application = translation_api
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "ct2-invalid-fields"},
+        json={"provider_type": "CTRANSLATE2", **fields},
+    )
+    assert response.status_code == 422
+    assert application.state.translation_queue.enqueued == []
+
+
+def test_ctranslate2_dispatch_snapshots_optional_local_fallback_without_contacting_it(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, factory, project_id, application = translation_api
+    monkeypatch.setenv("TRANSLOKA_CT2_MODEL_DIR", str(tmp_path / "private-model"))
+    monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "http://127.0.0.1:11435")
+    application.state.ctranslate2_provider = HealthyProvider()
+    application.state.ollama_provider = UnexpectedProvider()
+    application.state.groq_provider = UnexpectedProvider()
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "ct2-fallback-snapshot"},
+        json={"provider_type": "CTRANSLATE2", "model_id": "opus-mt-en-id-ct2-int8"},
+    )
+    assert response.status_code == 202, response.text
+    with factory() as session:
+        job = session.get(ApplicationJob, response.json()["data"]["job_id"])
+        assert job is not None
+        command = TranslationCommand.from_payload_json(job.payload_json)
+        assert command.ctranslate2_settings is not None
+        assert command.ctranslate2_settings.fallback_model_name == "qwen2.5:3b"
+        assert command.ctranslate2_settings.fallback_base_url == "http://127.0.0.1:11435"
+        assert "private-model" not in job.payload_json
+
+
+def test_ctranslate2_readiness_blocks_remote_fallback_configuration(
+    translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client, _, project_id, application = translation_api
+    monkeypatch.setenv("TRANSLOKA_CT2_MODEL_DIR", str(tmp_path / "private-model"))
+    monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "https://untrusted.example")
+    application.state.ctranslate2_provider = UnexpectedProvider()
+    application.state.ollama_provider = UnexpectedProvider()
+    response = client.post(
+        f"/api/v1/projects/{project_id}/translation/start",
+        headers={**CLIENT_HEADERS, "Idempotency-Key": "ct2-remote-fallback"},
+        json={"provider_type": "CTRANSLATE2", "model_id": "opus-mt-en-id-ct2-int8"},
+    )
+    assert response.status_code == 409
+    assert [issue["code"] for issue in response.json()["error"]["details"]["blocking_issues"]] == [
+        "CTRANSLATE2_FALLBACK_INVALID"
+    ]
+    assert application.state.translation_queue.enqueued == []
+    assert "untrusted.example" not in response.text
 
 
 def test_cloud_translation_is_disabled_by_default(

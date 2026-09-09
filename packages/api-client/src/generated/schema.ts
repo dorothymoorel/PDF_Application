@@ -2997,7 +2997,7 @@ export interface components {
             /** Page Ids */
             page_ids?: string[] | null;
             /** Provider Type */
-            provider_type?: ("OLLAMA" | "GROQ") | null;
+            provider_type?: ("OLLAMA" | "GROQ" | "CTRANSLATE2") | null;
             /**
              * Retranslate Existing
              * @default false
@@ -7018,7 +7018,7 @@ export interface operations {
     get_translation_readiness: {
         parameters: {
             query?: {
-                provider_type?: "OLLAMA" | "GROQ";
+                provider_type?: "OLLAMA" | "GROQ" | "CTRANSLATE2";
                 model_id?: string | null;
                 cloud_model_name?: ("qwen/qwen3.8-27b" | "openai/gpt-oss-120b") | null;
                 cloud_consent?: boolean;
