@@ -264,6 +264,10 @@ def test_translation_rejects_invalid_translation_timeout(timeout: object) -> Non
         OllamaTranslationProvider(translation_timeout_seconds=timeout)  # type: ignore[arg-type]
 
 
+def test_translation_uses_extended_default_timeout_for_local_document_batches() -> None:
+    assert OllamaTranslationProvider()._translation_timeout_seconds == 600.0
+
+
 def test_translation_requires_a_bound_model_before_network_access() -> None:
     with _fake_ollama({}) as fake:
         provider = OllamaTranslationProvider(fake.base_url)

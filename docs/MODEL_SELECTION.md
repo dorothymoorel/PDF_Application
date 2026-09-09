@@ -64,6 +64,10 @@ sudah diaktifkan pada runtime yang sedang dipakai.
 
 ## 4. Benchmark model
 
+Permintaan translation lokal memiliki batas waktu hingga 10 menit. Batas ini
+tetap finite agar worker dapat memulihkan kegagalan provider, sekaligus memberi
+model CPU waktu cukup untuk mengembalikan batch dokumen panjang.
+
 ### Quick model benchmark
 
 Quick benchmark menguji dataset English → Indonesian dengan structured output,
