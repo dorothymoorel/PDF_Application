@@ -127,11 +127,32 @@ Hentikan dari PowerShell lain pada repository yang sama:
 Jangan menghentikan semua process Node atau Python secara global. `stop.ps1`
 hanya memakai catatan process yang dibuat `start.ps1`.
 
-### Tanpa PowerShell (Linux/macOS, CI, atau sandbox)
+### Linux tanpa PowerShell
 
-Script `.ps1` membutuhkan PowerShell dan Windows. Pada lingkungan tanpa
-PowerShell, jalankan komponen yang sama secara manual dari root repository,
-dengan `TRANSLOKA_DATA_DIR` absolut yang sudah di-set pada shell tersebut:
+Script `.ps1` memakai API Windows. Pada Linux, pasang dependency terkunci dengan
+`pnpm install --frozen-lockfile` dan `uv sync --locked`, lalu gunakan launcher
+foreground berikut dari root repository (Node 24, pnpm 11, Python 3.12):
+
+```bash
+export TRANSLOKA_DATA_DIR="$HOME/.local/share/TransLoka-trial"
+uv run --no-sync python scripts/start_local.py --check-only
+uv run --no-sync python scripts/start_local.py --prepare-only
+uv run --no-sync python scripts/start_local.py
+```
+
+Data root wajib absolut dan terpisah dari repository. `--check-only` tidak
+membuat data; `--prepare-only` hanya memigrasikan database sampai head dan aman
+diulang. Start normal menolak port yang sudah dipakai dan launcher lain pada
+data root yang sama, lalu memigrasikan database sebelum menyalakan API, worker,
+dan web. API harus memakai `127.0.0.1:8000` sesuai konfigurasi client web.
+
+Hentikan dengan `Ctrl+C` di terminal launcher. Jika satu komponen gagal atau
+berhenti, launcher menghentikan process group miliknya saja, termasuk child
+Next.js; setelah tenggat graceful shutdown, process tersisa dihentikan paksa.
+Jangan menghentikan aplikasi saat job aktif kecuali diperlukan; job dapat
+membutuhkan recovery/retry. Tidak ada model atau credential yang diunduh.
+
+Untuk diagnosis manual, jalankan komponen yang sama secara terpisah:
 
 ```bash
 uv run --no-sync alembic upgrade head                     # migration sampai head
@@ -145,6 +166,56 @@ Web, API, dan worker masing-masing membutuhkan terminal sendiri, dan dihentikan
 dengan `Ctrl+C` pada terminal tersebut (bukan dengan mematikan semua process
 Node/Python). Backup restore memakai `fcntl` pada platform non-Windows dan
 `msvcrt` pada Windows; keduanya tersedia bawaan Python.
+
+### Sandbox Hoplite
+
+`.hoplite/settings.json` menjalankan `.hoplite/setup.sh` untuk memasang dependency
+terkunci, `zstd`, dan bundle Ollama Linux x86_64 yang dipin serta diverifikasi
+SHA-256. Model tidak diunduh oleh setup. `.hoplite/run.sh` menjalankan launcher
+Linux dengan Ollama lokal terkelola. Tanpa override `TRANSLOKA_DATA_DIR`, data Preview
+disimpan di `$HOME/.local/share/TransLoka-preview`, bukan data trial lama atau
+folder repository. Restart tidak mereset database dan tidak mengubah PDF asli.
+
+Perintah web tidak menyisipkan pemisah `--` sebelum argumen Next.js. Managed
+Preview dapat dipakai untuk verifikasi lewat browser di dalam sandbox, tetapi
+**akses aplikasi penuh dari browser eksternal belum didukung**: client memanggil
+API `127.0.0.1:8000` milik mesin browser. Konfigurasi ini tidak mem-proxy API,
+membuka bind publik, atau melonggarkan origin policy. Jangan menganggap halaman
+web yang tampil melalui tunnel sebagai bukti koneksi API berhasil.
+
+#### Model trial lokal yang disetujui
+
+Konfigurasi trial memakai Ollama `0.33.3` dan
+`qwen3:4b-instruct-2507-q4_K_M` (4B, Q4_K_M, sekitar 2,5 GB, Apache-2.0).
+Setelah Preview berjalan, unduh dan verifikasi model secara eksplisit:
+
+```bash
+uv run --no-sync python scripts/provision-trial-model.py
+```
+
+Script memverifikasi digest manifest model yang dipin sebelum membuat alias
+`transloka-qwen3-4b:trial` dari `infrastructure/local/ollama-trial.Modelfile`.
+Alias membatasi context ke 4096 token, output ke 2048 token, dan thread CPU ke 4.
+Ollama dijalankan pada `127.0.0.1:11434`, satu request paralel/satu model loaded,
+dan cloud dinonaktifkan. Binary serta bobot disimpan di
+`$HOME/.local/share/TransLoka-runtime`, di luar repository. Tidak ada PDF yang
+dikirim ke layanan eksternal; registry hanya dipakai untuk mengunduh model.
+
+Refresh daftar model di aplikasi, jalankan quick benchmark, lalu pilih alias
+untuk role `TRANSLATION` dan pada dropdown **Translation model**. Pemilihan model
+tersimpan pada database aktif, bukan setiap database/data root. Aplikasi masih
+menampilkan `MODEL_LICENSE_UNKNOWN` karena discovery belum mengimpor metadata
+lisensi; review Apache-2.0 dilakukan terpisah, bukan dengan menimpa database.
+Jangan nyalakan semantic validation: implementasi worker saat ini belum tersedia.
+
+Restart tidak mengunduh atau memilih ulang model. Untuk launcher manual,
+`--with-ollama` bersifat opt-in dan memerlukan `TRANSLOKA_OLLAMA_EXECUTABLE`
+absolut. Bila Ollama lain sudah berjalan pada port 11434, jangan gunakan flag
+tersebut; launcher tidak mengambil alih service yang bukan miliknya.
+
+Referensi: [Qwen3 4B Instruct di Ollama](https://ollama.com/library/qwen3:4b-instruct-2507-q4_K_M),
+[model card dan lisensi Qwen](https://huggingface.co/Qwen/Qwen3-4B-Instruct-2507),
+[rilis Ollama 0.33.3](https://github.com/ollama/ollama/releases/tag/v0.33.3).
 
 ## 7. Jalankan Ollama lokal
 

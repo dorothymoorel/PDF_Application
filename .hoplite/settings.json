@@ -1,0 +1,12 @@
+{
+  "scripts": {
+    "setup": {
+      "enabled": true,
+      "command": "bash .hoplite/setup.sh"
+    },
+    "run": {
+      "enabled": true,
+      "command": "bash .hoplite/run.sh"
+    }
+  }
+}
