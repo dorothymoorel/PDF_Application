@@ -47,6 +47,8 @@ from transloka_translation.orchestration import (
     TranslationSegmentInput,
 )
 from transloka_translation.providers import ProviderErrorCode, TranslationProviderError
+from transloka_translation.providers.ctranslate2 import MODEL_ID as CT2_MODEL_ID
+from transloka_translation.providers.ctranslate2 import CTranslate2TranslationProvider
 from transloka_translation.providers.groq import GROQ_MODELS, GroqTranslationProvider
 from transloka_translation.providers.ollama import OllamaTranslationProvider
 from transloka_translation.schemas import (
@@ -54,6 +56,8 @@ from transloka_translation.schemas import (
     TranslationGlossaryEntry,
     TranslationStyle,
 )
+
+from transloka_worker.ctranslate2 import CTranslate2ConfigurationError, CTranslate2Settings
 
 TRANSLATION_COMMAND_SCHEMA_V1 = "transloka.translation.command.v1"
 TRANSLATION_COMMAND_SCHEMA = "transloka.translation.command.v2"
@@ -94,7 +98,7 @@ _COMMAND_FIELDS = _COMMAND_FIELDS_V1 | {
     "cloud_consent",
     "cloud_consent_version",
 }
-_PROVIDER_TYPES = frozenset({"OLLAMA", "GROQ"})
+_PROVIDER_TYPES = frozenset({"OLLAMA", "GROQ", "CTRANSLATE2"})
 _CLOUD_CONSENT_VERSION = "cloud_text_sharing_v1"
 
 
@@ -122,6 +126,7 @@ class TranslationCommand:
     cloud_model_name: str | None = None
     cloud_consent: bool = False
     cloud_consent_version: str | None = None
+    ctranslate2_settings: CTranslate2Settings | None = None
 
     def __post_init__(self) -> None:
         _validate_identifier(self.project_id, "prj_")
@@ -132,8 +137,16 @@ class TranslationCommand:
         _validate_identifier(self.glossary_snapshot_id, "gsn_")
         if self.provider_type not in _PROVIDER_TYPES:
             raise TranslationWorkerError("The translation command provider is invalid.")
-        if self.provider_type == "OLLAMA":
-            _validate_identifier(self.model_id, "mdl_")
+        if self.ctranslate2_settings is not None and (
+            self.provider_type != "CTRANSLATE2"
+            or not isinstance(self.ctranslate2_settings, CTranslate2Settings)
+        ):
+            raise TranslationWorkerError("The CTranslate2 snapshot conflicts with its provider.")
+        if self.provider_type in {"OLLAMA", "CTRANSLATE2"}:
+            if self.provider_type == "OLLAMA":
+                _validate_identifier(self.model_id, "mdl_")
+            elif self.model_id != CT2_MODEL_ID:
+                raise TranslationWorkerError("The CTranslate2 model snapshot is invalid.")
             if (
                 self.cloud_model_name is not None
                 or self.cloud_consent
@@ -165,7 +178,7 @@ class TranslationCommand:
         _validate_scope_selectors(self)
 
     def to_payload(self) -> dict[str, object]:
-        return {
+        payload: dict[str, object] = {
             "schema": TRANSLATION_COMMAND_SCHEMA,
             "project_id": self.project_id,
             "document_id": self.document_id,
@@ -186,6 +199,9 @@ class TranslationCommand:
             "cloud_consent": self.cloud_consent,
             "cloud_consent_version": self.cloud_consent_version,
         }
+        if self.ctranslate2_settings is not None:
+            payload["ctranslate2_settings"] = self.ctranslate2_settings.to_payload()
+        return payload
 
     @classmethod
     def from_payload_json(cls, value: str) -> Self:
@@ -195,7 +211,10 @@ class TranslationCommand:
             if frozenset(payload) != _COMMAND_FIELDS_V1:
                 raise TranslationWorkerError("The translation command fields are invalid.")
         elif schema == TRANSLATION_COMMAND_SCHEMA:
-            if frozenset(payload) != _COMMAND_FIELDS:
+            if frozenset(payload) not in {
+                _COMMAND_FIELDS,
+                _COMMAND_FIELDS | {"ctranslate2_settings"},
+            }:
                 raise TranslationWorkerError("The translation command fields are invalid.")
         else:
             raise TranslationWorkerError("The translation command schema is unsupported.")
@@ -235,8 +254,13 @@ class TranslationCommand:
                     if schema == TRANSLATION_COMMAND_SCHEMA
                     else None
                 ),
+                ctranslate2_settings=(
+                    CTranslate2Settings.from_payload(payload["ctranslate2_settings"])
+                    if "ctranslate2_settings" in payload
+                    else None
+                ),
             )
-        except (TypeError, KeyError):
+        except (TypeError, KeyError, CTranslate2ConfigurationError):
             raise TranslationWorkerError("The translation command values are invalid.") from None
 
 
@@ -252,6 +276,7 @@ class LoadedTranslationJob:
     retry_count: int
     provider_type: str = "OLLAMA"
     cloud_consent: bool = False
+    ctranslate2_settings: CTranslate2Settings | None = None
 
 
 class DatabaseTranslationOperationLoader:
@@ -313,6 +338,10 @@ def _load_translation_job(
         if model is None or not model.is_installed:
             raise TranslationWorkerError("The translation model is unavailable.")
         provider_model_name = model.ollama_model_name
+    elif command.provider_type == "CTRANSLATE2":
+        if (project.source_language, project.target_language) != ("en", "id"):
+            raise TranslationWorkerError("CTranslate2 supports only English to Indonesian.")
+        provider_model_name = CT2_MODEL_ID
     else:
         assert command.cloud_model_name is not None
         provider_model_name = command.cloud_model_name
@@ -371,6 +400,7 @@ def _load_translation_job(
         retry_count=job.retry_count,
         provider_type=command.provider_type,
         cloud_consent=command.cloud_consent,
+        ctranslate2_settings=command.ctranslate2_settings,
     )
 
 
@@ -460,7 +490,13 @@ def _build_translation_operation(
             sort_keys=True,
             separators=(",", ":"),
         ),
-        batch_limits=BatchLimits(max_segments=command.batch_size),
+        batch_limits=BatchLimits(
+            max_segments=(
+                min(command.batch_size, 64)
+                if command.provider_type == "CTRANSLATE2"
+                else command.batch_size
+            )
+        ),
     )
 
 
@@ -708,6 +744,7 @@ class ProductionTranslationJobRunner:
         *,
         provider_factory: Callable[[str], object] | None = None,
         cloud_provider_factory: Callable[[str, bool], object] | None = None,
+        ctranslate2_provider_factory: Callable[[], object] | None = None,
         worker_identifier: str | None = None,
     ) -> None:
         if not isinstance(loader, DatabaseTranslationOperationLoader):
@@ -720,6 +757,7 @@ class ProductionTranslationJobRunner:
         self._provider_factory = provider_factory or (
             lambda model_name: OllamaTranslationProvider(model_name=model_name)
         )
+        self._ctranslate2_provider_factory = ctranslate2_provider_factory
         self._cloud_provider_factory = cloud_provider_factory or (
             lambda model_name, consent: GroqTranslationProvider(
                 enabled=True,
@@ -737,6 +775,7 @@ class ProductionTranslationJobRunner:
             temporary_root=self._temporary_root,
             provider_factory=self._provider_factory,
             cloud_provider_factory=self._cloud_provider_factory,
+            ctranslate2_provider_factory=self._ctranslate2_provider_factory,
             worker_identifier=self._worker_identifier,
         )
 
@@ -748,6 +787,7 @@ def _run_loaded_translation_job(
     temporary_root: Path,
     provider_factory: Callable[[str], object],
     cloud_provider_factory: Callable[[str, bool], object] | None = None,
+    ctranslate2_provider_factory: Callable[[], object] | None = None,
     worker_identifier: str,
 ) -> TranslationRunResult:
     attempt_id: str | None = None
@@ -790,6 +830,7 @@ def _run_loaded_translation_job(
                     loaded,
                     provider_factory=provider_factory,
                     cloud_provider_factory=cloud_provider_factory,
+                    ctranslate2_provider_factory=ctranslate2_provider_factory,
                 ),
                 SqlAlchemyTranslationRunStore(session_factory, write_guard=guard),
                 batch_progress_sink=report_progress,
@@ -827,9 +868,25 @@ def _translation_provider(
     *,
     provider_factory: Callable[[str], object],
     cloud_provider_factory: Callable[[str, bool], object] | None,
+    ctranslate2_provider_factory: Callable[[], object] | None = None,
 ) -> object:
     if loaded.provider_type == "OLLAMA":
         return provider_factory(loaded.ollama_model_name)
+    if loaded.provider_type == "CTRANSLATE2":
+        if ctranslate2_provider_factory is not None:
+            return ctranslate2_provider_factory()
+        # Legacy jobs never inherit a fallback enabled after dispatch.
+        settings = loaded.ctranslate2_settings or CTranslate2Settings()
+        if settings.fallback_model_name is None:
+            return CTranslate2TranslationProvider()
+        return CTranslate2TranslationProvider(
+            fallback=OllamaTranslationProvider(
+                model_name=settings.fallback_model_name,
+                base_url=settings.fallback_base_url,
+                temperature=0.1,
+                translation_timeout_seconds=600.0,
+            )
+        )
     factory = cloud_provider_factory or (
         lambda model_name, consent: GroqTranslationProvider(
             enabled=True,

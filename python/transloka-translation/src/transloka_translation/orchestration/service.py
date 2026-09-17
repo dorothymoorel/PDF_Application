@@ -26,13 +26,20 @@ from transloka_translation.providers import (
     TranslationProviderError,
 )
 from transloka_translation.schemas import (
+    TranslatedSegment,
     TranslationContext,
     TranslationPlaceholder,
     TranslationRequest,
     TranslationRequestSegment,
     TranslationResponse,
 )
-from transloka_translation.validation import validate_translation
+from transloka_translation.validation import (
+    ValidationCode,
+    ValidationIssue,
+    ValidationReport,
+    ValidationSeverity,
+    validate_translation,
+)
 
 from .models import (
     SegmentFailure,
@@ -152,18 +159,45 @@ class TranslationOrchestrator:
             attempt_number = attempt_count
             attempt: StoredAttempt | None = None
             try:
-                prompt = (
-                    self._prompt_builder or VersionedPromptBuilder(operation.prompt_version)
-                ).build(protected.request)
-                raw_response = await _translate_with_retry(
-                    self._provider, prompt, cancellation=cancellation
-                )
+                passthrough = _protected_only_segments(protected.request)
+                if len(passthrough) == len(protected.request.segments):
+                    response = _replace_protected_only_segments(
+                        TranslationResponse(segments=()), protected.request, passthrough
+                    )
+                else:
+                    prompt = (
+                        self._prompt_builder or VersionedPromptBuilder(operation.prompt_version)
+                    ).build(protected.request)
+                    raw_response = await _translate_with_retry(
+                        self._provider, prompt, cancellation=cancellation
+                    )
+                    response = _coerce_response(
+                        raw_response,
+                        protected.request.segment_ids,
+                        allow_empty_translations=operation.provider_type == "CTRANSLATE2",
+                    )
+                    response = _replace_protected_only_segments(
+                        response, protected.request, passthrough
+                    )
                 if _is_cancelled(cancellation):
                     cancelled.extend(batch.segment_ids)
                     self._emit_batch_progress(batch_number, total_batches)
                     continue
-                response = _coerce_response(raw_response, protected.request.segment_ids)
                 report = validate_translation(protected.request, response)
+                per_segment = operation.provider_type == "CTRANSLATE2"
+                if per_segment:
+                    report = ValidationReport(
+                        report.issues
+                        + tuple(
+                            ValidationIssue(
+                                ValidationCode.NMT_REVIEW_REQUIRED,
+                                ValidationSeverity.WARNING,
+                                segment_id,
+                                "Local NMT output requires review of meaning and protected-span fluency.",
+                            )
+                            for segment_id in batch.segment_ids
+                        )
+                    )
                 attempt_status = "COMPLETED_WITH_WARNINGS" if report.warnings else "COMPLETED"
                 if not report.accepted:
                     attempt_status = "FAILED"
@@ -178,7 +212,7 @@ class TranslationOrchestrator:
                     else None,
                     validation_issues=report.issues,
                 )
-                if not report.accepted:
+                if not report.accepted and not per_segment:
                     validation_codes = tuple(
                         sorted({issue.code for issue in report.critical_issues})
                     )
@@ -194,6 +228,44 @@ class TranslationOrchestrator:
                     )
                     continue
                 for segment in batch.segments:
+                    segment_report = (
+                        ValidationReport(
+                            tuple(
+                                issue
+                                for issue in report.issues
+                                if issue.segment_id in {None, segment.segment_id}
+                            )
+                        )
+                        if per_segment
+                        else report
+                    )
+                    if per_segment and segment.segment_id in getattr(
+                        self._provider, "fallback_segment_ids", ()
+                    ):
+                        segment_report = ValidationReport(
+                            segment_report.issues
+                            + (
+                                ValidationIssue(
+                                    ValidationCode.NMT_LOCAL_FALLBACK_USED,
+                                    ValidationSeverity.WARNING,
+                                    segment.segment_id,
+                                    "The configured local Ollama fallback produced this segment.",
+                                ),
+                            )
+                        )
+                    if not segment_report.accepted:
+                        failed.append(segment.segment_id)
+                        failures.append(
+                            SegmentFailure(
+                                segment.segment_id,
+                                "VALIDATION_FAILED",
+                                "Translation integrity validation failed.",
+                                tuple(
+                                    sorted({issue.code for issue in segment_report.critical_issues})
+                                ),
+                            )
+                        )
+                        continue
                     translated = next(
                         item for item in response.segments if item.segment_id == segment.segment_id
                     )
@@ -209,7 +281,7 @@ class TranslationOrchestrator:
                             segment.segment_id,
                             translated.translated_text,
                             restored,
-                            report,
+                            segment_report,
                             expected_revision=revisions[segment.segment_id],
                         )
                     except SegmentWriteConflictError as error:
@@ -300,6 +372,11 @@ class TranslationOrchestrator:
         inventories: dict[str, tuple[ProtectedInventoryItem, ...]] = {}
         reserved_placeholders: list[str] = []
         for segment in batch.segments:
+            if operation.provider_type == "CTRANSLATE2":
+                # NMT protects spans itself; hiding acronyms here would hide glossary matches too.
+                requests.append(TranslationRequestSegment(segment.segment_id, segment.source_text))
+                inventories[segment.segment_id] = ()
+                continue
             protected = self._detector.protect(
                 segment.source_text,
                 reserved_placeholders=reserved_placeholders,
@@ -356,13 +433,54 @@ class TranslationOrchestrator:
 
 
 def _coerce_response(
-    raw_response: object, known_segment_ids: tuple[str, ...]
+    raw_response: object,
+    known_segment_ids: tuple[str, ...],
+    *,
+    allow_empty_translations: bool = False,
 ) -> TranslationResponse:
     if isinstance(raw_response, TranslationResponse):
         return raw_response
     if not isinstance(raw_response, str):
         raise ValueError("Provider response must be JSON text or TranslationResponse.")
-    return parse_translation_response(raw_response, known_segment_ids=known_segment_ids)
+    return parse_translation_response(
+        raw_response,
+        known_segment_ids=known_segment_ids,
+        allow_empty_translations=allow_empty_translations,
+    )
+
+
+def _protected_only_segments(request: TranslationRequest) -> dict[str, str]:
+    placeholders: dict[str, list[str]] = {}
+    for item in request.placeholders:
+        placeholders.setdefault(item.segment_id, []).append(item.placeholder)
+    passthrough: dict[str, str] = {}
+    for segment in request.segments:
+        tokens = placeholders.get(segment.segment_id, [])
+        if not tokens:
+            continue
+        remainder = segment.source_text
+        for token in tokens:
+            remainder = remainder.replace(token, "")
+        if not any(character.isalnum() for character in remainder):
+            passthrough[segment.segment_id] = segment.source_text
+    return passthrough
+
+
+def _replace_protected_only_segments(
+    response: TranslationResponse,
+    request: TranslationRequest,
+    passthrough: dict[str, str],
+) -> TranslationResponse:
+    if not passthrough:
+        return response
+    translated = {item.segment_id: item.translated_text for item in response.segments}
+    translated.update(passthrough)
+    return TranslationResponse(
+        segments=tuple(
+            TranslatedSegment(segment.segment_id, translated[segment.segment_id])
+            for segment in request.segments
+        )
+    )
 
 
 def _is_cancelled(signal: CancellationSignal | None) -> bool:

@@ -2,6 +2,7 @@
 
 **Project:** TransLoka
 **Inventory date:** 2026-08-23
+**OPUS-MT pilot addendum:** 2026-09-09
 **Project license:** All Rights Reserved (not yet selected for redistribution)
 **Distribution status:** Personal MVP; not publicly distributed
 
@@ -19,10 +20,9 @@ are not third-party dependencies.
   checked with `pnpm list -r --depth 0 --json`.
 - License values were checked against the installed package metadata and,
   where metadata was incomplete, the package's installed license files.
-- `uv.lock` contains 57 resolved package records (including first-party
-  packages); `pnpm-lock.yaml` contains 341 package records. The tables below
-  are the complete direct-dependency review. Transitive notices must still be
-  regenerated before any public distribution.
+- The original application dependency inventory predates the optional OPUS-MT
+  pilot addendum below. Current resolved packages are recorded in `uv.lock` and
+  `pnpm-lock.yaml`; transitive notices must be regenerated before distribution.
 
 Review statuses:
 
@@ -130,18 +130,48 @@ documentation only as an explicit prohibition. The approved PDF stack is
 ## Local model license register (separate from application dependencies)
 
 Model weights are not application dependencies and their license must be
-reviewed separately from the Ollama runtime. No model is selected or pinned in
-the repository, and model weights must not be committed to Git.
+reviewed separately from the Ollama runtime. The opt-in OPUS-MT pilot is pinned
+below; model weights must not be committed to Git.
 
 | Artifact | Version/tag | License | Commercial use | Redistribution | Review status |
 | --- | --- | --- | --- | --- | --- |
 | Ollama runtime | Not declared or locked | Separate runtime terms; verify the installed release before distribution | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED |
 | Selected local model weights | None selected | Model-specific license required | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED |
+| Optional OPUS-MT EN→ID pilot | `Helsinki-NLP/opus-mt-en-id` revision `6e4c52d61a6b16fe3509b0267cbfec65011b860b`; local CTranslate2 INT8 conversion | Apache-2.0, declared by pinned upstream model card | Allowed under Apache-2.0 terms | Preserve license/attribution and applicable NOTICE; document INT8 conversion | VERIFIED_UPSTREAM_MODEL_CARD; not distributed |
 | PaddleOCR / PP-Structure model weights | None selected | Model-specific license required | REQUIRES_VERIFICATION | REQUIRES_VERIFICATION | NOT_SELECTED |
 
 Local availability does not imply commercial-use or redistribution rights.
 Selecting a model for a later task requires recording its exact model ID/tag,
 source, license, attribution, and redistribution terms in this section.
+
+### Optional OPUS-MT pilot dependencies and attribution
+
+These packages are pinned in `pyproject.toml` and `uv.lock` but are not installed
+by ordinary `uv sync --locked`. Runtime dependencies use extra `ct2`; conversion
+dependencies use group `ct2-convert` and are unnecessary during inference.
+
+| Artifact | Version | License | Evidence / scope |
+| --- | --- | --- | --- |
+| CTranslate2 | 4.6.0 | MIT | Installed distribution metadata; optional runtime and converter |
+| SentencePiece | 0.2.1 | Apache-2.0 | [Upstream v0.2.1 LICENSE](https://github.com/google/sentencepiece/blob/v0.2.1/LICENSE); installed wheel omits license text, which must be supplied for redistribution; optional runtime and converter |
+| PyTorch | 2.8.0 (CPU build on Linux/Windows) | BSD-3-Clause, plus bundled dependency notices | Installed distribution metadata; converter only; review bundled native notices before redistribution |
+| Transformers | 4.56.2 | Apache-2.0 | Installed distribution metadata; converter only |
+
+Upstream attribution: Helsinki-NLP / OPUS-MT, model `opus-mt-en-id`, trained on
+OPUS with English as source and Indonesian as target. The pinned
+[model card](https://huggingface.co/Helsinki-NLP/opus-mt-en-id/blob/6e4c52d61a6b16fe3509b0267cbfec65011b860b/README.md)
+declares `license: apache-2.0` and links the original OPUS-MT model. Provisioning
+retains that exact card and records the revision, source/result SHA-256 values,
+converter versions, and INT8 quantization in `manifest.json`.
+
+No model files are distributed with this repository. Before redistributing a
+source or converted bundle, include the
+[Apache License 2.0](https://www.apache.org/licenses/LICENSE-2.0), preserve
+applicable upstream copyright/attribution and NOTICE files, and describe the
+INT8 conversion as a modification. This records upstream's license declaration,
+not an independent audit of every OPUS training corpus. See
+[`docs/CT2_LOCAL_PILOT.md`](docs/CT2_LOCAL_PILOT.md) for opt-in provisioning and
+offline verification commands.
 
 ## Distribution gate and maintenance
 

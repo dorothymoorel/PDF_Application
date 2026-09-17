@@ -112,6 +112,34 @@ describe("translation settings", () => {
     expect(await screen.findByText("Translation started. Job: job_translation_1")).toBeTruthy();
   });
 
+  it("starts offline CTranslate2 without an Ollama model", async () => {
+    const client = clientWith();
+    render(<TranslationSettings client={client} projectId="prj_1" />);
+
+    fireEvent.change(screen.getByLabelText("Translation provider"), {
+      target: { value: "CTRANSLATE2" },
+    });
+
+    expect(screen.getByDisplayValue("opus-mt-en-id-ct2-int8")).toBeTruthy();
+    expect(screen.getByText("Offline CPU translation")).toBeTruthy();
+    const startButton = screen.getByRole("button", { name: "Start translation" });
+    expect(startButton).toHaveProperty("disabled", false);
+    fireEvent.click(startButton);
+
+    await waitFor(() => expect(client.startTranslation).toHaveBeenCalled());
+    const localInput = {
+      provider_type: "CTRANSLATE2",
+      model_id: "opus-mt-en-id-ct2-int8",
+    };
+    expect(client.getTranslationReadiness).toHaveBeenCalledWith("prj_1", localInput);
+    expect(client.startTranslation).toHaveBeenCalledWith(
+      "prj_1",
+      expect.stringContaining("translation-ui-prj_1-"),
+      expect.objectContaining(localInput),
+    );
+    expect(client.startTranslation.mock.calls[0]?.[2]).not.toHaveProperty("cloud_consent");
+  });
+
   it("requires explicit consent before sending selected text to Groq", async () => {
     const client = clientWith();
     render(<TranslationSettings client={client} models={[MODEL]} projectId="prj_1" />);

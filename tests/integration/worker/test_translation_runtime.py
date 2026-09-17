@@ -61,6 +61,13 @@ from transloka_translation.providers import (
     ProviderHealthStatus,
     TranslationProviderError,
 )
+from transloka_translation.providers.ctranslate2 import MODEL_ID as CT2_MODEL_ID
+from transloka_translation.providers.ollama import OllamaTranslationProvider
+from transloka_worker.ctranslate2 import (
+    CTranslate2ConfigurationError,
+    CTranslate2Settings,
+    ctranslate2_settings_from_environment,
+)
 from transloka_worker.health import PersistedWorkerHeartbeat, WorkerStatus
 from transloka_worker.translation import (
     TRANSLATION_COMMAND_SCHEMA,
@@ -72,6 +79,7 @@ from transloka_worker.translation import (
     TranslationWorkerError,
     _run_loaded_translation_job,
     _start_translation_job,
+    _translation_provider,
 )
 
 
@@ -180,11 +188,14 @@ class LoaderFixture:
     data_root: Path
 
     def start(self, **overrides: object) -> str:
-        payload: dict[str, object] = {"model_id": MODEL_ID, "batch_size": 5}
+        idempotency_key = overrides.pop("idempotency_key", "translation-runtime-1")
+        assert isinstance(idempotency_key, str)
+        model_id = CT2_MODEL_ID if overrides.get("provider_type") == "CTRANSLATE2" else MODEL_ID
+        payload: dict[str, object] = {"model_id": model_id, "batch_size": 5}
         payload.update(overrides)
         response = self.client.post(
             f"/api/v1/projects/{self.project_id}/translation/start",
-            headers={**CLIENT_HEADERS, "Idempotency-Key": "translation-runtime-1"},
+            headers={**CLIENT_HEADERS, "Idempotency-Key": idempotency_key},
             json=payload,
         )
         assert response.status_code == 202, response.text
@@ -201,9 +212,12 @@ def loader_fixture(
 ) -> Iterator[LoaderFixture]:
     root = tmp_path / "translation worker"
     monkeypatch.setenv("TRANSLOKA_DATA_DIR", str(root))
+    monkeypatch.setenv("TRANSLOKA_CT2_MODEL_DIR", str(tmp_path / "private-ct2-model"))
+    monkeypatch.delenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", raising=False)
     alembic_command.upgrade(Config(str(ALEMBIC_CONFIGURATION)), "head")
     application: FastAPI = create_app()
     application.state.ollama_provider = HealthyProvider()
+    application.state.ctranslate2_provider = HealthyProvider()
     application.state.translation_queue = RecordingQueue()
     application.state.worker_heartbeat_store = StaticWorkerHeartbeatStore()
     with TestClient(application) as client:
@@ -528,6 +542,107 @@ def test_translation_command_decodes_queued_v1_as_ollama() -> None:
     assert command.cloud_consent is False
 
 
+def test_ctranslate2_command_round_trips_without_cloud_or_model_path() -> None:
+    command = _command(provider_type="CTRANSLATE2", model_id=CT2_MODEL_ID)
+    payload = command.to_payload()
+    assert payload["schema"] == "transloka.translation.command.v2"
+    assert payload["provider_type"] == "CTRANSLATE2"
+    assert payload["model_id"] == CT2_MODEL_ID
+    assert payload["cloud_model_name"] is None
+    assert payload["cloud_consent"] is False
+    assert payload["cloud_consent_version"] is None
+    assert "model_dir" not in payload
+    assert TranslationCommand.from_payload_json(json.dumps(payload)) == command
+
+
+def test_ctranslate2_snapshot_round_trips_provenance_generation_and_fallback() -> None:
+    settings = CTranslate2Settings("qwen2.5:3b", "http://127.0.0.1:11434")
+    command = _command(
+        provider_type="CTRANSLATE2", model_id=CT2_MODEL_ID, ctranslate2_settings=settings
+    )
+    payload = command.to_payload()
+    assert TranslationCommand.from_payload_json(json.dumps(payload)) == command
+    snapshot = settings.to_payload()
+    provenance = cast(dict[str, object], snapshot["provenance"])
+    generation = cast(dict[str, object], snapshot["generation"])
+    assert provenance["model_id"] == CT2_MODEL_ID
+    assert provenance["source_model"] == "Helsinki-NLP/opus-mt-en-id"
+    assert provenance["source_revision"] == "6e4c52d61a6b16fe3509b0267cbfec65011b860b"
+    assert provenance["files"]
+    assert generation["device"] == "cpu"
+    assert generation["compute_type"] == "int8"
+    assert (generation["beam_size"], generation["retry_beam_size"]) == (1, 4)
+    assert generation["max_decoding_length"] == 512
+    assert snapshot["fallback"] == {
+        "provider_type": "OLLAMA",
+        "model_name": "qwen2.5:3b",
+        "base_url": "http://127.0.0.1:11434",
+        "temperature": 0.1,
+        "translation_timeout_seconds": 600.0,
+    }
+
+
+@pytest.mark.parametrize("field", ["provenance", "generation", "fallback", "schema"])
+def test_ctranslate2_command_rejects_mutated_snapshot(field: str) -> None:
+    payload = _command(
+        provider_type="CTRANSLATE2",
+        model_id=CT2_MODEL_ID,
+        ctranslate2_settings=CTranslate2Settings(),
+    ).to_payload()
+    settings = cast(dict[str, object], payload["ctranslate2_settings"])
+    settings[field] = {"provider_type": "GROQ", "model_name": "qwen/qwen3.8-27b"}
+    with pytest.raises(TranslationWorkerError):
+        TranslationCommand.from_payload_json(json.dumps(payload))
+
+
+def test_ctranslate2_settings_cannot_be_attached_to_another_provider() -> None:
+    with pytest.raises(TranslationWorkerError, match="conflicts"):
+        _command(ctranslate2_settings=CTranslate2Settings())
+
+
+@pytest.mark.parametrize("value", [None, "", "  "])
+def test_ctranslate2_fallback_is_disabled_by_default(
+    monkeypatch: pytest.MonkeyPatch, value: str | None
+) -> None:
+    if value is None:
+        monkeypatch.delenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", raising=False)
+    else:
+        monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", value)
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "https://untrusted.example")
+    assert ctranslate2_settings_from_environment().to_payload()["fallback"] is None
+
+
+@pytest.mark.parametrize(
+    "url",
+    ["https://untrusted.example", "http://192.0.2.1:11434", "http://user:secret@localhost:11434"],
+)
+def test_ctranslate2_fallback_requires_a_loopback_endpoint(
+    monkeypatch: pytest.MonkeyPatch, url: str
+) -> None:
+    monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", url)
+    with pytest.raises(CTranslate2ConfigurationError, match="endpoint is invalid"):
+        ctranslate2_settings_from_environment()
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [
+        {"model_id": None},
+        {"model_id": MODEL_ID},
+        {"model_id": "/private/model"},
+        {"cloud_model_name": "qwen/qwen3.8-27b"},
+        {"cloud_consent": True},
+        {"cloud_consent_version": "cloud_text_sharing_v1"},
+    ],
+)
+def test_ctranslate2_command_rejects_conflicting_fields(changes: dict[str, object]) -> None:
+    payload = _command(provider_type="CTRANSLATE2", model_id=CT2_MODEL_ID).to_payload()
+    payload.update(changes)
+    with pytest.raises(TranslationWorkerError):
+        TranslationCommand.from_payload_json(json.dumps(payload))
+
+
 def test_translation_command_requires_matching_scope_selector() -> None:
     payload = _command(scope="SECTION", section_ids=(SECTION_ID,)).to_payload()
     assert TranslationCommand.from_payload_json(json.dumps(payload)).section_ids == (SECTION_ID,)
@@ -578,10 +693,12 @@ def test_loader_binds_authoritative_translation_operation(
         ),
     ],
 )
+@pytest.mark.parametrize("provider_type", ["OLLAMA", "CTRANSLATE2"])
 def test_loader_applies_translation_scope(
     loader_fixture: LoaderFixture,
     payload: dict[str, object],
     expected: tuple[str, ...],
+    provider_type: str,
 ) -> None:
     if payload["scope"] in {"UNTRANSLATED_ONLY", "UNREVIEWED_ONLY"}:
         with transaction_scope(loader_fixture.factory) as session:
@@ -591,15 +708,17 @@ def test_loader_applies_translation_scope(
             if payload["scope"] == "UNREVIEWED_ONLY":
                 first.review_status = ReviewStatus.APPROVED.value
 
-    loaded = loader_fixture.load(loader_fixture.start(**payload))
+    loaded = loader_fixture.load(loader_fixture.start(provider_type=provider_type, **payload))
 
     assert loaded.selected_segment_ids == expected
 
 
 @pytest.mark.parametrize("state", ["LOCKED", "APPROVED", "USER_EDITED"])
+@pytest.mark.parametrize("provider_type", ["OLLAMA", "CTRANSLATE2"])
 def test_loader_excludes_protected_even_when_both_flags_allow_retranslation(
     loader_fixture: LoaderFixture,
     state: str,
+    provider_type: str,
 ) -> None:
     with transaction_scope(loader_fixture.factory) as session:
         second = session.get(DocumentSegment, SEGMENT_2_ID)
@@ -607,7 +726,7 @@ def test_loader_excludes_protected_even_when_both_flags_allow_retranslation(
         second.is_locked = int(state == "LOCKED")
         second.status = state
 
-    skipped = loader_fixture.load(loader_fixture.start())
+    skipped = loader_fixture.load(loader_fixture.start(provider_type=provider_type))
     assert skipped.selected_segment_ids == (SEGMENT_ID,)
 
     with transaction_scope(loader_fixture.factory) as session:
@@ -634,10 +753,11 @@ def test_loader_excludes_protected_even_when_both_flags_allow_retranslation(
 
 @pytest.mark.parametrize("state", ["LOCKED", "APPROVED", "USER_EDITED", "SOURCE_CORRECTED"])
 @pytest.mark.parametrize("outcome", ["success", "timeout", "cancel", "exception"])
+@pytest.mark.parametrize("provider_type", ["OLLAMA", "CTRANSLATE2"])
 def test_worker_preserves_changes_made_while_provider_is_running(
-    loader_fixture: LoaderFixture, state: str, outcome: str
+    loader_fixture: LoaderFixture, state: str, outcome: str, provider_type: str
 ) -> None:
-    job_id = loader_fixture.start()
+    job_id = loader_fixture.start(provider_type=provider_type)
     expected: tuple[object, ...] | None = None
 
     def edit_during_translation() -> None:
@@ -680,6 +800,7 @@ def test_worker_preserves_changes_made_while_provider_is_running(
         loader_fixture.factory,
         loader_fixture.data_root / "temporary",
         provider_factory=lambda _: provider,
+        ctranslate2_provider_factory=lambda: provider,
     )
     if outcome == "exception":
         with pytest.raises(RuntimeError, match="Simulated provider failure"):
@@ -718,10 +839,12 @@ def _protected_segment_state(row: DocumentSegment) -> tuple[object, ...]:
     )
 
 
+@pytest.mark.parametrize("provider_type", ["OLLAMA", "CTRANSLATE2"])
 def test_worker_rejects_revision_changed_between_load_and_start(
     loader_fixture: LoaderFixture,
+    provider_type: str,
 ) -> None:
-    loaded = loader_fixture.load(loader_fixture.start())
+    loaded = loader_fixture.load(loader_fixture.start(provider_type=provider_type))
     with transaction_scope(loader_fixture.factory) as session:
         row = session.get(DocumentSegment, SEGMENT_ID)
         assert row is not None
@@ -739,6 +862,7 @@ def test_worker_rejects_revision_changed_between_load_and_start(
             session_factory=loader_fixture.factory,
             temporary_root=loader_fixture.data_root / "temporary",
             provider_factory=unexpected_provider,
+            ctranslate2_provider_factory=lambda: unexpected_provider(CT2_MODEL_ID),
             worker_identifier="test-worker",
         )
     with loader_fixture.factory() as session:
@@ -1160,6 +1284,276 @@ def test_production_runner_completes_empty_selection_without_provider(
         assert job.progress == 1.0
 
 
+@pytest.mark.parametrize("inject_factory", [False, True])
+def test_ctranslate2_runner_uses_durable_snapshot_without_other_providers(
+    loader_fixture: LoaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    inject_factory: bool,
+) -> None:
+    monkeypatch.delenv("TRANSLOKA_CLOUD_TRANSLATION_ENABLED", raising=False)
+    with transaction_scope(loader_fixture.factory) as session:
+        model = session.get(LocalModelRecord, MODEL_ID)
+        assert model is not None
+        session.delete(model)
+    job_id = loader_fixture.start(provider_type="CTRANSLATE2")
+    loaded = loader_fixture.load(job_id)
+    provider = RuntimeProvider()
+    created: list[RuntimeProvider] = []
+
+    def ct2_factory() -> RuntimeProvider:
+        created.append(provider)
+        return provider
+
+    def unexpected_provider(*_args: object) -> object:
+        pytest.fail("CTranslate2 must not construct an Ollama or cloud provider.")
+
+    if not inject_factory:
+        monkeypatch.setattr(
+            "transloka_worker.translation.CTranslate2TranslationProvider", ct2_factory
+        )
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=unexpected_provider,
+        cloud_provider_factory=unexpected_provider,
+        ctranslate2_provider_factory=ct2_factory if inject_factory else None,
+    ).run(job_id)
+
+    assert loaded.provider_type == "CTRANSLATE2"
+    assert loaded.ollama_model_name == CT2_MODEL_ID
+    assert loaded.operation is not None
+    assert loaded.operation.provider_type == "CTRANSLATE2"
+    assert loaded.operation.model_id == CT2_MODEL_ID
+    assert created == [provider]
+    assert result.status is TranslationRunStatus.COMPLETED_WITH_WARNINGS
+    assert result.completed_segment_ids == (SEGMENT_ID, SEGMENT_2_ID)
+    with loader_fixture.factory() as session:
+        batch = session.get(TranslationBatch, result.run_id)
+        attempts = list(
+            session.scalars(
+                select(TranslationAttempt).where(TranslationAttempt.batch_id == result.run_id)
+            )
+        )
+        assert batch is not None and attempts
+        assert (batch.provider_type, batch.model_id) == ("CTRANSLATE2", CT2_MODEL_ID)
+        assert all(
+            (attempt.provider_type, attempt.model_id) == ("CTRANSLATE2", CT2_MODEL_ID)
+            for attempt in attempts
+        )
+        assert "TRANSLOKA_CT2_MODEL_DIR" not in batch.settings_json
+        assert "private-ct2-model" not in batch.settings_json
+        assert json.loads(batch.settings_json)["ctranslate2_settings"] == (
+            CTranslate2Settings().to_payload()
+        )
+
+
+def test_ctranslate2_factory_uses_saved_fallback_despite_environment_changes(
+    loader_fixture: LoaderFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "http://127.0.0.1:11435")
+    job_id = loader_fixture.start(provider_type="CTRANSLATE2")
+    monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "different-model:latest")
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "https://untrusted.example")
+    loaded = loader_fixture.load(job_id)
+    assert loaded.ctranslate2_settings == CTranslate2Settings(
+        "qwen2.5:3b", "http://127.0.0.1:11435"
+    )
+    captured: list[OllamaTranslationProvider] = []
+
+    def ct2_factory(*, fallback: OllamaTranslationProvider) -> RuntimeProvider:
+        captured.append(fallback)
+        return RuntimeProvider()
+
+    def unexpected_provider(*_args: object) -> object:
+        pytest.fail("The CT2 fallback must not use a generic or cloud provider factory.")
+
+    monkeypatch.setattr("transloka_worker.translation.CTranslate2TranslationProvider", ct2_factory)
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=unexpected_provider,
+        cloud_provider_factory=unexpected_provider,
+    ).run(job_id)
+    assert result.status is TranslationRunStatus.COMPLETED_WITH_WARNINGS
+    assert len(captured) == 1
+    assert isinstance(captured[0], OllamaTranslationProvider)
+    assert captured[0].base_url == "http://127.0.0.1:11435"
+    assert captured[0]._model_name == "qwen2.5:3b"
+    with loader_fixture.factory() as session:
+        batch = session.get(TranslationBatch, result.run_id)
+        assert batch is not None
+        assert loaded.ctranslate2_settings is not None
+        assert json.loads(batch.settings_json)["ctranslate2_settings"] == (
+            loaded.ctranslate2_settings.to_payload()
+        )
+
+
+def test_ctranslate2_legacy_payload_does_not_enable_new_environment_fallback(
+    loader_fixture: LoaderFixture, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    job_id = loader_fixture.start(provider_type="CTRANSLATE2")
+    with transaction_scope(loader_fixture.factory) as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        payload = json.loads(job.payload_json)
+        payload.pop("ctranslate2_settings")
+        job.payload_json = json.dumps(payload)
+    monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "qwen2.5:3b")
+    monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "https://untrusted.example")
+    loaded = loader_fixture.load(job_id)
+    assert loaded.ctranslate2_settings is None
+    provider = RuntimeProvider()
+    monkeypatch.setattr(
+        "transloka_worker.translation.CTranslate2TranslationProvider", lambda: provider
+    )
+    assert (
+        _translation_provider(
+            loaded, provider_factory=lambda _model: None, cloud_provider_factory=None
+        )
+        is provider
+    )
+
+
+@pytest.mark.parametrize("languages", [("id", "en"), ("en", "fr")])
+def test_ctranslate2_loader_rechecks_language_pair(
+    loader_fixture: LoaderFixture, languages: tuple[str, str]
+) -> None:
+    job_id = loader_fixture.start(provider_type="CTRANSLATE2")
+    with transaction_scope(loader_fixture.factory) as session:
+        project = session.get(Project, loader_fixture.project_id)
+        document = session.get(Document, DOCUMENT_ID)
+        assert project is not None and document is not None
+        project.source_language, project.target_language = languages
+        document.source_language, document.target_language = languages
+    with pytest.raises(TranslationWorkerError, match="English to Indonesian"):
+        loader_fixture.load(job_id)
+
+
+@pytest.mark.parametrize(("requested", "effective"), [(5, 5), (64, 64), (100, 64)])
+def test_ctranslate2_batches_respect_provider_request_limit(
+    loader_fixture: LoaderFixture, requested: int, effective: int
+) -> None:
+    loaded = loader_fixture.load(
+        loader_fixture.start(provider_type="CTRANSLATE2", batch_size=requested)
+    )
+    assert loaded.operation is not None
+    assert loaded.operation.batch_limits.max_segments == effective
+
+
+def test_ctranslate2_worker_fails_closed_if_provisioning_is_removed(
+    loader_fixture: LoaderFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    job_id = loader_fixture.start(provider_type="CTRANSLATE2")
+    monkeypatch.delenv("TRANSLOKA_CT2_MODEL_DIR")
+
+    def unexpected_provider(*_args: object) -> object:
+        pytest.fail("Missing CTranslate2 provisioning must not fall back to another provider.")
+
+    result = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=unexpected_provider,
+        cloud_provider_factory=unexpected_provider,
+    ).run(job_id)
+
+    assert result.status is TranslationRunStatus.FAILED
+    assert result.completed_segment_ids == ()
+    with loader_fixture.factory() as session:
+        job = session.get(ApplicationJob, job_id)
+        assert job is not None
+        assert job.status == JobStatus.FAILED.value
+        assert list(session.scalars(select(SegmentTranslation))) == []
+
+
+@pytest.mark.parametrize("initial_provider", ["OLLAMA", "CTRANSLATE2"])
+def test_ctranslate2_recovery_preserves_partial_results(
+    loader_fixture: LoaderFixture, initial_provider: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    if initial_provider == "CTRANSLATE2":
+        monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "qwen2.5:3b")
+        monkeypatch.setenv("TRANSLOKA_OLLAMA_URL", "http://127.0.0.1:11434")
+    job_id = loader_fixture.start(provider_type=initial_provider, batch_size=1)
+    provider = RuntimeProvider(
+        [
+            _response((SEGMENT_ID, "Sumber pertama.")),
+            TranslationProviderError(ProviderErrorCode.CONTENT_REJECTED, "content rejected"),
+        ]
+    )
+    first = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        provider_factory=lambda _model: provider,
+        ctranslate2_provider_factory=lambda: provider,
+    ).run(job_id)
+    assert first.status is TranslationRunStatus.PARTIALLY_COMPLETED
+    assert first.completed_segment_ids == (SEGMENT_ID,)
+    with loader_fixture.factory() as session:
+        segment = session.get(DocumentSegment, SEGMENT_ID)
+        old_job = session.get(ApplicationJob, job_id)
+        assert segment is not None and old_job is not None
+        saved_segment = _protected_segment_state(segment)
+        saved_payload = old_job.payload_json
+
+    if initial_provider == "OLLAMA":
+        resumed_job_id = loader_fixture.start(
+            idempotency_key="ct2-resume-partial-local",
+            provider_type="CTRANSLATE2",
+            scope="UNTRANSLATED_ONLY",
+        )
+        assert resumed_job_id != job_id
+    else:
+        monkeypatch.setenv("TRANSLOKA_CT2_OLLAMA_FALLBACK_MODEL", "different-model:latest")
+        response = loader_fixture.client.post(
+            f"/api/v1/projects/{loader_fixture.project_id}/translation/retry-failed",
+            headers={**CLIENT_HEADERS, "Idempotency-Key": "ct2-retry-failed"},
+            json={"use_smaller_batch": False},
+        )
+        assert response.status_code == 202, response.text
+        resumed_job_id = response.json()["data"]["active_job_id"]
+        assert resumed_job_id == job_id
+
+    resumed = loader_fixture.load(resumed_job_id)
+    assert resumed.provider_type == "CTRANSLATE2"
+    assert resumed.selected_segment_ids == (SEGMENT_2_ID,)
+    assert resumed.operation is not None
+    assert resumed.operation.model_id == CT2_MODEL_ID
+    if initial_provider == "CTRANSLATE2":
+        assert resumed.ctranslate2_settings is not None
+        assert resumed.ctranslate2_settings.fallback_model_name == "qwen2.5:3b"
+    second = ProductionTranslationJobRunner(
+        DatabaseTranslationOperationLoader(loader_fixture.factory, loader_fixture.storage),
+        loader_fixture.factory,
+        loader_fixture.data_root / "temporary",
+        ctranslate2_provider_factory=RuntimeProvider,
+    ).run(resumed_job_id)
+    assert second.status is TranslationRunStatus.COMPLETED_WITH_WARNINGS
+    with loader_fixture.factory() as session:
+        segment = session.get(DocumentSegment, SEGMENT_ID)
+        old_job = session.get(ApplicationJob, job_id)
+        batch = session.get(TranslationBatch, first.run_id)
+        assert segment is not None and old_job is not None and batch is not None
+        assert _protected_segment_state(segment) == saved_segment
+        assert old_job.payload_json == saved_payload
+        assert batch.provider_type == initial_provider
+        if initial_provider == "OLLAMA":
+            assert old_job.status == JobStatus.PARTIALLY_COMPLETED.value
+            assert old_job.retry_count == 0
+        else:
+            assert old_job.retry_count == 1
+        translations = list(
+            session.scalars(
+                select(SegmentTranslation).where(SegmentTranslation.segment_id == SEGMENT_ID)
+            )
+        )
+        assert len(translations) == 1
+
+
 def test_cloud_runner_uses_snapshot_and_persists_actual_provider_model(
     loader_fixture: LoaderFixture,
     monkeypatch: pytest.MonkeyPatch,
@@ -1442,10 +1836,12 @@ def test_validation_failure_persists_safe_diagnostics_without_rejected_text(
         assert rejected_text not in diagnostics
 
 
+@pytest.mark.parametrize("provider_type", ["OLLAMA", "CTRANSLATE2"])
 def test_production_runner_checkpoints_cancellation(
     loader_fixture: LoaderFixture,
+    provider_type: str,
 ) -> None:
-    job_id = loader_fixture.start()
+    job_id = loader_fixture.start(provider_type=provider_type)
 
     def request_cancellation() -> None:
         with transaction_scope(loader_fixture.factory) as session:
@@ -1467,6 +1863,7 @@ def test_production_runner_checkpoints_cancellation(
         loader_fixture.factory,
         loader_fixture.data_root / "temporary",
         provider_factory=lambda _model: provider,
+        ctranslate2_provider_factory=lambda: provider,
     ).run(job_id)
 
     assert result.status is TranslationRunStatus.CANCELLED

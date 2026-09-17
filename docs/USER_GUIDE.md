@@ -63,6 +63,18 @@ Preview dan thumbnail adalah salinan turunan. Sumber asli tetap immutable.
 
 ## 5. OCR dan koreksi sumber
 
+OCR yang berhasil mengisi block dan segmen sumber untuk halaman yang belum
+memiliki block. Halaman kosong tidak diberi segmen buatan. Hasil mentah tetap
+immutable, dan segmen ber-confidence rendah ditandai untuk review.
+Artefak raw menyimpan teks provider asli; teks OCR pada segmen dan panel review
+merupakan potongan hasil normalisasi, sehingga spasi dan pemisahan kalimat
+dapat berbeda. Penandaan review tidak otomatis menyetujui hasil OCR.
+
+Mengulang OCR tidak menggandakan atau menimpa block yang sudah ada, termasuk
+extraction digital, correction, dan terjemahan yang sudah direview. Hasil raw
+dari job baru tetap disimpan; gunakan koreksi resolved source untuk perubahan
+pada segmen yang sudah ada.
+
 Pada halaman yang membutuhkan OCR:
 
 1. bandingkan gambar halaman dengan **Raw OCR**;
@@ -87,9 +99,14 @@ kode, dan protected content tidak boleh diedit secara manual di output model.
 
 ## 7. Translation lokal
 
-1. Pastikan Ollama aktif pada `http://127.0.0.1:11434`.
-2. Pastikan model yang dipilih sudah terpasang dan lulus health check.
-3. Periksa translation readiness.
+1. Pilih provider lokal pada panel **Translation setup**:
+   - **Ollama (local)** memerlukan service loopback dan model terpasang;
+   - **CTranslate2 (offline CPU)** memakai model tetap
+     `opus-mt-en-id-ct2-int8` yang sudah diprovision pada API dan worker.
+2. Untuk Ollama, pastikan service aktif pada `http://127.0.0.1:11434` dan
+   model terpilih lulus health check. CT2 tidak memerlukan Ollama kecuali
+   fallback lokal dikonfigurasi secara eksplisit.
+3. Periksa translation readiness. CT2 hanya mendukung English → Indonesian.
 4. Pilih scope: seluruh dokumen, untranslated only, unreviewed only, section,
    page, atau selected segments jika tersedia.
 5. Pilih model, batch size, context mode, dan style.
@@ -97,6 +114,8 @@ kode, dan protected content tidak boleh diedit secara manual di output model.
 
 Translation menggunakan English → Indonesian, structured output, validasi
 segment, glossary protection, placeholder integrity, retry, dan cancellation.
+Semua output CT2 tetap review-required; status selesai bukan persetujuan
+linguistik otomatis.
 Jangan mematikan worker saat batch sedang menulis state kecuali memang ingin
 menguji recovery.
 

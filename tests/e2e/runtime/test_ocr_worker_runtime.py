@@ -1,4 +1,5 @@
 import hashlib
+import json
 import os
 from io import BytesIO
 from pathlib import Path
@@ -24,6 +25,7 @@ from transloka_core.database import (
     create_sqlite_engine,
     transaction_scope,
 )
+from transloka_core.database.models.document_ir import DocumentBlock, DocumentSegment, SegmentStatus
 from transloka_core.database.models.documents import Document, DocumentClass, DocumentStatus
 from transloka_core.database.models.files import FileRole, FileStatus, StoredFile
 from transloka_core.database.models.jobs import (
@@ -214,6 +216,32 @@ def test_production_ocr_runtime_crosses_api_queue_worker_boundary(
             attempt = session.scalar(select(JobAttempt).where(JobAttempt.job_id == job_id))
             assert job is not None and job.status == JobStatus.COMPLETED.value
             assert attempt is not None and attempt.status == JobAttemptStatus.COMPLETED.value
+            page = session.get(DocumentPage, PAGE_ID)
+            assert page is not None and page.status == DocumentStatus.STRUCTURED.value
+            assert page.ocr_confidence == 0.96
+            block = session.scalars(
+                select(DocumentBlock).where(DocumentBlock.page_id == PAGE_ID)
+            ).one()
+            segment = session.scalars(
+                select(DocumentSegment).where(DocumentSegment.block_id == block.id)
+            ).one()
+            assert segment.status == SegmentStatus.READY_FOR_TRANSLATION.value
+            assert segment.ocr_text == "Production OCR runtime."
+            assert segment.native_text is None
+            assert segment.resolved_source_text == "Production OCR runtime."
+            assert segment.global_order == block.global_reading_order == 1
+            assert json.loads(block.source_geometry_json) == {
+                "x": 4.8,
+                "y": 4.8,
+                "width": 48.0,
+                "height": 9.6,
+                "coordinate_system": "PDF_POINT_TOP_LEFT",
+            }
+
+        page_response = client.get(f"/api/v1/pages/{PAGE_ID}/ocr", headers=CLIENT_HEADERS)
+        assert page_response.status_code == 200
+        assert page_response.json()["data"]["raw_text"] == "Production OCR runtime."
+        assert len(page_response.json()["data"]["segments"]) == 1
 
     raw_outputs = list((data_root / "projects" / project_id / "ocr" / "raw").rglob("*.json"))
     assert len(raw_outputs) == 1

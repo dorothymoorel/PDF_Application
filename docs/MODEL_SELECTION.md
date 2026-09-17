@@ -4,6 +4,13 @@ TransLoka memakai Ollama lokal untuk inference. Tidak ada model default universa
 model dipilih berdasarkan hardware, license, structured output, placeholder,
 kualitas English → Indonesian, dan resource usage komputer pengguna.
 
+Alternatif **opt-in** untuk pilot CPU English → Indonesian adalah
+[OPUS-MT CTranslate2 INT8](CT2_LOCAL_PILOT.md). Jalur tersebut memakai bundle
+lokal yang dipin dan diverifikasi, bukan model Ollama atau layanan remote, dan
+tidak mengubah default/selection Ollama secara otomatis.
+Hasil pilot terverifikasi dan batas estimasi waktunya dicatat pada panduan
+tersebut; output NMT wajib review dan belum ada bukti full-book run.
+
 ## 1. Siapkan Ollama
 
 Jalankan service pada komputer yang sama:
@@ -63,6 +70,10 @@ Gunakan OpenAPI lokal (`http://127.0.0.1:8000/docs`) hanya bila router tersebut
 sudah diaktifkan pada runtime yang sedang dipakai.
 
 ## 4. Benchmark model
+
+Permintaan translation lokal memiliki batas waktu hingga 10 menit. Batas ini
+tetap finite agar worker dapat memulihkan kegagalan provider, sekaligus memberi
+model CPU waktu cukup untuk mengembalikan batch dokumen panjang.
 
 ### Quick model benchmark
 

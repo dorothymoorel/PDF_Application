@@ -105,7 +105,7 @@ class OllamaTranslationProvider:
         model_name: str | None = None,
         temperature: float = 0.1,
         timeout_seconds: float = DEFAULT_OLLAMA_TIMEOUT_SECONDS,
-        translation_timeout_seconds: float = 120.0,
+        translation_timeout_seconds: float = 600.0,
     ) -> None:
         if not 0 < timeout_seconds <= 60:
             raise ValueError("Ollama timeout must be greater than zero and at most 60 seconds.")

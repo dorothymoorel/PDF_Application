@@ -7,6 +7,7 @@ import importlib
 import os
 import shutil
 import sqlite3
+import sys
 import tempfile
 import time
 from collections.abc import Callable
@@ -660,7 +661,8 @@ def _noop() -> None:
 
 
 def _lock_stream(stream: BinaryIO) -> None:
-    if os.name == "nt":
+    # sys.platform (not os.name) lets mypy skip the Windows-only msvcrt API on Linux.
+    if sys.platform == "win32":
         import msvcrt
 
         msvcrt.locking(stream.fileno(), msvcrt.LK_NBLCK, 1)
@@ -670,7 +672,7 @@ def _lock_stream(stream: BinaryIO) -> None:
 
 
 def _unlock_stream(stream: BinaryIO) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         msvcrt.locking(stream.fileno(), msvcrt.LK_UNLCK, 1)

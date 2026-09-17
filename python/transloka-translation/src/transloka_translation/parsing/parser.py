@@ -36,6 +36,7 @@ class StructuredResponseParser:
         raw_response: str,
         *,
         known_segment_ids: Iterable[str],
+        allow_empty_translations: bool = False,
     ) -> TranslationResponse:
         if type(raw_response) is not str:
             raise ResponseParseError(
@@ -71,7 +72,9 @@ class StructuredResponseParser:
             code = _schema_error_code(str(error))
             raise ResponseParseError(code, _schema_error_message(code)) from error
 
-        if any(not segment.translated_text.strip() for segment in response.segments):
+        if not allow_empty_translations and any(
+            not segment.translated_text.strip() for segment in response.segments
+        ):
             raise ResponseParseError(
                 ResponseParseErrorCode.EMPTY_TRANSLATION,
                 "Translation response contains empty translated text.",
@@ -84,10 +87,12 @@ def parse_translation_response(
     raw_response: str,
     *,
     known_segment_ids: Iterable[str],
+    allow_empty_translations: bool = False,
 ) -> TranslationResponse:
     return StructuredResponseParser.parse(
         raw_response,
         known_segment_ids=known_segment_ids,
+        allow_empty_translations=allow_empty_translations,
     )
 
 
