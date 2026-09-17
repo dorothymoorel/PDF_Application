@@ -79,6 +79,28 @@ final (`not slow and not requires_ollama and not requires_gpu`) mencatat
 **1.851 passed, 12 skipped**; Ruff, format, mypy, lockfile, dan generated API
 schema juga lulus. Tes otomatis tidak menggantikan penilaian kualitas manusia.
 
+### Trial PDF sintetis penuh (2026-09-17)
+
+Trial bounded pada fixture PDF sintetis non-private 12 halaman menjalankan
+import → analysis → OCR `AUTO` → translation CT2 → finalisasi prosedural →
+reconstruction `HYBRID` → export melalui API, queue, worker, SQLite, dan
+filesystem lokal. Analysis menghasilkan 408 segmen tanpa unresolved source;
+OCR memilih nol halaman karena seluruh halaman terdeteksi digital.
+
+Translation menyelesaikan 408/408 segmen tanpa provider error dalam 14 detik.
+Seluruh hasil tetap review-required dan approval berikutnya hanya finalisasi
+prosedural API, bukan review linguistik manusia. Reconstruction menyelesaikan
+12/12 halaman tanpa overflow/collision record; export valid memiliki 12 halaman,
+text layer selectable, ukuran halaman dan set font yang sama, serta tidak
+menyisakan source segment yang terdeteksi oleh validator trial.
+
+Fixture ini tidak mematerialisasi tabel atau asset sebagai entitas analysis,
+sehingga trial tersebut bukan bukti pipeline-level preservation untuk tabel,
+gambar, atau asset umum. Metrik fidelity hanya berlaku untuk fixture ini dan
+tidak menggantikan inspeksi visual maupun review bahasa. Regresi final mencatat
+**1.853 passed, 12 skipped**; test web, lint, typecheck, dan production build
+juga lulus.
+
 ## 1. Pasang dependency konversi secara eksplisit
 
 Dari root repository:
@@ -191,7 +213,13 @@ berubah, atau checksum salah harus diperbaiki lewat provisioning eksplisit.
 
 ## Pemilihan provider dan pemulihan
 
-Setelah readiness CT2 berhasil, gunakan endpoint translation/start dengan:
+Pada tab translation web, pilih **CTranslate2 (offline CPU)**. UI menampilkan
+model ID tetap `opus-mt-en-id-ct2-int8`; model tidak dapat diganti dengan ID
+Ollama atau model cloud. Readiness tetap memverifikasi provisioning, runtime,
+pasangan bahasa, worker, dan segmen eligible sebelum job dapat dimulai.
+
+Untuk integrasi API, setelah readiness CT2 berhasil gunakan
+`translation/start` dengan:
 
 ```json
 {

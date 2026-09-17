@@ -16,7 +16,10 @@ from transloka_glossary.protection import ProtectedContentDetector
 from transloka_translation.prompts import TranslationPrompt, VersionedPromptBuilder
 from transloka_translation.schemas import (
     TranslatedSegment,
+    TranslationContext,
+    TranslationPlaceholder,
     TranslationRequest,
+    TranslationRequestSegment,
     TranslationResponse,
 )
 from transloka_translation.validation import validate_translation
@@ -181,13 +184,17 @@ class CTranslate2TranslationProvider:
         if not isinstance(self._fallback, OllamaTranslationProvider):
             raise _error(ProviderErrorCode.INVALID_REQUEST)
         try:
+            protected_request, replacements = _fallback_request(request)
             raw = await self._fallback.translate(
-                VersionedPromptBuilder().build(request), cancellation=cancellation
+                VersionedPromptBuilder().build(protected_request), cancellation=cancellation
             )
             response = TranslationResponse.from_dict(
-                json.loads(raw), known_segment_ids=request.segment_ids
+                json.loads(raw), known_segment_ids=protected_request.segment_ids
             )
             output = response.segments[0].translated_text
+            if not validate_translation(protected_request, response).accepted:
+                return ""
+            output = _restore_fallback(output, replacements)
             return output if _accepted(request, output) else ""
         except asyncio.CancelledError:
             raise
@@ -298,6 +305,49 @@ def _protect(text: str, request: TranslationRequest) -> list[_Piece]:
         offset = end
     pieces.extend(_plain_pieces(text[offset:]))
     return pieces
+
+
+def _fallback_request(request: TranslationRequest) -> tuple[TranslationRequest, dict[str, str]]:
+    segment = request.segments[0]
+    replacements: dict[str, str] = {}
+    placeholders: list[TranslationPlaceholder] = []
+    masked: list[str] = []
+    for index, piece in enumerate(_protect(segment.source_text, request)):
+        if not piece.literal:
+            masked.append(piece.text)
+            continue
+        placeholder = f"__TLK_CT_LITERAL_{index:04d}_{index % 256:02X}__"
+        replacements[placeholder] = piece.text
+        placeholders.append(
+            TranslationPlaceholder(segment.segment_id, placeholder, "CTRANSLATE2_LITERAL")
+        )
+        masked.append(placeholder)
+    context = request.context
+    return (
+        TranslationRequest(
+            segments=(TranslationRequestSegment(segment.segment_id, "".join(masked)),),
+            context=TranslationContext(
+                source_language=context.source_language,
+                target_language=context.target_language,
+                document_type=context.document_type,
+            ),
+            glossary=(),
+            placeholders=tuple(placeholders),
+            style=request.style,
+        ),
+        replacements,
+    )
+
+
+def _restore_fallback(output: str, replacements: dict[str, str]) -> str:
+    for placeholder, literal in replacements.items():
+        escaped = re.escape(placeholder)
+        if literal and (literal[0].isspace() or literal[0] in ".,;:!?)]}"):
+            output = re.sub(rf"\s*{escaped}", placeholder, output)
+        if literal and (literal[-1].isspace() or literal[-1] in "([{"):
+            output = re.sub(rf"{escaped}\s*", placeholder, output)
+        output = output.replace(placeholder, literal)
+    return output
 
 
 def _plain_pieces(text: str) -> list[_Piece]:

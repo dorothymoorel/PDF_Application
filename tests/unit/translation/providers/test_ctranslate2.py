@@ -664,6 +664,87 @@ def test_cloud_fallback_is_rejected_without_calling_it() -> None:
     cloud.translate.assert_not_called()
 
 
+def test_local_fallback_masks_protected_literals_and_restores_them(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from transloka_translation.providers.ollama import OllamaTranslationProvider
+
+    captured: list[TranslationPrompt] = []
+
+    async def translate(prompt: TranslationPrompt, *, cancellation: object = None) -> str:
+        del cancellation
+        captured.append(prompt)
+        source_data = cast(dict[str, object], prompt.source_data["source_data"])
+        segments = cast(list[dict[str, str]], source_data["segments"])
+        placeholders = cast(list[dict[str, str]], source_data["placeholders"])
+        tokens = [item["placeholder"] for item in placeholders]
+        assert len(tokens) == 9
+        assert segments[0]["source_text"] == (
+            f"Read{tokens[0]}{tokens[1]}{tokens[2]}and{tokens[3]}{tokens[4]}"
+            f"{tokens[5]}at{tokens[6]}{tokens[7]}{tokens[8]}"
+        )
+        assert "." not in segments[0]["source_text"]
+        assert not any(char.isspace() for char in segments[0]["source_text"])
+        return json.dumps(
+            {
+                "segments": [
+                    {
+                        "segment_id": segments[0]["segment_id"],
+                        "translated_text": (
+                            f"Baca {tokens[0]} {tokens[1]} {tokens[2]} dan {tokens[3]} "
+                            f"{tokens[4]} {tokens[5]} di {tokens[6]} {tokens[7]} {tokens[8]}"
+                        ),
+                    }
+                ]
+            }
+        )
+
+    fallback = OllamaTranslationProvider()
+    monkeypatch.setattr(fallback, "translate", translate)
+    provider, translator, _ = _provider(_Translator(lambda tokens, beam: []), fallback=fallback)
+    glossary = (TranslationGlossaryEntry("API", None, "PRESERVE_ABBREVIATION"),)
+    request = TranslationRequest.from_dict(
+        cast(
+            dict[str, object],
+            _request(
+                ("s1", "Read API and 12 at https://example.test."), glossary=glossary
+            ).source_data["source_data"],
+        )
+    )
+    prompt = VersionedPromptBuilder().build(
+        replace(
+            request,
+            context=TranslationContext(
+                "en",
+                "id",
+                "TECHNICAL_BOOK",
+                "CONTEXT_HEADING_SENTINEL",
+                "CONTEXT_PREVIOUS_SENTINEL",
+                "CONTEXT_NEXT_SENTINEL",
+            ),
+        )
+    )
+
+    output = _output(provider, prompt)
+
+    assert output == [
+        {
+            "segment_id": "s1",
+            "translated_text": "Baca API dan 12 di https://example.test.",
+        }
+    ]
+    assert [call.options["beam_size"] for call in translator.calls] == [1, 4]
+    assert provider.fallback_segment_ids == ("s1",)
+    assert len(captured) == 1
+    serialized = captured[0].messages[1].content
+    assert "API" not in serialized
+    assert "https://example.test" not in serialized
+    assert '"12"' not in serialized
+    assert "CONTEXT_HEADING_SENTINEL" not in serialized
+    assert "CONTEXT_PREVIOUS_SENTINEL" not in serialized
+    assert "CONTEXT_NEXT_SENTINEL" not in serialized
+
+
 def test_cancellation_before_dispatch_does_not_load_or_translate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

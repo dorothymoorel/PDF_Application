@@ -526,20 +526,22 @@ def test_translation_readiness_reports_each_blocker(
 
 
 @pytest.mark.parametrize(
-    "heartbeat_store",
-    [
-        StaticWorkerHeartbeatStore(None),
-        StaticWorkerHeartbeatStore(WorkerStatus.STOPPED),
-        StaticWorkerHeartbeatStore(recorded_at=0.0),
-        StaticWorkerHeartbeatStore(recorded_at=time.time() + 60.0),
-    ],
-    ids=("missing", "stopped", "stale", "future"),
+    "heartbeat_case",
+    ("missing", "stopped", "stale", "future"),
 )
 def test_translation_start_fails_closed_when_worker_is_unavailable(
-    heartbeat_store: StaticWorkerHeartbeatStore,
+    heartbeat_case: str,
     translation_api: tuple[TestClient, sessionmaker[Session], str, FastAPI],
 ) -> None:
     client, factory, project_id, application = translation_api
+    if heartbeat_case == "missing":
+        heartbeat_store = StaticWorkerHeartbeatStore(None)
+    elif heartbeat_case == "stopped":
+        heartbeat_store = StaticWorkerHeartbeatStore(WorkerStatus.STOPPED)
+    elif heartbeat_case == "stale":
+        heartbeat_store = StaticWorkerHeartbeatStore(recorded_at=0.0)
+    else:
+        heartbeat_store = StaticWorkerHeartbeatStore(recorded_at=time.time() + 60.0)
     application.state.worker_heartbeat_store = heartbeat_store
 
     response = client.post(
@@ -724,6 +726,7 @@ def test_ctranslate2_is_opt_in_and_dispatches_without_ollama_or_cloud(
 @pytest.mark.parametrize(
     ("blocker", "expected_code"),
     [
+        ("missing_model", "CTRANSLATE2_MODEL_NOT_ALLOWED"),
         ("model", "CTRANSLATE2_MODEL_NOT_ALLOWED"),
         ("language", "CTRANSLATE2_LANGUAGE_UNSUPPORTED"),
         ("cloud", "CTRANSLATE2_PROVIDER_FIELDS_INVALID"),
@@ -749,6 +752,8 @@ def test_ctranslate2_readiness_fails_closed(
         application.state.ctranslate2_provider = UnexpectedProvider()
     if blocker == "model":
         params["model_id"] = MODEL_ID
+    elif blocker == "missing_model":
+        params.pop("model_id")
     elif blocker == "language":
         with transaction_scope(factory) as session:
             project = session.get(Project, project_id)

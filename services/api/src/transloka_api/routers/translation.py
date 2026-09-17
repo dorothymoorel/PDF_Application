@@ -672,7 +672,7 @@ async def _collect_readiness(
                     message="Configure the private CTranslate2 model directory to enable it.",
                 )
             )
-        if requested_model_id is not None and requested_model_id != CT2_MODEL_ID:
+        if requested_model_id != CT2_MODEL_ID:
             blockers.append(
                 TranslationBlockingIssue(
                     code="CTRANSLATE2_MODEL_NOT_ALLOWED",

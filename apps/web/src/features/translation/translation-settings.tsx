@@ -19,6 +19,7 @@ const GROQ_MODELS: readonly { value: GroqModel; label: string }[] = [
   { value: "qwen/qwen3.8-27b", label: "Qwen 3.8 27B (Preview)" },
   { value: "openai/gpt-oss-120b", label: "GPT-OSS 120B" },
 ];
+const CTRANSLATE2_MODEL_ID = "opus-mt-en-id-ct2-int8";
 
 function startKey(projectId: string): string {
   return `translation-ui-${projectId}-${Date.now().toString(36)}`;
@@ -87,7 +88,9 @@ export function TranslationSettings({
     setIsStarting(true);
     const providerInput = provider === "OLLAMA"
       ? { provider_type: "OLLAMA" as const, model_id: selectedModelId }
-      : {
+      : provider === "CTRANSLATE2"
+        ? { provider_type: "CTRANSLATE2" as const, model_id: CTRANSLATE2_MODEL_ID }
+        : {
           provider_type: "GROQ" as const,
           model_id: null,
           cloud_model_name: cloudModel,
@@ -141,7 +144,7 @@ export function TranslationSettings({
           Start translation
         </h2>
         <p className="mt-1 text-sm text-slate-600">
-          Ollama stays local and is selected by default. Groq is an optional cloud preview.
+          Ollama and CTranslate2 stay local. Groq is an optional cloud preview.
         </p>
       </div>
 
@@ -166,6 +169,7 @@ export function TranslationSettings({
             value={provider}
           >
             <option value="OLLAMA">Ollama (local)</option>
+            <option value="CTRANSLATE2">CTranslate2 (offline CPU)</option>
             <option value="GROQ">Groq Cloud (Preview)</option>
           </select>
         </div>
@@ -185,6 +189,13 @@ export function TranslationSettings({
                 <option key={model.value} value={model.value}>{model.label}</option>
               ))}
             </select>
+          ) : provider === "CTRANSLATE2" ? (
+            <input
+              className={inputClass}
+              id="translation-model"
+              readOnly
+              value={CTRANSLATE2_MODEL_ID}
+            />
           ) : installedModels.length === 0 ? (
             <p className="mt-2 rounded-lg border border-dashed border-slate-300 p-3 text-sm text-slate-600">
               No installed local models are available. Check Ollama and refresh the model list.
@@ -222,6 +233,13 @@ export function TranslationSettings({
               />
               <span>I consent to send selected translation text to Groq.</span>
             </label>
+          </div>
+        ) : provider === "CTRANSLATE2" ? (
+          <div className="rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-sm text-emerald-950">
+            <p className="font-semibold">Offline CPU translation</p>
+            <p className="mt-1">
+              The pinned English-to-Indonesian model runs locally. Its output always requires review.
+            </p>
           </div>
         ) : null}
 
